@@ -53,15 +53,36 @@ public class HistoryController(HistoryService historyService) : ControllerBase
             return BadRequest("profileId is required");
         }
 
-        var path = await _historyService.GetTransferDataFileByProfileId(HARD_CODED_USER_ID, profileId, token);
+        var path = await _historyService.GetTransferDataFileByProfileId(
+            HARD_CODED_USER_ID,
+            profileId,
+            token);
+
         if (string.IsNullOrEmpty(path))
         {
             return NotFound();
         }
 
-        new FileExtensionContentTypeProvider().TryGetContentType(path, out string? contentType);
+        new FileExtensionContentTypeProvider()
+            .TryGetContentType(path, out string? contentType);
+
         var stream = System.IO.File.OpenRead(path);
+
+        Response.OnCompleted(async () =>
+        {
+            try
+            {
+                System.IO.File.Delete(path);
+            }
+            catch
+            {
+            }
+
+            await Task.CompletedTask;
+        });
+
         var fileName = Path.GetFileName(path);
+
         return File(stream, contentType ?? "application/octet-stream", fileName);
     }
 
