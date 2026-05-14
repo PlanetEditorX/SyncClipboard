@@ -58,9 +58,9 @@ public class HistoryController(HistoryService historyService) : ControllerBase
             profileId,
             token);
 
-        if (string.IsNullOrEmpty(path))
+        if (string.IsNullOrEmpty(path) || !System.IO.File.Exists(path))
         {
-            return NotFound();
+            return File(Array.Empty<byte>(), "application/octet-stream");
         }
 
         new FileExtensionContentTypeProvider()
