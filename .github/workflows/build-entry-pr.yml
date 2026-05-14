@@ -26,10 +26,10 @@ jobs:
     with:
       checkout-repo: ${{ github.repository }}
       checkout-ref: ${{ github.ref }}
-    
-  build-mac:
-    uses: ./.github/workflows/mac-package.yml
-    needs: prebuild
-    with:
-      checkout-repo: ${{ github.repository }}
-      checkout-ref: ${{ github.ref }}
+
+  # build-mac:
+  #   uses: ./.github/workflows/mac-package.yml
+  #   needs: prebuild
+  #   with:
+  #     checkout-repo: ${{ github.repository }}
+  #     checkout-ref: ${{ github.ref }}
