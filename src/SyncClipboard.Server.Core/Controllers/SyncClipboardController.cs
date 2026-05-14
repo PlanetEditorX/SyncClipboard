@@ -236,8 +236,20 @@ public class SyncClipboardController(
         {
             return NotFound();
         }
-        new FileExtensionContentTypeProvider().TryGetContentType(path, out string? contentType);
+
+        new FileExtensionContentTypeProvider()
+            .TryGetContentType(path, out string? contentType);
+
         var bytes = await System.IO.File.ReadAllBytesAsync(path);
+
+        try
+        {
+            System.IO.File.Delete(path);
+        }
+        catch
+        {
+        }
+
         return File(bytes, contentType ?? "application/octet-stream");
     }
 }
