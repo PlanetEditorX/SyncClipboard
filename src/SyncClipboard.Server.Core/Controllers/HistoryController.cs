@@ -60,7 +60,7 @@ public class HistoryController(HistoryService historyService) : ControllerBase
 
         if (string.IsNullOrEmpty(path) || !System.IO.File.Exists(path))
         {
-            return File(Array.Empty<byte>(), "application/octet-stream");
+            return File([], "application/octet-stream");
         }
 
         new FileExtensionContentTypeProvider()
