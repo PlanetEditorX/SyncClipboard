@@ -82,14 +82,52 @@ public class SyncClipboardController(
         return Ok();
     }
 
+    private async Task AutoMarkDownloadedIfMatch(string fileName, CancellationToken token)
+    {
+        var profilePath = Path.Combine(_serverEnv.GetDataRootPath(), "SyncClipboard.json");
+        var cacheKey = profilePath;
+
+        // 1. 获取当前 ProfileDto
+        if (!_cache.TryGetValue(cacheKey, out ProfileDto? current) || current is null)
+        {
+            if (!System.IO.File.Exists(profilePath))
+                return;
+
+            var text = await System.IO.File.ReadAllTextAsync(profilePath, token);
+            current = JsonSerializer.Deserialize<ProfileDto>(text);
+            if (current is null) return;
+        }
+
+        // 2. 判断是否为文件类型，并且数据名称匹配
+        if (current.Type == ProfileType.File && current.HasData && current.DataName == fileName)
+        {
+            current.IsDownloaded = true;
+
+            // 更新缓存
+            _cache.Set(cacheKey, current);
+
+            // 写回文件
+            var json = JsonSerializer.Serialize(current);
+            await System.IO.File.WriteAllTextAsync(profilePath, json, token);
+
+            // 通知所有客户端
+            await _hubContext.Clients.All.RemoteProfileChanged(current);
+        }
+    }
+
     [HttpHead("file/{fileName}")]
     [HttpGet("file/{fileName}")]
     public async Task<IActionResult> GetFileFromFolder(string fileName, CancellationToken token)
     {
         if (InvalidFileName(fileName))
-        {
             return BadRequest();
+
+        // 新增：尝试自动标记已下载（不抛出异常影响主流程）
+        try
+        {
+            await AutoMarkDownloadedIfMatch(fileName, token);
         }
+        catch { }
 
         try
         {
@@ -125,11 +163,27 @@ public class SyncClipboardController(
         var profilePath = Path.Combine(_serverEnv.GetDataRootPath(), "SyncClipboard.json");
         var cacheKey = profilePath;
 
+        // 辅助函数：标记文本已下载
+        async Task AutoMarkTextDownloadedIfNeeded(ProfileDto profile)
+        {
+            if (profile.Type == ProfileType.Text && !profile.IsDownloaded)
+            {
+                profile.IsDownloaded = true;
+                _cache.Set(cacheKey, profile);
+                var json = JsonSerializer.Serialize(profile);
+                await System.IO.File.WriteAllTextAsync(profilePath, json, token);
+                await _hubContext.Clients.All.RemoteProfileChanged(profile);
+            }
+        }
+
+        // 缓存命中
         if (_cache.TryGetValue(cacheKey, out ProfileDto? cachedProfile))
         {
+            await AutoMarkTextDownloadedIfNeeded(cachedProfile!);
             return Ok(cachedProfile);
         }
 
+        // 文件不存在，返回空白文本
         if (!System.IO.File.Exists(profilePath))
         {
             var dto = await new TextProfile(string.Empty).ToProfileDto(token);
@@ -137,6 +191,7 @@ public class SyncClipboardController(
             return Ok(dto);
         }
 
+        // 从文件加载
         try
         {
             var text = await System.IO.File.ReadAllTextAsync(profilePath, token);
@@ -149,6 +204,8 @@ public class SyncClipboardController(
             return Ok(dto);
         }
 
+        // 加载成功后，标记文本已下载
+        await AutoMarkTextDownloadedIfNeeded(cachedProfile!);
         _cache.Set(cacheKey, cachedProfile);
         return Ok(cachedProfile);
     }
