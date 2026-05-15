@@ -200,7 +200,7 @@ public class SyncClipboardController(
                 {
                     // 静默处理，不影响主请求
                 }
-            });
+            }, CancellationToken.None);
         }
         // -----------------------------------
 
