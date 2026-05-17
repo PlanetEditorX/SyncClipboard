@@ -77,7 +77,6 @@ public class TextProfile : Profile
             HasData = _hasTransferData,
             DataName = _hasTransferData ? _transferDataName ?? Path.GetFileName(_transferDataPath) : null,
             Size = await GetSize(token),
-            Source = Source
         };
     }
 
