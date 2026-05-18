@@ -13,7 +13,7 @@ jobs:
   win-release:
     strategy:
       matrix:
-        cpu: [x64, arm64]
+        cpu: [x64]
         dotnet_runtime: ['true']
         win_app_sdk: ['true']
         include:
