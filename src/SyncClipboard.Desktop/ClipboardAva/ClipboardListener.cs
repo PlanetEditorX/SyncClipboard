@@ -50,9 +50,7 @@ internal class ClipboardListener(IClipboardFactory clipboardFactory, ILogger log
     private async void InvokeTick(object? _)
     {
         if (_tickSemaphore.Wait(0) is false)
-        {
             return;
-        }
 
         try
         {
@@ -60,27 +58,30 @@ internal class ClipboardListener(IClipboardFactory clipboardFactory, ILogger log
             _cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
 
             var meta = await ClipboardFactory.GetMetaInfomation(_cts.Token);
-
-            // 使用 with 表达式创建新对象，同时设置 Source
-            var metaWithSource = meta with { Source = _source };
-
-            if (metaWithSource == _meta)
-            {
+            if (meta is null)
                 return;
-            }
 
-            if (_meta is not null)
+            // 如果 _source 为 null 或空，则为 "Server"
+            var sourceValue = string.IsNullOrWhiteSpace(_source) ? "Server" : _source;
+
+            // 使用 with 创建新对象，同时设置 Source
+            var metaWithSource = meta with
             {
-                _meta = metaWithSource;
-                _ = Task.Run(() => _action?.Invoke(metaWithSource));
-                _ = _logger.WriteAsync($"Clipboard changed to {metaWithSource}");
-            }
-            else
-            {
-                _meta = metaWithSource;
-            }
+                Source = sourceValue
+            };
+
+            // 如果和上一次相同，直接返回
+            if (metaWithSource == _meta)
+                return;
+
+            _meta = metaWithSource;
+            _ = Task.Run(() => _action?.Invoke(metaWithSource));
+            _ = _logger.WriteAsync($"Clipboard changed: {metaWithSource}");
         }
-        catch { }
+        catch
+        {
+            // 忽略异常
+        }
         finally
         {
             _tickSemaphore.Release();
