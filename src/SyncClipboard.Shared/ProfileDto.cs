@@ -13,5 +13,10 @@ public record class ProfileDto
     public string? DataName { get; set; }
     public long Size { get; set; } = 0;
     public bool IsDownloaded { get; set; } = false;
-    public string? Source { get; set; }
+    private string? _source;
+    public string? Source
+    {
+        get => _source ?? "Server";   // 当 _source 为 null 时返回 "Server"
+        set => _source = value;       // 真实存储的值可以是 null
+    }
 }
