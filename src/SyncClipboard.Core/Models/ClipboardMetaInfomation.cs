@@ -26,6 +26,8 @@ public record class ClipboardMetaInfomation
     public DragDropEffects? Effects;
     public string? OriginalType;
 
+    public string Source { get; init; } = Environment.MachineName;
+
     public virtual bool Equals(ClipboardMetaInfomation? other)
     {
         if (TimeStamp is not null && other?.TimeStamp is not null)
@@ -68,6 +70,7 @@ public record class ClipboardMetaInfomation
             Effects?.GetHashCode() ?? 0,
             OriginalType?.GetHashCode() ?? 0,
             Image?.GetHashCode() ?? 0,
+            Source.GetHashCode()
         ];
 
         return hashList.ListHashCode();
