@@ -73,7 +73,8 @@ public class GroupProfile : Profile
         }
         else
         {
-            _fileNames = dto.Text.Split(new char[] { ' ', '\t' }, StringSplitOptions.RemoveEmptyEntries);
+            _fileNames = dto.Text.Split(["\r\n", "\r", "\n"],
+                StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries).ToArray();
         }
         _transferDataName = dto.DataName;
         Hash = string.IsNullOrEmpty(dto.Hash) ? null : dto.Hash;
