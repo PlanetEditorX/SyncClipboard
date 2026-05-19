@@ -66,8 +66,18 @@ public class GroupProfile : Profile
 
     public GroupProfile(ProfileDto dto)
     {
-        _fileNames = dto.Text.Split(["\r\n", "\r", "\n"],
-            StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries).ToArray();
+        // 优先使用 FilePaths 中的完整路径（Windows 端推送时会附带）
+        if (dto.FilePaths is { Count: > 0 })
+        {
+            _files = dto.FilePaths.ToArray();
+            _fileNames = _files.Select(Path.GetFileName).ToArray();
+        }
+        else
+        {
+            // 旧逻辑：从 Text 字段拆分文件名（仅文件名，无路径）
+            _fileNames = dto.Text.Split(["\r\n", "\r", "\n"],
+                StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries).ToArray();
+        }
         _transferDataName = dto.DataName;
         Hash = string.IsNullOrEmpty(dto.Hash) ? null : dto.Hash;
         Size = dto.Size;
