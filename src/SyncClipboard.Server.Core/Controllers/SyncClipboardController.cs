@@ -320,9 +320,8 @@ public class SyncClipboardController(
 
         // 1. 获取当前 ProfileDto
         var profilePath = Path.Combine(_serverEnv.GetDataRootPath(), "SyncClipboard.json");
-        ProfileDto? current;
 
-        if (!_cache.TryGetValue(profilePath, out current) || current is null)
+        if (!_cache.TryGetValue(profilePath, out ProfileDto? current) || current is null)
         {
             if (!System.IO.File.Exists(profilePath))
                 return NotFound("No current profile.");
