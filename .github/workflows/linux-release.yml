@@ -24,7 +24,7 @@ jobs:
     if : ${{ startsWith(github.ref, 'refs/tags/') }}
     strategy:
       matrix:
-        cpu: [x64, arm64]
+        cpu: [x64]
         type: [self-contained]
         package-type: [AppImage, rpm, deb]
         include:

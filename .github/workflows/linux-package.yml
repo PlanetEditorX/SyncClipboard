@@ -20,7 +20,7 @@ jobs:
   package-linux:
     strategy:
       matrix:
-        cpu: [x64, arm64]
+        cpu: [x64]
         type: [self-contained, no-self-contained]
         package-type: [AppImage, rpm, deb]
         include:
