@@ -318,7 +318,8 @@ public class GroupProfile : Profile
             Type = Type,
             Hash = await GetHash(token),
             Text = DisplayText,
-            HasData = true,
+            // 只有已生成传输数据包时才需要上传
+            HasData = !string.IsNullOrEmpty(_transferDataName),
             DataName = _transferDataName,
             Size = await GetSize(token),
             Source = Source

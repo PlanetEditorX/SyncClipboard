@@ -312,6 +312,48 @@ public class SyncClipboardController(
         return Ok();
     }
 
+    [HttpGet("api/file/download")]
+    public async Task<IActionResult> DownloadFileByPath([FromQuery] string path, CancellationToken token)
+    {
+        if (string.IsNullOrWhiteSpace(path))
+            return BadRequest("Path is required.");
+
+        // 1. 获取当前 ProfileDto
+        var profilePath = Path.Combine(_serverEnv.GetDataRootPath(), "SyncClipboard.json");
+        ProfileDto? current;
+
+        if (!_cache.TryGetValue(profilePath, out current) || current is null)
+        {
+            if (!System.IO.File.Exists(profilePath))
+                return NotFound("No current profile.");
+
+            var text = await System.IO.File.ReadAllTextAsync(profilePath, token);
+            current = JsonSerializer.Deserialize<ProfileDto>(text);
+            if (current is null) return NotFound("Profile corrupted.");
+        }
+
+        // 2. 验证路径是否在允许的文件列表中
+        var allowedPaths = current.FilePaths;
+        if (allowedPaths is null || allowedPaths.Count == 0)
+            return BadRequest("No file paths available.");
+
+        // Windows 路径不区分大小写
+        var comparer = OperatingSystem.IsWindows() ? StringComparer.OrdinalIgnoreCase : StringComparer.Ordinal;
+        if (!allowedPaths.Contains(path, comparer))
+            return Unauthorized("Path not in current clipboard file list.");
+
+        // 3. 检查文件是否存在
+        if (!System.IO.File.Exists(path))
+            return NotFound("File not found on server.");
+
+        // 4. 确定 Content-Type
+        new FileExtensionContentTypeProvider().TryGetContentType(path, out string? contentType);
+
+        // 5. 返回文件流（不删除原文件）
+        var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read);
+        return File(stream, contentType ?? "application/octet-stream", Path.GetFileName(path));
+    }
+
     [HttpGet("")]
     [ApiExplorerSettings(IgnoreApi = true)]
     public IActionResult GetRoot()
