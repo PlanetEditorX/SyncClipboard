@@ -47,5 +47,5 @@ jobs:
 
   create-gh-release-formal:
     if: ${{ startsWith(github.ref, 'refs/tags/') }}
-    needs: [create-gh-release-draft, build-win, build-server, build-linux]
+    needs: [create-gh-release-draft, build-win]
     uses: ./.github/workflows/release-formal.yml
