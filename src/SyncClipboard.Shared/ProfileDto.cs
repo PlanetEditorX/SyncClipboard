@@ -19,4 +19,8 @@ public record class ProfileDto
         get => _source ?? "Server";   // 当 _source 为 null 时返回 "Server"
         set => _source = value;       // 真实存储的值可以是 null
     }
+    // 存放 Windows 本地文件路径列表
+    [JsonPropertyName("filePaths")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public List<string>? FilePaths { get; set; }
 }

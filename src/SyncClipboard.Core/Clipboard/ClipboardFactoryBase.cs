@@ -24,23 +24,37 @@ public abstract class ClipboardFactoryBase : IClipboardFactory
 
     public async Task<Profile> CreateProfileFromMeta(ClipboardMetaInfomation metaInfomation, bool contentControl, CancellationToken ctk)
     {
-        if (metaInfomation.Files != null && metaInfomation.Files.Length >= 1)
+        if (metaInfomation.Files is { Length: >= 1 })
         {
-            var filename = metaInfomation.Files[0];
-            if (metaInfomation.Files.Length == 1 && File.Exists(filename))
+            // Windows 平台：只记录路径，不上传内容
+            if (OperatingSystem.IsWindows())
             {
-                if (ImageHelper.FileIsImage(filename))
-                {
-                    return new ImageProfile(filename);
-                }
-                return new FileProfile(filename, null, null);
+                return new GroupProfile(
+                    metaInfomation.Files,
+                    contentControl ? Config.GetConfig<FileFilterConfig>() : null
+                );
             }
+            // 其他平台保持原有逻辑（单文件特殊处理等）
             else
             {
-                return new GroupProfile(metaInfomation.Files, contentControl ? Config.GetConfig<FileFilterConfig>() : null);
+                var filename = metaInfomation.Files[0];
+                if (metaInfomation.Files.Length == 1 && File.Exists(filename))
+                {
+                    if (ImageHelper.FileIsImage(filename))
+                    {
+                        return new ImageProfile(filename);
+                    }
+                    return new FileProfile(filename, null, null);
+                }
+                else
+                {
+                    return new GroupProfile(metaInfomation.Files,
+                        contentControl ? Config.GetConfig<FileFilterConfig>() : null);
+                }
             }
         }
 
+        // 以下文本、图片、混合处理保持完全不变
         if (metaInfomation.Text != null && metaInfomation.Image != null)
         {
             var textImageRule = Config.GetConfig<ClipboardAcquisitionConfig>().TextImageRule;

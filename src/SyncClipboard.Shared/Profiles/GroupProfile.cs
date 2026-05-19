@@ -313,7 +313,7 @@ public class GroupProfile : Profile
 
     public override async Task<ProfileDto> ToProfileDto(CancellationToken token)
     {
-        return new ProfileDto
+        var dto = new ProfileDto
         {
             Type = Type,
             Hash = await GetHash(token),
@@ -323,6 +323,14 @@ public class GroupProfile : Profile
             Size = await GetSize(token),
             Source = Source
         };
+
+        // 只在 Windows 平台下暴露本地文件路径，供手机拉取使用
+        if (OperatingSystem.IsWindows())
+        {
+            dto.FilePaths = Files.ToList();
+        }
+
+        return dto;
     }
 
     public string GetDisplayText(bool shortStr = false)
