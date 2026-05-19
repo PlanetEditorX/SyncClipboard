@@ -66,7 +66,6 @@ public class GroupProfile : Profile
 
     public GroupProfile(ProfileDto dto)
     {
-        // 优先使用 FilePaths 中的完整路径（Windows 端推送时会附带）
         if (dto.FilePaths is { Count: > 0 })
         {
             _files = dto.FilePaths.ToArray();
@@ -74,9 +73,7 @@ public class GroupProfile : Profile
         }
         else
         {
-            // 旧逻辑：从 Text 字段拆分文件名（仅文件名，无路径）
-            _fileNames = dto.Text.Split(["\r\n", "\r", "\n"],
-                StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries).ToArray();
+            _fileNames = dto.Text.Split(...);
         }
         _transferDataName = dto.DataName;
         Hash = string.IsNullOrEmpty(dto.Hash) ? null : dto.Hash;
@@ -252,6 +249,12 @@ public class GroupProfile : Profile
 
     public override async Task<string?> PrepareTransferData(string persistentDir, CancellationToken token)
     {
+        // Windows 平台下永远不生成 zip，直接返回 null
+        if (OperatingSystem.IsWindows())
+        {
+            return null;
+        }
+
         if (File.Exists(_transferDataPath))
         {
             return _transferDataPath;
@@ -507,6 +510,11 @@ public class GroupProfile : Profile
 
     public override async Task<string?> NeedsTransferData(string persistentDir, CancellationToken token)
     {
+        if (OperatingSystem.IsWindows())
+        {
+            return null; // 无需传输
+        }
+
         if (await IsLocalDataValid(false, token))
         {
             return null;
@@ -528,6 +536,19 @@ public class GroupProfile : Profile
 
     public override async Task<ProfilePersistentInfo> Persist(string persistentDir, CancellationToken token)
     {
+        if (OperatingSystem.IsWindows())
+        {
+            return new ProfilePersistentInfo
+            {
+                Type = Type,
+                Text = DisplayText,
+                Size = await GetSize(token),
+                Hash = await GetHash(token),
+                TransferDataFile = null,   // 无传输文件
+                FilePaths = _files?.ToArray() ?? []  // 保持原始路径
+            };
+        }
+
         if (_files is null && _transferDataPath is null)
         {
             throw new InvalidOperationException("No local data available to prepare persistent storage.");
