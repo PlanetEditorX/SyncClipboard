@@ -55,3 +55,9 @@ class CacheManager:
 
     def get_latest_text(self):
         return self.cache["text"][-1] if self.cache["text"] else {}
+
+    def update_cache(self, key, value):
+        """
+        更新最新的参数
+        """
+        self.cache["text"][-1][key] = value

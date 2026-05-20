@@ -46,33 +46,39 @@ def text_sync():
         logging.warning("密钥不匹配: %s", data.get("key"))
         return jsonify({"error": "Invalid key"}), 403
 
-    remote_item = data.get("item")
-    if not remote_item:
-        logging.warning("没有 item 字段")
-        return jsonify({"error": "No item"}), 400
-
-    logging.info("远程 item: %s", remote_item)
+    logging.info("远程数据: %s", data)
 
     # 防死循环
-    if remote_item["source"] == LOCAL_NAME:
-        logging.info("忽略来自本机的 item")
-        return jsonify({"status": "ignored"}), 200
-
-    if cache.id_exists(remote_item["id"]):
-        logging.info("忽略已同步的 item id: %s", remote_item["id"])
+    if data["source"] == LOCAL_NAME:
+        logging.info("忽略来自本机的数据")
         return jsonify({"status": "ignored"}), 200
 
     # 比较时间
-    local_item = cache.get_text()
+    local_item = cache.get_latest_text()
     logging.info("本地剪贴板: %s", local_item)
 
-    if remote_item["timestamp"] > local_item.get("timestamp", ""):
-        set_clipboard_text(remote_item["content"])
-        cache.update_text(remote_item)
-        logging.info("已更新本地剪贴板: %s", remote_item["content"])
+    if data["timestamp"] >= local_item.get("timestamp", ""):
+        # 远程比本地新，但已同步过
+        if cache.id_exists(data["id"]):
+            logging.info("忽略已同步的数据 id: %s", data["id"])
+            return jsonify({"status": "ignored"}), 200
+
+        set_clipboard_text(data["content"])
+        cache.update_text(data)
+        logging.info("已更新本地剪贴板: %s", data["content"])
         return jsonify({"status": "updated"}), 200
 
-    logging.info("未更新剪贴板，因为本地较新")
+    if local_item["pasted"] == False:
+        set_clipboard_text(local_item["content"])
+        cache.update_text(local_item)
+        logging.info("推送本地剪贴板: %s", local_item["content"])
+        cache.update_cache("pasted", True)
+        return jsonify({
+            "status": "getting",
+            "content": local_item
+        }), 200
+
+    logging.info("未更新剪贴板")
     return jsonify({"status": "ignored"}), 200
 
 # ------------------- 文件上传接口 -------------------
@@ -100,12 +106,12 @@ def file_upload():
 @app.route("/get_text", methods=["GET"])
 def get_text():
     logging.info("收到 /get_text 请求")
-    key = request.args.get("key")
+    key = request.headers.get("key")  # 从头部获取
     if key != KEY:
         logging.warning("get_text 密钥不匹配: %s", key)
         return jsonify({"error": "Invalid key"}), 403
 
-    item = cache.get_text()
+    item = cache.get_latest_text()
     logging.info("返回本地剪贴板: %s", item)
     return jsonify({"item": item})
 
