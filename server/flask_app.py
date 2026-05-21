@@ -63,8 +63,10 @@ def text_sync():
             logging.info("忽略已同步的数据 id: %s", data["id"])
             return jsonify({"status": "ignored"}), 200
 
-        set_clipboard_text(data["content"])
         cache.update_text(data)
+        # 写入剪贴板
+        set_clipboard_text(data["content"])
+        # cache.update_cache("pasted", True)
         logging.info("已更新本地剪贴板: %s", data["content"])
         return jsonify({"status": "updated"}), 200
 
@@ -75,7 +77,7 @@ def text_sync():
         cache.update_cache("pasted", True)
         return jsonify({
             "status": "getting",
-            "content": local_item
+            "data": local_item["content"]
         }), 200
 
     logging.info("未更新剪贴板")
@@ -111,9 +113,15 @@ def get_text():
         logging.warning("get_text 密钥不匹配: %s", key)
         return jsonify({"error": "Invalid key"}), 403
 
-    item = cache.get_latest_text()
-    logging.info("返回本地剪贴板: %s", item)
-    return jsonify({"item": item})
+    data = cache.get_latest_text()
+    logging.info("返回本地剪贴板: %s", data)
+    _data = {
+            "status": "getting",
+            "data": data["content"],
+            "pasted": data["pasted"]
+        }
+    cache.update_cache("pasted", True)
+    return jsonify(_data), 200
 
 # ------------------- 启动函数 -------------------
 def start_flask():

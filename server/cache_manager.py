@@ -35,6 +35,14 @@ class CacheManager:
         return unique_id in self.cache["ids"]
 
     def update_text(self, text_item):
+        """
+        更新缓存json内容
+        text_item：传入的数据
+        check：是否检测，从剪切板进来的检测去重
+        """
+        if text_item["content"] == self.cache["text"][-1]["content"]:
+            return
+
         if text_item["id"] in self.cache["ids"]:
             # 已存在：更新内容和时间戳
             for idx, item in enumerate(self.cache["text"]):
