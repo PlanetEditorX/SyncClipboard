@@ -46,6 +46,14 @@ class ClientTracker:
         self.data["global_ids"].append(item_id)
         self.data["clients"][source] = item
 
+        # 限制 global_ids 最大长度
+        MAX_IDS = 10
+        if len(self.data["global_ids"]) > MAX_IDS:
+            # 计算需要移除的数量
+            remove_count = len(self.data["global_ids"]) - MAX_IDS
+            # 移除最旧的 remove_count 个 ID
+            self.data["global_ids"] = self.data["global_ids"][remove_count:]
+
         if force_latest:
             self.data["latest_global"] = item
         else:
