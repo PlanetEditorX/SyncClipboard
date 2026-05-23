@@ -49,37 +49,37 @@ def get_api_key():
     return request.headers.get("key", "")
 
 # ------------------- 文字同步接口 -------------------
-# @app.route('/text_sync', methods=['POST'])
-# def text_sync():
-#     data = request.get_json()
-#     if not data:
-#         return jsonify({"status": "error", "message": "无效的请求数据"}), 400
+@app.route('/text_sync', methods=['POST'])
+def text_sync():
+    data = request.get_json()
+    if not data:
+        return jsonify({"status": "error", "message": "无效的请求数据"}), 400
 
-#     if data.get("key") != KEY:
-#         return jsonify({"status": "error", "message": "密钥错误"}), 403
+    if data.get("key") != KEY:
+        return jsonify({"status": "error", "message": "密钥错误"}), 403
 
-#     source = data.get("source", "")
-#     if source == LOCAL_NAME:
-#         return jsonify({"status": "ignored", "message": "忽略自身来源"}), 200
+    source = data.get("source", "")
+    if source == LOCAL_NAME:
+        return jsonify({"status": "ignored", "message": "忽略自身来源"}), 200
 
-#     content = data.get("content", "")
-#     if not content:
-#         return jsonify({"status": "error", "message": "内容为空"}), 400
+    content = data.get("content", "")
+    if not content:
+        return jsonify({"status": "error", "message": "内容为空"}), 400
 
-#     item = build_text_item(text=content, source=source, pasted=False)
+    item = build_text_item(text=content, source=source, pasted=False)
 
-#     # 去重：用 tracker 的 is_duplicate 方法
-#     if tracker.is_duplicate(item["id"]):
-#         return jsonify({"status": "duplicate", "message": "重复内容"}), 200
+    # 去重：用 tracker 的 is_duplicate 方法
+    if tracker.is_duplicate(item["id"]):
+        return jsonify({"status": "duplicate", "message": "重复内容"}), 200
 
-#     # 更新记录（同时注册 ID、更新客户端最新和全局最新）
-#     tracker.update(item)
+    # 更新记录（同时注册 ID、更新客户端最新和全局最新）
+    tracker.update(item)
 
-#     # # 同步到服务端剪贴板（可选，看需求）
-#     # set_clipboard_text(content)
+    # # 同步到服务端剪贴板（可选，看需求）
+    # set_clipboard_text(content)
 
-#     logging.info("同步文本: %s", content[:50])
-#     return jsonify({"status": "ok", "message": "同步成功"}), 200
+    logging.info("同步文本: %s", content[:50])
+    return jsonify({"status": "ok", "message": "同步成功"}), 200
 
 @app.route('/sync', methods=['POST'])
 def sync():

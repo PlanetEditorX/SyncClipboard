@@ -45,7 +45,7 @@ class SyncClient:
         self.pull_thread.start()
 
     def _push_loop(self):
-        self.last_text = pyperclip.paste()
+        self.last_text = pyperclip.paste() or ""
         self.last_file_set = None   # 用于判断文件是否变化
         while self.running:
             try:
@@ -58,13 +58,15 @@ class SyncClient:
                         self.last_file_set = current_set
                         self._push_latest_file(files)
                     time.sleep(0.5)
-                    self.last_text = pyperclip.paste()  # 更新文本状态，防止后面误判
-                    continue
+                    continue  # 跳过文本处理
 
-                # 2. 没有文件，检测文本
+                # 2. 没有文件 → 处理文本
+                self.last_file_set = None  # 清除文件状态，确保下次文件变化能被检测
                 text = pyperclip.paste()
-                if text and text != self.last_text:
-                    if text != self._last_remote_content:
+                if text is None:
+                    text = ""
+                if text != self.last_text:
+                    if text and text != self._last_remote_content:
                         self.push_text(text)
                     self.last_text = text
             except Exception as e:
