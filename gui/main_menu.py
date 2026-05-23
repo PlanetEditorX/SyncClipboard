@@ -79,7 +79,7 @@ class SyncClient:
             try:
                 resp = requests.get(
                     f"{self.server_url}/latest",
-                    params={"key": self.key},
+                    headers={"key": self.key},   # 将 key 放入请求头
                     timeout=5
                 )
                 if resp.status_code == 200:

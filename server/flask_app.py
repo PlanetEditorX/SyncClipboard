@@ -113,7 +113,7 @@ def sync():
 
 @app.route('/latest', methods=['GET'])
 def get_latest():
-    key = request.args.get("key", "")
+    key = request.headers.get("key", "")
     if key != KEY:
         return jsonify({"status": "error", "message": "密钥错误"}), 403
 
