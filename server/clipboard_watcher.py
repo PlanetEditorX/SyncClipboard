@@ -1,8 +1,9 @@
+# clipboard_watcher.py
 import time
-from clipboard_manager import get_clipboard_text, generate_stable_id
+from clipboard_manager import get_clipboard_text
 from cache_manager import CacheManager
+from item_builder import build_text_item
 import logging
-from datetime import datetime
 
 class ClipboardWatcher:
     def __init__(self, cache: CacheManager, interval=0.5):
@@ -17,19 +18,12 @@ class ClipboardWatcher:
                 text = get_clipboard_text()
                 if text != self.last_text:
                     self.last_text = text
-                    timestamp = datetime.now().isoformat()
-                    item = {
-                        "id": generate_stable_id({
-                            "type": "text",
-                            "content": text,
-                            "source": self.cache.cache.get("local_name", "PC")
-                        }),
-                        "type": "text",
-                        "content": text,
-                        "timestamp": timestamp,
-                        "source": self.cache.cache.get("local_name", "PC"),
-                        "pasted": False
-                    }
+                    source = self.cache.cache.get("local_name", "PC")  # 获取来源
+                    item = build_text_item(
+                        text=text,
+                        source=source,
+                        pasted=False
+                    )
                     self.cache.update_text(item)
                     logging.info("本地剪贴板变化: %s", text)
             except Exception as e:

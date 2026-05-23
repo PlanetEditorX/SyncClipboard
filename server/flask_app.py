@@ -6,17 +6,33 @@ from clipboard_manager import get_clipboard_text, set_clipboard_text, generate_i
 from cache_manager import CacheManager
 from file_handler import FileHandler
 import json
+from item_builder import build_text_item
 import logging
 from pathlib import Path
+from logging.handlers import RotatingFileHandler
 
 # ------------------- 日志配置 -------------------
 LOG_FILE = Path("syncclipboard.log")
-logging.basicConfig(
-    filename=LOG_FILE,
-    level=logging.INFO,
-    format='%(asctime)s [%(levelname)s] %(message)s',
+# 创建 RotatingFileHandler
+handler = RotatingFileHandler(
+    LOG_FILE,
+    maxBytes=1 * 1024 * 1024,  # 1 MB，超过则轮转
+    backupCount=0,               # 保留最近5个备份文件
+    encoding='utf-8'
+)
+
+# 设置格式
+formatter = logging.Formatter(
+    fmt='%(asctime)s [%(levelname)s] %(message)s',
     datefmt='%Y-%m-%d %H:%M:%S'
 )
+handler.setFormatter(formatter)
+
+# 配置 root logger
+logger = logging.getLogger()
+logger.setLevel(logging.INFO)
+logger.addHandler(handler)
+
 logging.info("服务初始化完成")
 
 # ------------------- Flask & 缓存 & 文件 -------------------
@@ -57,18 +73,37 @@ def text_sync():
     local_item = cache.get_latest_text()
     logging.info("本地剪贴板: %s", local_item)
 
-    if data["timestamp"] >= local_item.get("timestamp", ""):
-        # 远程比本地新，但已同步过
-        if cache.id_exists(data["id"]):
-            logging.info("忽略已同步的数据 id: %s", data["id"])
-            return jsonify({"status": "ignored"}), 200
+    if cache.search_text(data["content"]):
+        logging.info("接受到来自 「%s」 的历史数据 “%s”，不更新本地缓存", data["source"], data["content"])
+        return jsonify({"status": "ignored"}), 200
 
-        cache.update_text(data)
+    else:
+        logging.info("接受到来自 「%s」 的新数据 “%s”，更新本地缓存", data["source"], data["content"])
+        item = build_text_item(
+            text=data["content"],
+            source=data["source"],
+            pasted=False
+        )
+        cache.update_text(item)
         # 写入剪贴板
         set_clipboard_text(data["content"])
         # cache.update_cache("pasted", True)
         logging.info("已更新本地剪贴板: %s", data["content"])
         return jsonify({"status": "updated"}), 200
+
+
+    # if data["timestamp"] >= local_item.get("timestamp", ""):
+    #     # 远程比本地新，但已同步过
+    #     if cache.id_exists(data["id"]):
+    #         logging.info("忽略已同步的数据 id: %s", data["id"])
+    #         return jsonify({"status": "ignored"}), 200
+
+        # cache.update_text(data)
+        # # 写入剪贴板
+        # set_clipboard_text(data["content"])
+        # # cache.update_cache("pasted", True)
+        # logging.info("已更新本地剪贴板: %s", data["content"])
+        # return jsonify({"status": "updated"}), 200
 
     if local_item["pasted"] == False:
         set_clipboard_text(local_item["content"])
@@ -109,17 +144,24 @@ def file_upload():
 def get_text():
     logging.info("收到 /get_text 请求")
     key = request.headers.get("key")  # 从头部获取
+    order = request.headers.get("order")
     if key != KEY:
         logging.warning("get_text 密钥不匹配: %s", key)
         return jsonify({"error": "Invalid key"}), 403
 
     data = cache.get_latest_text()
     logging.info("返回本地剪贴板: %s", data)
-    _data = {
+    if order == 'first':
+        _data = {
             "status": "getting",
-            "data": data["content"],
-            "pasted": data["pasted"]
+            "data": data
         }
+    else:
+        _data = {
+                "status": "getting",
+                "data": data["content"],
+                "pasted": data["pasted"]
+            }
     cache.update_cache("pasted", True)
     return jsonify(_data), 200
 

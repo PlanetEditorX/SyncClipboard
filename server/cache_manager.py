@@ -69,3 +69,14 @@ class CacheManager:
         更新最新的参数
         """
         self.cache["text"][-1][key] = value
+
+    def search_text(self, key):
+        """
+        搜索文本缓存中是否存在 content 等于 key 的条目
+        :param key: 要匹配的内容字符串
+        :return: 存在返回 item，否则返回 False
+        """
+        for item in self.cache["text"]:
+            if item.get("content") == key:
+                return item
+        return None
