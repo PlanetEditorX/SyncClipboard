@@ -1,3 +1,7 @@
+# server/flask_app.py —— 修改配置加载路径
+import json
+import logging
+from pathlib import Path
 from flask import Flask, request, jsonify
 import sys
 import os
@@ -5,42 +9,29 @@ sys.path.append(os.path.dirname(__file__))  # 添加 server 目录到路径
 from clipboard_manager import get_clipboard_text, set_clipboard_text, generate_id
 from cache_manager import CacheManager
 from file_handler import FileHandler
-import json
 from item_builder import build_text_item
-import logging
-from pathlib import Path
 from logging.handlers import RotatingFileHandler
+from client_tracker import ClientTracker
 
-# ------------------- 日志配置 -------------------
+
+# 日志配置（保持不变）
 LOG_FILE = Path("syncclipboard.log")
-# 创建 RotatingFileHandler
-handler = RotatingFileHandler(
-    LOG_FILE,
-    maxBytes=1 * 1024 * 1024,  # 1 MB，超过则轮转
-    backupCount=0,               # 保留最近5个备份文件
-    encoding='utf-8'
-)
-
-# 设置格式
-formatter = logging.Formatter(
-    fmt='%(asctime)s [%(levelname)s] %(message)s',
-    datefmt='%Y-%m-%d %H:%M:%S'
-)
+handler = RotatingFileHandler(LOG_FILE, maxBytes=1*1024*1024, backupCount=0, encoding='utf-8')
+formatter = logging.Formatter(fmt='%(asctime)s [%(levelname)s] %(message)s', datefmt='%Y-%m-%d %H:%M:%S')
 handler.setFormatter(formatter)
-
-# 配置 root logger
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
 logger.addHandler(handler)
-
 logging.info("服务初始化完成")
 
-# ------------------- Flask & 缓存 & 文件 -------------------
 app = Flask(__name__)
 cache = CacheManager()
+tracker = ClientTracker()
 
-with open("config.json", "r", encoding="utf-8") as f:
+# ---------- 修改点：从 server_config.json 加载 ----------
+with open("server_config.json", "r", encoding="utf-8") as f:
     config = json.load(f)
+
 KEY = config["key"]
 LOCAL_NAME = config["local_name"]
 SAVE_PATH = config["save_path"]
@@ -85,6 +76,7 @@ def text_sync():
             pasted=False
         )
         cache.update_text(item)
+        tracker.update(item)
         # 写入剪贴板
         set_clipboard_text(data["content"])
         # cache.update_cache("pasted", True)

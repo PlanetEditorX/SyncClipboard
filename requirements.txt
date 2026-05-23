@@ -1,2 +1,5 @@
 Flask
 pyperclip
+requests
+pystray
+Pillow
