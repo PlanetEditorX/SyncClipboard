@@ -15,6 +15,7 @@ from client_tracker import ClientTracker
 from datetime import datetime
 from file_sync import LatestFileManager
 from latest_file import LatestFileTracker
+from urllib.parse import unquote
 
 # 日志配置（保持不变）
 LOG_FILE = Path("syncclipboard.log")
@@ -79,7 +80,7 @@ def text_sync():
     # set_clipboard_text(content)
 
     logging.info("同步文本: %s", content[:50])
-    return jsonify({"status": "ok", "message": "同步成功"}), 200
+    return jsonify({"status": "ok", "message": "文字同步成功"}), 200
 
 @app.route('/sync', methods=['POST'])
 def sync():
@@ -238,21 +239,31 @@ def request_file():
         "latest_global": latest
     })
 
-@app.route('/upload_file', methods=['POST'])
+@app.route('/upload_file', methods=['PUT'])
 def upload_file():
     """手机主动上传文件到电脑（服务端保存到 save_path）"""
-    key = request.headers.get("key", "")
+    key = get_api_key()
     if key != KEY:
         return jsonify({"status": "error", "message": "密钥错误"}), 403
 
-    file = request.files.get("file")
-    if not file:
+    # 从 URL 参数获取文件名，例如 ?filename=my%20file.txt
+    encoded_filename = request.args.get('filename', 'uploaded_file')
+    filename = unquote(encoded_filename)  # 解码 %20 为空格
+
+    # 读取原始二进制数据
+    file_data = request.get_data()
+
+    if not file_data:
         return jsonify({"status": "error", "message": "未收到文件"}), 400
 
-    save_path = os.path.join(SAVE_PATH, file.filename)
-    file.save(save_path)
+    # 保存到文件
+    save_path = os.path.join(SAVE_PATH, filename)
+    with open(save_path, 'wb') as f:
+        f.write(file_data)
+
     logging.info(f"手机上传文件已保存: {save_path}")
-    return jsonify({"status": "ok", "path": save_path})
+    return jsonify({"status": "ok", "message": "文件上传成功","path": save_path}), 200
+
 
 
 # @app.route('/file_sync', methods=['POST'])
