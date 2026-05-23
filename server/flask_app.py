@@ -82,35 +82,32 @@ def sync():
     source = data.get("source", "")
     content = data.get("content", "")
 
-    # 获取该客户端当前在服务端的最新记录
+    # 获取该客户端当前记录
     client_last = tracker.data.get("clients", {}).get(source)
 
-    # 判断内容是否与上次记录相同（相同则跳过更新）
-    if client_last and client_last.get("content") == content:
-        # 内容未变，直接返回当前全局最新（不更新任何东西）
-        latest = tracker.get_global_latest()
-        return jsonify({"status": "ok", "latest_global": latest})
+    # 判断内容是否发生了变化（首次连接也算变化）
+    is_new = (not client_last) or (client_last.get("content") != content)
 
-    # 推送新内容（如果有内容且不是自身来源）
-    if content and source != LOCAL_NAME:
+    if is_new and content and source != LOCAL_NAME:
+        # 手机有新内容 → 强制更新为自己，并设为全局最新
         item = build_text_item(text=content, source=source, pasted=False)
         if not tracker.is_duplicate(item["id"]):
-            tracker.update(item)
-
-    # 获取更新后的全局最新
-    latest = tracker.get_global_latest()
-
-    # 自动标记粘贴：如果全局最新不是该客户端自己发的，则认为该客户端正在拉取远程内容并“粘贴”
-    if source and latest and latest.get("source") != source:
-        pasted_item = {
-            "id": latest["id"],
-            "type": latest.get("type", "text"),
-            "content": latest["content"],
-            "timestamp": datetime.now().isoformat(),
-            "source": latest["source"],
-            "pasted": True
-        }
-        tracker.mark_pasted(source, pasted_item)
+            tracker.update(item, force_latest=True)
+        latest = tracker.get_global_latest()   # 必然就是这个 item
+    else:
+        # 内容没变 → 纯拉取操作
+        latest = tracker.get_global_latest()
+        # 如果全局最新不是自己，则标记该手机已粘贴（更新 clients）
+        if source and latest and latest.get("source") != source:
+            pasted_item = {
+                "id": latest["id"],
+                "type": latest.get("type", "text"),
+                "content": latest["content"],
+                "timestamp": datetime.now().isoformat(),
+                "source": latest["source"],   # 保留原始来源
+                "pasted": True
+            }
+            tracker.mark_pasted(source, pasted_item)
 
     return jsonify({"status": "ok", "latest_global": latest})
 

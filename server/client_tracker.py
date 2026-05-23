@@ -36,37 +36,25 @@ class ClientTracker:
         """检查 ID 是否已存在（去重）"""
         return item_id in self.data["global_ids"]
 
-    def update(self, item: dict, skip_duplicate_content=True):
-        """
-        更新记录，如果 skip_duplicate_content=True，
-        且该客户端已有记录且内容完全相同，则忽略（不更新时间戳）。
-        """
+    def update(self, item: dict, force_latest=False):
         source = item.get("source", "unknown")
         item_id = item["id"]
 
-        # 全局 ID 去重
         if item_id in self.data["global_ids"]:
-            return
+            return   # 绝对重复，直接忽略
 
-        # 内容去重（与自身客户端上次记录比较）
-        if skip_duplicate_content:
-            last = self.data["clients"].get(source)
-            if last and last.get("content") == item.get("content"):
-                return  # 内容未变，跳过
-
-        # 保存 ID
         self.data["global_ids"].append(item_id)
-        # 更新客户端最新
         self.data["clients"][source] = item
 
-        # 更新全局最新（比较时间戳）
-        global_item = self.data["latest_global"]
-        if global_item is None:
+        if force_latest:
             self.data["latest_global"] = item
         else:
-            # 使用 ISO 时间字符串比较
-            if item["timestamp"] > global_item["timestamp"]:
+            global_item = self.data["latest_global"]
+            if global_item is None:
                 self.data["latest_global"] = item
+            else:
+                if item["timestamp"] > global_item["timestamp"]:
+                    self.data["latest_global"] = item
 
         self._save()
 
