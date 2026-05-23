@@ -1,4 +1,6 @@
 # item_builder.py
+import os
+import hashlib
 from datetime import datetime
 from clipboard_manager import generate_stable_id
 
@@ -27,3 +29,44 @@ def build_text_item(text, source, pasted=False, timestamp=None):
         "pasted": pasted
     }
     return item
+
+def generate_id(*args):
+    raw = "".join([str(a) for a in args])
+    return hashlib.md5(raw.encode()).hexdigest()
+
+def build_text_item(text, source, pasted=False):
+    item_id = generate_id(text, source, datetime.now().isoformat())
+    return {
+        "id": item_id,
+        "type": "text",
+        "content": text,
+        "timestamp": datetime.now().isoformat(),
+        "source": source,
+        "pasted": pasted
+    }
+
+def build_file_item(file_paths, source, pasted=False):
+    """根据文件路径列表构建文件条目（仅元数据）"""
+    files_info = []
+    for path in file_paths:
+        if os.path.isfile(path):
+            stat = os.stat(path)
+            files_info.append({
+                "path": path,
+                "name": os.path.basename(path),
+                "size": stat.st_size
+            })
+    if not files_info:
+        return None
+
+    # 生成唯一 id：基于所有文件的路径+大小+来源
+    id_str = "".join([f"{f['path']}{f['size']}" for f in files_info]) + source
+    item_id = hashlib.md5(id_str.encode()).hexdigest()
+    return {
+        "id": item_id,
+        "type": "file",
+        "content": files_info,          # 文件元数据列表
+        "timestamp": datetime.now().isoformat(),
+        "source": source,
+        "pasted": False
+    }

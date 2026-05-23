@@ -2,7 +2,7 @@
 import json
 import logging
 from pathlib import Path
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, send_file
 import sys
 import os
 sys.path.append(os.path.dirname(__file__))  # 添加 server 目录到路径
@@ -13,6 +13,8 @@ from item_builder import build_text_item
 from logging.handlers import RotatingFileHandler
 from client_tracker import ClientTracker
 from datetime import datetime
+from file_sync import LatestFileManager
+from latest_file import LatestFileTracker
 
 # 日志配置（保持不变）
 LOG_FILE = Path("syncclipboard.log")
@@ -38,40 +40,46 @@ SAVE_PATH = config["save_path"]
 PORT = config["port"]
 
 file_handler = FileHandler(SAVE_PATH)
+latest_file = LatestFileManager(SAVE_PATH)
+latest_file = LatestFileTracker()
+
 logging.info("配置加载完成: %s", config)
 
+def get_api_key():
+    return request.headers.get("key", "")
+
 # ------------------- 文字同步接口 -------------------
-@app.route('/text_sync', methods=['POST'])
-def text_sync():
-    data = request.get_json()
-    if not data:
-        return jsonify({"status": "error", "message": "无效的请求数据"}), 400
+# @app.route('/text_sync', methods=['POST'])
+# def text_sync():
+#     data = request.get_json()
+#     if not data:
+#         return jsonify({"status": "error", "message": "无效的请求数据"}), 400
 
-    if data.get("key") != KEY:
-        return jsonify({"status": "error", "message": "密钥错误"}), 403
+#     if data.get("key") != KEY:
+#         return jsonify({"status": "error", "message": "密钥错误"}), 403
 
-    source = data.get("source", "")
-    if source == LOCAL_NAME:
-        return jsonify({"status": "ignored", "message": "忽略自身来源"}), 200
+#     source = data.get("source", "")
+#     if source == LOCAL_NAME:
+#         return jsonify({"status": "ignored", "message": "忽略自身来源"}), 200
 
-    content = data.get("content", "")
-    if not content:
-        return jsonify({"status": "error", "message": "内容为空"}), 400
+#     content = data.get("content", "")
+#     if not content:
+#         return jsonify({"status": "error", "message": "内容为空"}), 400
 
-    item = build_text_item(text=content, source=source, pasted=False)
+#     item = build_text_item(text=content, source=source, pasted=False)
 
-    # 去重：用 tracker 的 is_duplicate 方法
-    if tracker.is_duplicate(item["id"]):
-        return jsonify({"status": "duplicate", "message": "重复内容"}), 200
+#     # 去重：用 tracker 的 is_duplicate 方法
+#     if tracker.is_duplicate(item["id"]):
+#         return jsonify({"status": "duplicate", "message": "重复内容"}), 200
 
-    # 更新记录（同时注册 ID、更新客户端最新和全局最新）
-    tracker.update(item)
+#     # 更新记录（同时注册 ID、更新客户端最新和全局最新）
+#     tracker.update(item)
 
-    # # 同步到服务端剪贴板（可选，看需求）
-    # set_clipboard_text(content)
+#     # # 同步到服务端剪贴板（可选，看需求）
+#     # set_clipboard_text(content)
 
-    logging.info("同步文本: %s", content[:50])
-    return jsonify({"status": "ok", "message": "同步成功"}), 200
+#     logging.info("同步文本: %s", content[:50])
+#     return jsonify({"status": "ok", "message": "同步成功"}), 200
 
 @app.route('/sync', methods=['POST'])
 def sync():
@@ -113,7 +121,7 @@ def sync():
 
 @app.route('/latest', methods=['GET'])
 def get_latest():
-    key = request.headers.get("key", "")
+    key = get_api_key()
     if key != KEY:
         return jsonify({"status": "error", "message": "密钥错误"}), 403
 
@@ -167,31 +175,161 @@ def mark_pasted():
     logging.info("客户端 %s 已粘贴: %s (原始来源: %s)", source, content[:30], original_source)
     return jsonify({"status": "ok"})
 
-# ------------------- 文件上传接口 -------------------
-@app.route("/file_upload", methods=["POST"])
-def file_upload():
-    logging.info("收到 /file_upload 请求")
-    if request.form.get("key") != KEY:
-        logging.warning("文件上传密钥不匹配")
-        return jsonify({"error": "Invalid key"}), 403
+# ---------- 文件同步相关路由 ----------
+# ---------- 文件同步（独立于文本）----------
+@app.route('/file_sync', methods=['POST'])
+def file_sync():
+    """电脑复制文件时调用，告诉服务端最新文件的路径"""
+    key = request.headers.get("key", "")
+    if key != KEY:
+        return jsonify({"status": "error", "message": "密钥错误"}), 403
 
-    f = request.files.get("file")
-    if not f:
-        logging.warning("没有上传文件")
-        return jsonify({"error": "No file"}), 400
+    data = request.get_json()
+    path = data.get("path")
+    name = data.get("name")
+    size = data.get("size", 0)
 
-    try:
-        path = file_handler.save_file(f.filename, f.read())
-        logging.info("文件保存成功: %s", path)
-        return jsonify({"status": "saved", "path": path})
-    except Exception as e:
-        logging.error("文件保存失败: %s", str(e))
-        return jsonify({"error": "Save failed"}), 500
+    if not path or not name:
+        return jsonify({"status": "error", "message": "参数不完整"}), 400
 
-# ------------------- 获取本地文字接口 -------------------
-@app.route("/get_text", methods=["GET"])
-def get_text():
-    logging.info("收到 /get_text 请求")
+    latest_file.set_latest(path, name, size)
+    logging.info(f"最新文件已记录: {name} ({size} bytes) 路径: {path}")
+    return jsonify({"status": "ok"})
+
+
+@app.route('/request_file', methods=['POST'])
+def request_file():
+    """手机一键获取最新文件（服务端直接从本地路径读取并返回）"""
+    key = request.headers.get("key", "")
+    if key != KEY:
+        return jsonify({"status": "error", "message": "密钥错误"}), 403
+
+    info = latest_file.get_latest()
+    data = request.get_json()
+    requested_by = data.get("source", "unknown")
+    path = info.get("path")
+    if not path or not os.path.isfile(path):
+        return jsonify({"status": "error", "message": "文件不存在或已被移动"}), 404
+
+    return send_file(path, as_attachment=True, download_name=info["name"])
+
+
+@app.route('/upload_file', methods=['POST'])
+def upload_file():
+    """手机主动上传文件到电脑（服务端保存到 save_path）"""
+    key = request.headers.get("key", "")
+    if key != KEY:
+        return jsonify({"status": "error", "message": "密钥错误"}), 403
+
+    file = request.files.get("file")
+    if not file:
+        return jsonify({"status": "error", "message": "未收到文件"}), 400
+
+    save_path = os.path.join(SAVE_PATH, file.filename)
+    file.save(save_path)
+    logging.info(f"手机上传文件已保存: {save_path}")
+    return jsonify({"status": "ok", "path": save_path})
+
+
+# @app.route('/file_sync', methods=['POST'])
+# def file_sync():
+#     """电脑客户端推送最新文件元数据"""
+#     key = request.headers.get("key", "")
+#     if key != KEY:
+#         return jsonify({"status": "error", "message": "密钥错误"}), 403
+
+#     data = request.get_json()
+#     file_name = data.get("file_name")
+#     file_size = data.get("file_size", 0)
+#     source = data.get("source")
+#     if not file_name or not source:
+#         return jsonify({"status": "error", "message": "参数不完整"}), 400
+
+#     latest_file.update_meta(file_name, file_size, source)
+#     return jsonify({"status": "ok"})
+
+
+# @app.route('/request_file', methods=['POST'])
+# def request_file():
+#     """手机一键请求下载最新文件（无需任何参数）"""
+#     key = request.headers.get("key", "")
+#     if key != KEY:
+#         return jsonify({"status": "error", "message": "密钥错误"}), 403
+
+#     data = request.get_json()
+#     requested_by = data.get("source", "unknown")
+
+#     status, filepath = latest_file.request_download(requested_by)
+
+#     if status == "uploaded":
+#         # 文件已就绪，直接返回文件
+#         return send_file(filepath, as_attachment=True)
+#     elif status == "pending":
+#         return jsonify({"status": "pending", "message": "文件请求已发出，等待上传"}), 202
+#     elif status == "ready":
+#         return jsonify({"status": "ready", "message": "文件元数据已就绪，但尚未请求"}), 200
+#     else:
+#         return jsonify({"status": "idle", "message": "暂无最新文件"}), 404
+
+
+# @app.route('/upload_file', methods=['POST'])
+# def upload_file():
+#     """电脑客户端手动上传文件"""
+#     key = request.headers.get("key", "")
+#     if key != KEY:
+#         return jsonify({"status": "error", "message": "密钥错误"}), 403
+
+#     file = request.files.get("file")
+#     if not file:
+#         return jsonify({"status": "error", "message": "未收到文件"}), 400
+
+#     # 保存文件
+#     filename = file.filename
+#     save_path = os.path.join(latest_file.upload_dir, filename)
+#     file.save(save_path)
+
+#     latest_file.mark_uploaded(save_path)
+#     return jsonify({"status": "ok"})
+
+
+# @app.route('/download_file', methods=['GET'])
+# def download_file():
+#     """手机轮询下载实际文件"""
+#     key = request.headers.get("key", "")
+#     if key != KEY:
+#         return jsonify({"status": "error", "message": "密钥错误"}), 403
+
+#     status = latest_file.get_status()
+#     if status == "uploaded":
+#         return send_file(latest_file.data["saved_path"], as_attachment=True)
+#     else:
+#         return jsonify({"status": status, "message": "文件尚未准备好"}), 202
+
+# # ------------------- 文件上传接口 -------------------
+# @app.route("/file_upload", methods=["POST"])
+# def file_upload():
+#     logging.info("收到 /file_upload 请求")
+#     if request.form.get("key") != KEY:
+#         logging.warning("文件上传密钥不匹配")
+#         return jsonify({"error": "Invalid key"}), 403
+
+#     f = request.files.get("file")
+#     if not f:
+#         logging.warning("没有上传文件")
+#         return jsonify({"error": "No file"}), 400
+
+#     try:
+#         path = file_handler.save_file(f.filename, f.read())
+#         logging.info("文件保存成功: %s", path)
+#         return jsonify({"status": "saved", "path": path})
+#     except Exception as e:
+#         logging.error("文件保存失败: %s", str(e))
+#         return jsonify({"error": "Save failed"}), 500
+
+# # ------------------- 获取本地文字接口 -------------------
+# @app.route("/get_text", methods=["GET"])
+# def get_text():
+#     logging.info("收到 /get_text 请求")
     key = request.headers.get("key")  # 从头部获取
     order = request.headers.get("order")
     if key != KEY:

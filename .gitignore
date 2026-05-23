@@ -4,3 +4,4 @@ syncclipboard.log
 .venv
 client.log
 client_latest.json
+latest_file.json
