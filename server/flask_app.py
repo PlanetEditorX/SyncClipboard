@@ -7,7 +7,7 @@ import sys
 import os
 sys.path.append(os.path.dirname(__file__))  # 添加 server 目录到路径
 from clipboard_manager import get_clipboard_text, set_clipboard_text, generate_id
-from cache_manager import CacheManager
+# from cache_manager import CacheManager
 from file_handler import FileHandler
 from item_builder import build_text_item
 from logging.handlers import RotatingFileHandler
@@ -25,7 +25,7 @@ logger.addHandler(handler)
 logging.info("服务初始化完成")
 
 app = Flask(__name__)
-cache = CacheManager()
+# cache = CacheManager()
 tracker = ClientTracker()
 
 # ---------- 修改点：从 server_config.json 加载 ----------
@@ -41,74 +41,37 @@ file_handler = FileHandler(SAVE_PATH)
 logging.info("配置加载完成: %s", config)
 
 # ------------------- 文字同步接口 -------------------
-@app.route("/text_sync", methods=["POST"])
+@app.route('/text_sync', methods=['POST'])
 def text_sync():
-    logging.info("收到 /text_sync 请求")
-    data = request.json
+    data = request.get_json()
     if not data:
-        logging.warning("请求没有 JSON 数据")
-        return jsonify({"error": "No JSON"}), 400
+        return jsonify({"status": "error", "message": "无效的请求数据"}), 400
 
     if data.get("key") != KEY:
-        logging.warning("密钥不匹配: %s", data.get("key"))
-        return jsonify({"error": "Invalid key"}), 403
+        return jsonify({"status": "error", "message": "密钥错误"}), 403
 
-    logging.info("远程数据: %s", data)
+    source = data.get("source", "")
+    if source == LOCAL_NAME:
+        return jsonify({"status": "ignored", "message": "忽略自身来源"}), 200
 
-    # 防死循环
-    if data["source"] == LOCAL_NAME:
-        logging.info("忽略来自本机的数据")
-        return jsonify({"status": "ignored"}), 200
+    content = data.get("content", "")
+    if not content:
+        return jsonify({"status": "error", "message": "内容为空"}), 400
 
-    # 比较时间
-    local_item = cache.get_latest_text()
-    logging.info("本地剪贴板: %s", local_item)
+    item = build_text_item(text=content, source=source, pasted=False)
 
-    if cache.search_text(data["content"]):
-        logging.info("接受到来自 「%s」 的历史数据 “%s”，不更新本地缓存", data["source"], data["content"])
-        return jsonify({"status": "ignored"}), 200
+    # 去重：用 tracker 的 is_duplicate 方法
+    if tracker.is_duplicate(item["id"]):
+        return jsonify({"status": "duplicate", "message": "重复内容"}), 200
 
-    else:
-        logging.info("接受到来自 「%s」 的新数据 “%s”，更新本地缓存", data["source"], data["content"])
-        item = build_text_item(
-            text=data["content"],
-            source=data["source"],
-            pasted=False
-        )
-        cache.update_text(item)
-        tracker.update(item)
-        # 写入剪贴板
-        set_clipboard_text(data["content"])
-        # cache.update_cache("pasted", True)
-        logging.info("已更新本地剪贴板: %s", data["content"])
-        return jsonify({"status": "updated"}), 200
+    # 更新记录（同时注册 ID、更新客户端最新和全局最新）
+    tracker.update(item)
 
+    # 同步到服务端剪贴板（可选，看需求）
+    set_clipboard_text(content)
 
-    # if data["timestamp"] >= local_item.get("timestamp", ""):
-    #     # 远程比本地新，但已同步过
-    #     if cache.id_exists(data["id"]):
-    #         logging.info("忽略已同步的数据 id: %s", data["id"])
-    #         return jsonify({"status": "ignored"}), 200
-
-        # cache.update_text(data)
-        # # 写入剪贴板
-        # set_clipboard_text(data["content"])
-        # # cache.update_cache("pasted", True)
-        # logging.info("已更新本地剪贴板: %s", data["content"])
-        # return jsonify({"status": "updated"}), 200
-
-    if local_item["pasted"] == False:
-        set_clipboard_text(local_item["content"])
-        cache.update_text(local_item)
-        logging.info("推送本地剪贴板: %s", local_item["content"])
-        cache.update_cache("pasted", True)
-        return jsonify({
-            "status": "getting",
-            "data": local_item["content"]
-        }), 200
-
-    logging.info("未更新剪贴板")
-    return jsonify({"status": "ignored"}), 200
+    logging.info("同步文本: %s", content[:50])
+    return jsonify({"status": "ok", "message": "同步成功"}), 200
 
 # ------------------- 文件上传接口 -------------------
 @app.route("/file_upload", methods=["POST"])

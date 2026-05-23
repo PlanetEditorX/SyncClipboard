@@ -2,7 +2,6 @@
 import json
 import os
 from datetime import datetime
-from item_builder import build_text_item
 
 LATEST_FILE = "client_latest.json"
 
@@ -11,23 +10,50 @@ class ClientTracker:
         self.data = self._load()
 
     def _load(self):
+        default = {
+            "latest_global": None,
+            "clients": {},
+            "global_ids": []
+        }
         if os.path.exists(LATEST_FILE):
-            with open(LATEST_FILE, "r", encoding="utf-8") as f:
-                return json.load(f)
-        else:
-            return {"latest_global": None, "clients": {}}
+            try:
+                with open(LATEST_FILE, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                # 确保所有必需的键都存在
+                for key in default:
+                    if key not in data:
+                        data[key] = default[key]
+                return data
+            except (json.JSONDecodeError, FileNotFoundError):
+                return default
+        return default
 
     def _save(self):
         with open(LATEST_FILE, "w", encoding="utf-8") as f:
             json.dump(self.data, f, ensure_ascii=False, indent=2)
 
+    def is_duplicate(self, item_id: str) -> bool:
+        """检查 ID 是否已存在（去重）"""
+        return item_id in self.data["global_ids"]
+
     def update(self, item: dict):
-        """收到新条目时更新客户端最新记录"""
+        """更新客户端最新记录，并注册 ID"""
+        item_id = item.get("id")
+        if not item_id:
+            return
+
+        # 去重判断
+        if self.is_duplicate(item_id):
+            return
+
+        # 注册 ID
+        self.data["global_ids"].append(item_id)
+
+        # 更新客户端最新
         source = item.get("source", "unknown")
-        # 更新对应客户端的最新内容
         self.data["clients"][source] = item
 
-        # 更新全局最新：如果没有全局记录，或当前条目的时间晚于全局，则替换
+        # 更新全局最新
         global_item = self.data["latest_global"]
         if global_item is None:
             self.data["latest_global"] = item
@@ -38,9 +64,3 @@ class ClientTracker:
                 self.data["latest_global"] = item
 
         self._save()
-
-    def get_latest_by_client(self, client_name: str):
-        return self.data["clients"].get(client_name)
-
-    def get_global_latest(self):
-        return self.data["latest_global"]
