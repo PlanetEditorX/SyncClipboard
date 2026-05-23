@@ -1,13 +1,15 @@
-# gui/main_menu.py —— 客户端系统托盘（核心逻辑）
-import tkinter as tk
+# gui/main_menu.py
 import threading
 import time
 import requests
 import pyperclip
 import json
 import logging
-from pathlib import Path
+from datetime import datetime
+import sys
+import os
 
+# 配置日志
 logging.basicConfig(
     filename="client.log",
     level=logging.INFO,
@@ -15,37 +17,45 @@ logging.basicConfig(
 )
 
 class SyncClient:
-    """剪贴板同步客户端"""
-
+    """剪贴板同步客户端：推送本地变化 + 拉取远程最新"""
     def __init__(self, config):
         self.server_url = f"http://{config['server_host']}:{config['server_port']}"
         self.key = config["key"]
         self.local_name = config["local_name"]
         self.last_text = ""
         self.running = False
-        self.sent_texts = set()  # 已发送的文本去重
+        self.last_remote_id = None          # 已拉取的远程条目id
+        self._last_remote_content = None    # 最近一次远程设置的内容（用于防回传）
+        self.push_thread = None
+        self.pull_thread = None
+        self.tray_icon = None
 
     def start(self):
-        """启动剪贴板监听"""
+        """启动推送和拉取线程"""
         self.running = True
         self.last_text = pyperclip.paste()
         logging.info("客户端剪贴板监听启动")
 
+        self.push_thread = threading.Thread(target=self._push_loop, daemon=True)
+        self.push_thread.start()
+
+        self.pull_thread = threading.Thread(target=self._pull_loop, daemon=True)
+        self.pull_thread.start()
+
+    def _push_loop(self):
         while self.running:
             try:
                 text = pyperclip.paste()
                 if text and text != self.last_text:
+                    # 如果是远程同步来的内容，不要回传
+                    if text != self._last_remote_content:
+                        self.push_text(text)
                     self.last_text = text
-                    self.push_text(text)
             except Exception as e:
-                logging.error(f"监听异常: {e}")
+                logging.error(f"剪贴板监听异常: {e}")
             time.sleep(0.5)
 
     def push_text(self, text):
-        """推送文本到服务端"""
-        if text in self.sent_texts:
-            return  # 已发送过，避免重复
-
         try:
             resp = requests.post(
                 f"{self.server_url}/text_sync",
@@ -57,74 +67,69 @@ class SyncClient:
                 timeout=5
             )
             if resp.status_code == 200:
-                self.sent_texts.add(text)
                 logging.info(f"推送成功: {text[:50]}...")
             else:
                 logging.warning(f"推送失败: {resp.status_code} {resp.text}")
-        except requests.exceptions.RequestException as e:
+        except Exception as e:
             logging.error(f"连接服务端失败: {e}")
 
-    def pull_text(self):
-        """从服务端拉取最新文本（可选扩展）"""
-        # 当前服务端没有提供拉取接口，可后续扩展
-        pass
+    def _pull_loop(self):
+        """定期从服务端拉取全局最新"""
+        while self.running:
+            try:
+                resp = requests.get(
+                    f"{self.server_url}/latest",
+                    params={"key": self.key},
+                    timeout=5
+                )
+                if resp.status_code == 200:
+                    data = resp.json()
+                    latest = data.get("latest_global")
+                    if latest and latest.get("source") != self.local_name:
+                        if latest["id"] != self.last_remote_id:
+                            # 更新本地剪贴板
+                            pyperclip.copy(latest["content"])
+                            self.last_remote_id = latest["id"]
+                            self._last_remote_content = latest["content"]
+                            self.last_text = latest["content"]
+                            logging.info(f"拉取并更新剪贴板: {latest['content'][:50]} (来自 {latest['source']})")
+            except Exception as e:
+                logging.error(f"拉取失败: {e}")
+            time.sleep(2)  # 每2秒拉取一次
 
     def stop(self):
+        """停止所有线程和托盘"""
         self.running = False
+        if self.tray_icon:
+            self.tray_icon.stop()
+        logging.info("客户端已停止")
+
+    def create_tray(self):
+        """创建系统托盘图标（需要 pystray 和 Pillow）"""
+        try:
+            import pystray
+            from PIL import Image, ImageDraw
+        except ImportError:
+            logging.warning("pystray 或 Pillow 未安装，托盘功能不可用。")
+            print("提示：如需系统托盘，请执行 pip install pystray Pillow")
+            return
+
+        # 生成一个简单的托盘图标
+        image = Image.new("RGB", (64, 64), "black")
+        dc = ImageDraw.Draw(image)
+        dc.rectangle((16, 16, 48, 48), fill="white")
+
+        menu = pystray.Menu(
+            pystray.MenuItem("退出", lambda icon, item: self.stop())
+        )
+        self.tray_icon = pystray.Icon("clipboard_sync", image, "剪贴板同步", menu)
+        # 在独立线程中运行托盘（避免阻塞主线程）
+        threading.Thread(target=self.tray_icon.run, daemon=True).start()
 
 
 def start_client_gui(config):
-    """启动客户端 GUI"""
+    """客户端入口：创建 SyncClient 实例并启动"""
     client = SyncClient(config)
-
-    # 启动监听线程
-    watcher_thread = threading.Thread(target=client.start, daemon=True)
-    watcher_thread.start()
-
-    # 创建系统托盘
-    import pystray
-    from PIL import Image
-
-    def on_quit(icon, item):
-        client.stop()
-        icon.stop()
-
-    # 这里简化处理，实际可用 pystray 做系统托盘
-    # 完整代码需要 pystray + PIL 库
-
-    # 简易方案：直接进入 Tkinter 主循环（隐藏窗口 + 托盘）
-    root = tk.Tk()
-    root.withdraw()
-
-    # 托盘菜单（简化版）
-    menu = tk.Menu(root, tearoff=0)
-    menu.add_command(label="设置", command=lambda: open_client_settings(config))
-    menu.add_command(label="退出", command=lambda: (client.stop(), root.quit()))
-
-    # 实际项目建议用 pystray 替代，这里先用 tkinter 演示逻辑
-    root.mainloop()
-
-
-def open_client_settings(config):
-    """打开客户端设置"""
-    import json
-    from tkinter import simpledialog, messagebox
-
-    root = tk.Tk()
-    root.withdraw()
-
-    host = simpledialog.askstring("设置", "服务器地址", initialvalue=config.get("server_host", "127.0.0.1"))
-    port = simpledialog.askinteger("设置", "服务器端口", initialvalue=config.get("server_port", 8000))
-    key = simpledialog.askstring("设置", "密钥", initialvalue=config.get("key", ""))
-    local_name = simpledialog.askstring("设置", "本机名称", initialvalue=config.get("local_name", "PC-02"))
-
-    if all([host, port, key, local_name]):
-        config.update({
-            "server_host": host,
-            "server_port": port,
-            "key": key,
-            "local_name": local_name
-        })
-        with open("client_config.json", "w", encoding="utf-8") as f:
-            json.dump(config, f, ensure_ascii=False, indent=2)
-        messagebox.showinfo("保存", "配置已保存，重启后生效")
+    client.start()
+    client.create_tray()  # 如果有依赖则显示托盘，否则仅后台运行
+    return client

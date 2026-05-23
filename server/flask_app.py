@@ -28,7 +28,7 @@ app = Flask(__name__)
 # cache = CacheManager()
 tracker = ClientTracker()
 
-# ---------- 修改点：从 server_config.json 加载 ----------
+# ---------- 从 server_config.json 加载 ----------
 with open("server_config.json", "r", encoding="utf-8") as f:
     config = json.load(f)
 
@@ -67,11 +67,21 @@ def text_sync():
     # 更新记录（同时注册 ID、更新客户端最新和全局最新）
     tracker.update(item)
 
-    # 同步到服务端剪贴板（可选，看需求）
-    set_clipboard_text(content)
+    # # 同步到服务端剪贴板（可选，看需求）
+    # set_clipboard_text(content)
 
     logging.info("同步文本: %s", content[:50])
     return jsonify({"status": "ok", "message": "同步成功"}), 200
+
+@app.route('/latest', methods=['GET'])
+def get_latest():
+    """供客户端拉取全局最新内容"""
+    key = request.args.get("key", "")
+    if key != KEY:
+        return jsonify({"status": "error", "message": "密钥错误"}), 403
+
+    latest = tracker.get_global_latest()
+    return jsonify({"status": "ok", "latest_global": latest})
 
 # ------------------- 文件上传接口 -------------------
 @app.route("/file_upload", methods=["POST"])

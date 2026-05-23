@@ -64,3 +64,6 @@ class ClientTracker:
                 self.data["latest_global"] = item
 
         self._save()
+
+    def get_global_latest(self):
+      return self.data.get("latest_global")
