@@ -67,3 +67,14 @@ class ClientTracker:
 
     def get_global_latest(self):
       return self.data.get("latest_global")
+
+    def mark_pasted(self, client_name: str, item: dict):
+        """标记客户端已粘贴某内容，更新对应客户端条目和全局最新状态"""
+        # 更新该客户端的条目（如果还不存在就创建）
+        self.data["clients"][client_name] = item
+        # 如果全局最新的 id 正好是这个条目的 id，把 global 的 pasted 也设为 true
+        latest = self.data.get("latest_global")
+        if latest and latest.get("id") == item["id"]:
+            latest["pasted"] = True
+            self.data["latest_global"] = latest
+        self._save()

@@ -83,6 +83,35 @@ def get_latest():
     latest = tracker.get_global_latest()
     return jsonify({"status": "ok", "latest_global": latest})
 
+@app.route('/mark_pasted', methods=['POST'])
+def mark_pasted():
+    data = request.get_json()
+    if not data or data.get("key") != KEY:
+        return jsonify({"status": "error", "message": "密钥错误"}), 403
+
+    source = data.get("source")          # 客户端名称，如 "PC-01"
+    item_id = data.get("id")
+    content = data.get("content")
+    original_source = data.get("original_source")  # 内容的原始来源，如 "Xun’s iPhone"
+
+    if not all([source, item_id, content, original_source]):
+        return jsonify({"status": "error", "message": "参数不完整"}), 400
+
+    # 构建粘贴条目
+    from datetime import datetime
+    item = {
+        "id": item_id,
+        "type": "text",
+        "content": content,
+        "timestamp": datetime.now().isoformat(),
+        "source": original_source,   # 保留原始来源
+        "pasted": True
+    }
+
+    tracker.mark_pasted(source, item)
+    logging.info("客户端 %s 已粘贴: %s (原始来源: %s)", source, content[:30], original_source)
+    return jsonify({"status": "ok"})
+
 # ------------------- 文件上传接口 -------------------
 @app.route("/file_upload", methods=["POST"])
 def file_upload():

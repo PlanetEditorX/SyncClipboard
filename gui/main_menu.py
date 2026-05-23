@@ -93,6 +93,22 @@ class SyncClient:
                             self._last_remote_content = latest["content"]
                             self.last_text = latest["content"]
                             logging.info(f"拉取并更新剪贴板: {latest['content'][:50]} (来自 {latest['source']})")
+                            # 向服务端报告“已粘贴”
+                            try:
+                                requests.post(
+                                    f"{self.server_url}/mark_pasted",
+                                    json={
+                                        "key": self.key,
+                                        "source": self.local_name,
+                                        "id": latest["id"],
+                                        "content": latest["content"],
+                                        "original_source": latest["source"]
+                                    },
+                                    timeout=5
+                                )
+                                logging.info(f"已上报粘贴: {latest['content'][:50]} (原始来源: {latest['source']})")
+                            except Exception as e:
+                                logging.error(f"上报粘贴失败: {e}")
             except Exception as e:
                 logging.error(f"拉取失败: {e}")
             time.sleep(2)  # 每2秒拉取一次
