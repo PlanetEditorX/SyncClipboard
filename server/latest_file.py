@@ -25,3 +25,7 @@ class LatestFileTracker:
 
     def get_latest(self):
         return self.data
+
+    def clear(self):
+      self.data = {"path": None, "name": None, "size": 0}
+      self._save()

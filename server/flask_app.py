@@ -199,20 +199,44 @@ def file_sync():
 
 @app.route('/request_file', methods=['POST'])
 def request_file():
-    """手机一键获取最新文件（服务端直接从本地路径读取并返回）"""
+    """手机统一拉取接口：有文件则返回文件并清空，无文件则返回最新文本"""
     key = request.headers.get("key", "")
     if key != KEY:
         return jsonify({"status": "error", "message": "密钥错误"}), 403
 
-    info = latest_file.get_latest()
     data = request.get_json()
-    requested_by = data.get("source", "unknown")
+    if not data:
+        return jsonify({"status": "error", "message": "无效请求"}), 400
+    source = data.get("source", "unknown")
+
+    # 1. 检查是否有最新文件
+    info = latest_file.get_latest()
     path = info.get("path")
-    if not path or not os.path.isfile(path):
-        return jsonify({"status": "error", "message": "文件不存在或已被移动"}), 404
+    if path and os.path.isfile(path):
+        filename = info["name"]
+        # 清空文件记录，避免重复下载
+        latest_file.clear()
+        return send_file(path, as_attachment=True, download_name=filename)
 
-    return send_file(path, as_attachment=True, download_name=info["name"])
+    # 2. 没有文件，执行文本拉取逻辑（同 /latest 的标记粘贴）
+    latest = tracker.get_global_latest()
+    if source and latest and latest.get("source") != source:
+        pasted_item = {
+            "id": latest["id"],
+            "type": latest.get("type", "text"),
+            "content": latest["content"],
+            "timestamp": datetime.now().isoformat(),
+            "source": latest["source"],
+            "pasted": True
+        }
+        tracker.mark_pasted(source, pasted_item)
+        logging.info("客户端 %s 已获取并标记粘贴: %s (来自 %s)", source, latest["content"][:30], latest["source"])
 
+    return jsonify({
+        "status": "ok",
+        "type": "text",
+        "latest_global": latest
+    })
 
 @app.route('/upload_file', methods=['POST'])
 def upload_file():
