@@ -12,7 +12,7 @@ from file_handler import FileHandler
 from item_builder import build_text_item
 from logging.handlers import RotatingFileHandler
 from client_tracker import ClientTracker
-
+from datetime import datetime
 
 # 日志配置（保持不变）
 LOG_FILE = Path("syncclipboard.log")
@@ -73,14 +73,72 @@ def text_sync():
     logging.info("同步文本: %s", content[:50])
     return jsonify({"status": "ok", "message": "同步成功"}), 200
 
+@app.route('/sync', methods=['POST'])
+def sync():
+    data = request.get_json()
+    if not data or data.get("key") != KEY:
+        return jsonify({"status": "error", "message": "密钥错误"}), 403
+
+    source = data.get("source", "")
+    content = data.get("content", "")
+
+    # 获取该客户端当前在服务端的最新记录
+    client_last = tracker.data.get("clients", {}).get(source)
+
+    # 判断内容是否与上次记录相同（相同则跳过更新）
+    if client_last and client_last.get("content") == content:
+        # 内容未变，直接返回当前全局最新（不更新任何东西）
+        latest = tracker.get_global_latest()
+        return jsonify({"status": "ok", "latest_global": latest})
+
+    # 推送新内容（如果有内容且不是自身来源）
+    if content and source != LOCAL_NAME:
+        item = build_text_item(text=content, source=source, pasted=False)
+        if not tracker.is_duplicate(item["id"]):
+            tracker.update(item)
+
+    # 获取更新后的全局最新
+    latest = tracker.get_global_latest()
+
+    # 自动标记粘贴：如果全局最新不是该客户端自己发的，则认为该客户端正在拉取远程内容并“粘贴”
+    if source and latest and latest.get("source") != source:
+        pasted_item = {
+            "id": latest["id"],
+            "type": latest.get("type", "text"),
+            "content": latest["content"],
+            "timestamp": datetime.now().isoformat(),
+            "source": latest["source"],
+            "pasted": True
+        }
+        tracker.mark_pasted(source, pasted_item)
+
+    return jsonify({"status": "ok", "latest_global": latest})
+
 @app.route('/latest', methods=['GET'])
 def get_latest():
-    """供客户端拉取全局最新内容"""
     key = request.args.get("key", "")
     if key != KEY:
         return jsonify({"status": "error", "message": "密钥错误"}), 403
 
+    # 新增：获取请求客户端的名称（用于自动标记粘贴）
+    source = request.args.get("source", "")
+
     latest = tracker.get_global_latest()
+
+    # 如果提供了 source，且最新内容存在，且不是该客户端自己推送的，则自动标记粘贴
+    if source and latest and latest.get("source") != source:
+        # 构建已粘贴条目（内容、id 保持不变，来源为原始来源）
+        pasted_item = {
+            "id": latest["id"],
+            "type": latest.get("type", "text"),
+            "content": latest["content"],
+            "timestamp": datetime.now().isoformat(),  # 标记时间
+            "source": latest["source"],              # 原始来源
+            "pasted": True
+        }
+        tracker.mark_pasted(source, pasted_item)
+        logging.info("客户端 %s 已获取并标记粘贴: %s (来自 %s)", source, latest["content"][:30], latest["source"])
+
     return jsonify({"status": "ok", "latest_global": latest})
 
 @app.route('/mark_pasted', methods=['POST'])
