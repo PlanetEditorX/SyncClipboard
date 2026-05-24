@@ -3,3 +3,4 @@ pyperclip
 requests
 pystray
 Pillow
+pyinstaller
