@@ -15,7 +15,7 @@ ENTRY_SCRIPT = PROJECT_ROOT / "gui" / "run.py"
 ICON_FILE = PROJECT_ROOT / "gui" / "icon" / "icon-active.png"
 
 # ---------- 清理 release 目录下所有旧文件（保留本脚本自身）----------
-print("🧹 清理 release 目录下所有旧文件（除 build.py）...")
+print("[Clean] 清理 release 目录下所有旧文件（除 build.py）...")
 for item in RELEASE_DIR.iterdir():
     if item.name == "build.py":
         continue
@@ -27,7 +27,7 @@ for item in RELEASE_DIR.iterdir():
         print(f"  已删除文件: {item}")
 
 # ---------- PyInstaller 打包（隐藏黑框）----------
-print("\n📦 开始 PyInstaller 打包（窗口模式，无控制台）...")
+print("\n[Build] 开始 PyInstaller 打包（窗口模式，无控制台）...")
 cmd = [
     "pyinstaller",
     "--noconfirm",
@@ -47,7 +47,7 @@ subprocess.run(cmd, check=True)
 print("PyInstaller 打包完成。")
 
 # ---------- 复制运行时需要的资源 ----------
-print("\n📁 复制配置文件和图标到 dist/ ...")
+print("\n[Copy] 复制配置文件和图标到 dist/ ...")
 
 exe_path = DIST_DIR / "SyncClipboard.exe"
 if not exe_path.exists():
@@ -70,6 +70,6 @@ for fname in ["icon.ico", "icon-active.png", "icon-stop.png"]:
         shutil.copy2(src, dst_icon / fname)
 print(f"  ✓ 图标 -> {dst_icon}")
 
-print(f"\n✅ 打包成功！")
+print(f"\n[Success] 打包成功！")
 print(f"单文件 exe 位置: {exe_path}")
 print(f"发布时请将整个 {DIST_DIR} 文件夹（exe + config/ + gui/icon/）一起分发。")
