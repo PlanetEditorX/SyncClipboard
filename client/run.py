@@ -4,10 +4,13 @@ import os
 import sys
 import signal
 import time
+import logging
+from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from client.main_menu import SyncClient
 from common.path import BASE_DIR
 
+# ---------- 配置文件路径 ----------
 CONFIG_FILE = BASE_DIR / "config" / "client_config.json"
 CONFIG_FILE.parent.mkdir(parents=True, exist_ok=True)
 
@@ -26,11 +29,30 @@ def load_config():
         return json.load(f)
 
 def main():
+    # ---------- 客户端独立日志配置 ----------
+    LOG_FILE = BASE_DIR / "log" / "client.log"
+    LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
+
+    # 使用独立的 logger，不与 gui 共用
+    logger = logging.getLogger("client")
+    logger.setLevel(logging.INFO)
+    # 清除从父进程继承的 handler，避免日志写入 gui.log
+    logger.handlers.clear()
+
+    handler = RotatingFileHandler(
+        LOG_FILE, maxBytes=1*1024*1024, backupCount=1, encoding='utf-8'
+    )
+    handler.setFormatter(logging.Formatter('%(asctime)s [%(levelname)s] %(message)s'))
+    logger.addHandler(handler)
+
+    logger.info("客户端进程启动")
+
+    # ---------- 原有启动逻辑 ----------
     config = load_config()
     client = SyncClient(config)
 
     def graceful_exit(signum, frame):
-        print("\n正在关闭客户端...")
+        logger.info("正在关闭客户端...")
         client.stop()
         sys.exit(0)
 
@@ -39,7 +61,6 @@ def main():
 
     client.start()
 
-    # 保持进程存活，等待信号
     try:
         while client.running:
             time.sleep(1)

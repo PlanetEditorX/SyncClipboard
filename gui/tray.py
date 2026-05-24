@@ -10,6 +10,9 @@ import pystray
 from pystray import MenuItem, Menu
 from PIL import Image
 import winreg   # 仅 Windows，若需跨平台请自行替换
+import multiprocessing
+from server.run import main as server_main
+from client.run import main as client_main
 
 # ---------- 路径配置 ----------
 # 项目根目录
@@ -114,28 +117,19 @@ class TrayManager:
 
     # -------- 服务器启停 --------
     def start_server(self, icon=None, item=None):
-        logger.info(f"尝试启动服务器，当前状态: running={self.server_running}, process={self.server_process}")
-        if self.server_process and self.server_process.poll() is None:
+        logger.info(f"尝试启动服务器，当前状态: running={self.server_running}")
+        # 如果已有活着的进程，直接更新状态
+        if self.server_process and self.server_process.is_alive():
             self.server_running = True
             if icon: icon.update_menu()
             return
+
         try:
-            if getattr(sys, "frozen", False):
-                exe_dir = Path(sys.executable).parent
-
-                self.server_process = subprocess.Popen(
-                    [str(exe_dir / "SyncClipboardServer.exe")],
-                    creationflags=subprocess.CREATE_NO_WINDOW
-                    if sys.platform == "win32" else 0
-                )
-
-            else:
-                self.server_process = subprocess.Popen(
-                    [sys.executable, "-m", "server.run"],
-                    cwd=BASE_DIR,
-                    creationflags=subprocess.CREATE_NO_WINDOW
-                    if sys.platform == "win32" else 0
-                )
+            self.server_process = multiprocessing.Process(
+                target=server_main,
+                daemon=True   # 主进程退出时自动终止
+            )
+            self.server_process.start()
             self.server_running = True
             self.save_state()
             self.update_icon()
@@ -147,11 +141,10 @@ class TrayManager:
             icon.update_menu()
 
     def stop_server(self):
-        if self.server_process:
+        if self.server_process and self.server_process.is_alive():
             self.server_process.terminate()
-            try:
-                self.server_process.wait(timeout=5)
-            except subprocess.TimeoutExpired:
+            self.server_process.join(timeout=5)
+            if self.server_process.is_alive():
                 self.server_process.kill()
             self.server_process = None
         self.server_running = False
@@ -168,32 +161,17 @@ class TrayManager:
 
     # -------- 客户端启停 --------
     def start_client(self, icon=None, item=None):
-        logger.info(f"尝试启动客户端，当前状态: running={self.client_running}, process={self.client_process}")
-        # 如果已有活着的进程，直接更新状态
-        if self.client_process and self.client_process.poll() is None:
+        logger.info(f"尝试启动客户端，当前状态: running={self.client_running}")
+        if self.client_process and self.client_process.is_alive():
             self.client_running = True
-            if icon:
-                icon.update_menu()
+            if icon: icon.update_menu()
             return
-
-        # 否则启动新进程
         try:
-            if getattr(sys, "frozen", False):
-                exe_dir = Path(sys.executable).parent
-
-                self.client_process = subprocess.Popen(
-                    [str(exe_dir / "SyncClipboardClient.exe")],
-                    creationflags=subprocess.CREATE_NO_WINDOW
-                    if sys.platform == "win32" else 0
-                )
-
-            else:
-                self.client_process = subprocess.Popen(
-                    [sys.executable, "-m", "client.run"],
-                    cwd=BASE_DIR,
-                    creationflags=subprocess.CREATE_NO_WINDOW
-                    if sys.platform == "win32" else 0
-                )
+            self.client_process = multiprocessing.Process(
+                target=client_main,
+                daemon=True
+            )
+            self.client_process.start()
             self.client_running = True
             self.save_state()
             self.update_icon()
@@ -205,11 +183,10 @@ class TrayManager:
             icon.update_menu()
 
     def stop_client(self):
-        if self.client_process:
+        if self.client_process and self.client_process.is_alive():
             self.client_process.terminate()
-            try:
-                self.client_process.wait(timeout=5)
-            except subprocess.TimeoutExpired:
+            self.client_process.join(timeout=5)
+            if self.client_process.is_alive():
                 self.client_process.kill()
             self.client_process = None
         self.client_running = False

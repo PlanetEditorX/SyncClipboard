@@ -1,3 +1,4 @@
+# server/run.py
 import json
 import re
 from pathlib import Path
@@ -23,8 +24,13 @@ class CleanFormatter(logging.Formatter):
 # -------------------------------------------------------
 
 def main():
-    LOG_FILE = BASE_DIR / "log" / "syncclipboard.log"
+    # ---------- 服务器独立日志配置 ----------
+    LOG_FILE = BASE_DIR / "log" / "syncclipboard.log"   # 也可改为 server.log
     LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
+
+    # 获取 root logger，并清除从父进程（gui）继承的 handler
+    root_logger = logging.getLogger()
+    root_logger.handlers.clear()          # ← 关键：避免日志写入 gui.log
 
     handler = RotatingFileHandler(
         LOG_FILE,
@@ -39,12 +45,11 @@ def main():
     )
 
     handler.setFormatter(formatter)
-
-    root_logger = logging.getLogger()
     root_logger.setLevel(logging.INFO)
     root_logger.addHandler(handler)
 
     logging.info("服务初始化完成")
+    # ---------------------------------------------------
 
     config = load_config()
     app.config.update(config)

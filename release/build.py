@@ -1,93 +1,74 @@
-from pathlib import Path
+# release/build.py
 import shutil
 import subprocess
+from pathlib import Path
 
-ROOT = Path(__file__).resolve().parent.parent
-OUT = Path(__file__).resolve().parent
+# ---------- 路径定义 ----------
+RELEASE_DIR = Path(__file__).resolve().parent          # release/
+PROJECT_ROOT = RELEASE_DIR.parent                      # 项目根目录
 
-WORK = OUT / "build_cache"
-SPEC = OUT / "spec"
+DIST_DIR = RELEASE_DIR / "dist"                        # 最终输出
+WORK_DIR = RELEASE_DIR / "build_cache"                 # PyInstaller 临时文件
+SPEC_DIR = RELEASE_DIR / "spec"                        # spec 文件
 
-# 清理
-for p in [WORK, SPEC]:
-    if p.exists():
-        shutil.rmtree(p)
+# 入口：直接给 gui/run.py 的完整路径
+ENTRY_SCRIPT = PROJECT_ROOT / "gui" / "run.py"
+ICON_FILE = PROJECT_ROOT / "gui" / "icon" / "icon-active.png"
 
-for exe in [
-    "SyncClipboardServer.exe",
-    "SyncClipboardClient.exe",
-    "SyncClipboardTray.exe",
-]:
-    f = OUT / exe
-    if f.exists():
-        f.unlink()
+# ---------- 清理旧的构建产物 ----------
+print("🧹 清理 release 下的旧构建文件...")
+for d in [DIST_DIR, WORK_DIR, SPEC_DIR]:
+    if d.exists():
+        shutil.rmtree(d)
+        print(f"  已删除: {d}")
 
-WORK.mkdir(exist_ok=True)
-SPEC.mkdir(exist_ok=True)
-
-print("开始打包...")
-
-# Server
-subprocess.run([
+# ---------- PyInstaller 打包 ----------
+print("\n📦 开始 PyInstaller 打包...")
+cmd = [
     "pyinstaller",
     "--noconfirm",
     "--clean",
     "--onefile",
-    "--name=SyncClipboardServer",
-    "--distpath", str(OUT),
-    "--workpath", str(WORK),
-    "--specpath", str(SPEC),
-    str(ROOT / "server" / "run.py")
-], check=True)
+    "--name=SyncClipboard",
+    "--distpath", str(DIST_DIR),
+    "--workpath", str(WORK_DIR),
+    "--specpath", str(SPEC_DIR),
+    f"--icon={ICON_FILE}",
+    # 重要：添加项目根目录到搜索路径，保证 server/client/common 等包能被找到
+    "--paths", str(PROJECT_ROOT),
+    # 入口脚本（gui/run.py）
+    str(ENTRY_SCRIPT)
+]
 
-# Client
-subprocess.run([
-    "pyinstaller",
-    "--noconfirm",
-    "--clean",
-    "--onefile",
-    "--name=SyncClipboardClient",
-    "--distpath", str(OUT),
-    "--workpath", str(WORK),
-    "--specpath", str(SPEC),
-    str(ROOT / "client" / "run.py")
-], check=True)
+subprocess.run(cmd, check=True)
+print("PyInstaller 打包完成。")
 
-# Tray
-subprocess.run([
-    "pyinstaller",
-    "--noconfirm",
-    "--clean",
-    "--onefile",
-    "--windowed",
-    "--icon=" + str(ROOT / "gui" / "icon" / "icon-active.png"),
-    "--name=SyncClipboardTray",
-    "--distpath", str(OUT),
-    "--workpath", str(WORK),
-    "--specpath", str(SPEC),
-    str(ROOT / "gui" / "run.py")
-], check=True)
+# ---------- 复制运行时需要的资源 ----------
+# 你的程序里用 Path(sys.executable).parent 定位外部文件，
+# 因此需要在 exe 同级放 config 和 gui/icon 文件夹。
+print("\n📁 复制配置文件和图标到 dist/ ...")
 
-print("复制配置...")
+exe_path = DIST_DIR / "SyncClipboard.exe"
+if not exe_path.exists():
+    raise RuntimeError("未找到生成的 exe，打包可能失败！")
 
-# config
-dst_config = OUT / "config"
+# 1. config 文件夹
+src_config = PROJECT_ROOT / "config"
+dst_config = DIST_DIR / "config"
 if dst_config.exists():
     shutil.rmtree(dst_config)
+shutil.copytree(src_config, dst_config)
+print(f"  ✓ config -> {dst_config}")
 
-shutil.copytree(ROOT / "config", dst_config)
-
-# icon
-dst_icon = OUT / "gui" / "icon"
+# 2. 图标文件夹
+dst_icon = DIST_DIR / "gui" / "icon"
 dst_icon.mkdir(parents=True, exist_ok=True)
-
-for f in [
-    "icon.ico",
-    "icon-active.png",
-    "icon-stop.png"
-]:
-    src = ROOT / "gui" / "icon" / f
+for fname in ["icon.ico", "icon-active.png", "icon-stop.png"]:
+    src = PROJECT_ROOT / "gui" / "icon" / fname
     if src.exists():
-        shutil.copy2(src, dst_icon / f)
+        shutil.copy2(src, dst_icon / fname)
+print(f"  ✓ 图标 -> {dst_icon}")
 
-print("完成")
+print(f"\n✅ 打包成功！")
+print(f"单文件 exe 位于: {exe_path}")
+print(f"发布时请将整个 {DIST_DIR} 文件夹（exe + config/ + gui/icon/）一起分发。")
