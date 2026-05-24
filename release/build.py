@@ -35,7 +35,7 @@ for item in RELEASE_DIR.iterdir():
 # ---------- PyInstaller 打包（隐藏黑框）----------
 print("\n[Build] 开始 PyInstaller 打包（窗口模式，无控制台）...")
 cmd = [
-    "pyinstaller",
+    sys.executable, "-m", "PyInstaller",
     "--noconfirm",
     "--clean",
     "--onefile",
