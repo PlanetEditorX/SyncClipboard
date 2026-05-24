@@ -24,12 +24,32 @@
       "env": {
         "PYTHONPATH": "${workspaceFolder}"
       }
+    },
+    {
+      "name": "SyncClipboard GUI",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "gui.run",
+      "cwd": "${workspaceFolder}",
+      "python": "${workspaceFolder}/.venv/Scripts/python.exe",
+      "console": "integratedTerminal",
+      "env": {
+        "PYTHONPATH": "${workspaceFolder}"
+      }
     }
   ],
   "compounds": [
     {
       "name": "Server + Client",
       "configurations": ["SyncClipboard Server", "SyncClipboard Client"]
+    },
+    {
+      "name": "All (Server + Client + GUI)",
+      "configurations": [
+        "SyncClipboard Server",
+        "SyncClipboard Client",
+        "SyncClipboard GUI"
+      ]
     }
   ]
 }

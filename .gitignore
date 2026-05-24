@@ -8,4 +8,5 @@ latest_file.json
 # 配置文件（包含敏感信息）
 config/*.json
 # 但保留示例模板
-!config/*.example.json
+!config/example
+log/gui.log
