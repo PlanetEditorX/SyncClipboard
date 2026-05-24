@@ -46,6 +46,7 @@ cmd = [
     "--specpath", str(SPEC_DIR),
     f"--icon={ICON_FILE}",
     "--paths", str(PROJECT_ROOT),
+    "--hidden-import=win32clipboard",
     str(ENTRY_SCRIPT)
 ]
 
