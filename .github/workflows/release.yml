@@ -1,0 +1,44 @@
+name: Build and Release
+
+on:
+  push:
+    tags:
+      - 'v*'          # 推送 v 开头的标签时触发，例如 v1.0.0
+
+jobs:
+  build:
+    runs-on: windows-latest   # 使用 Windows 环境（因为 build.py 依赖 Windows 特性）
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0       # 获取全部标签，方便后续使用
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: 'pip'         # 缓存 pip 依赖，加速构建
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt   # 确保你的项目根目录有 requirements.txt，包含 pyinstaller 等
+
+      - name: Run build script
+        run: python release/build.py
+        shell: pwsh
+
+      - name: Package dist folder
+        run: |
+          Compress-Archive -Path release/dist/* -DestinationPath SyncClipboard.zip
+        shell: pwsh
+
+      - name: Create Release and Upload Asset
+        uses: softprops/action-gh-release@v2
+        with:
+          files: SyncClipboard.zip
+          generate_release_notes: true   # 自动生成发布说明
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
