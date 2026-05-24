@@ -6,8 +6,9 @@ import signal
 import time
 from pathlib import Path
 from client.main_menu import SyncClient
+from common.path import BASE_DIR
 
-CONFIG_FILE = Path("config/client_config.json")
+CONFIG_FILE = BASE_DIR / "config" / "client_config.json"
 
 def load_config():
     if not os.path.exists(CONFIG_FILE):

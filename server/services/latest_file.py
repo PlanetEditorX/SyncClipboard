@@ -1,8 +1,9 @@
 import os
 import json
 from pathlib import Path
+from common.path import BASE_DIR
 
-STATE_FILE = Path("latest/latest_file.json")
+STATE_FILE = BASE_DIR / "latest" / "latest_file.json"
 
 class LatestFileTracker:
     def __init__(self):

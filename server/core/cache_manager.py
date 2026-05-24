@@ -1,8 +1,9 @@
 import json
 from pathlib import Path
 from collections import deque
+from common.path import BASE_DIR
 
-CACHE_FILE = Path("log/clipboard_cache.json")
+CACHE_FILE = BASE_DIR / "log" / "clipboard_cache.json"
 MAX_ITEMS = 5  # 最大剪贴板缓存数量
 
 class CacheManager:

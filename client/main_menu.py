@@ -11,9 +11,10 @@ import win32clipboard
 from pathlib import Path
 from datetime import datetime
 from logging.handlers import RotatingFileHandler
+from common.path import BASE_DIR
 
 # ---------- 日志配置 ----------
-LOG_FILE = Path("log/client.log")
+LOG_FILE = BASE_DIR / "log" / "client.log"
 LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
 
 handler = RotatingFileHandler(LOG_FILE, maxBytes=1*1024*1024, backupCount=1, encoding='utf-8')

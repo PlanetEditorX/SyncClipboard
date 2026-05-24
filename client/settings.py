@@ -3,8 +3,9 @@ import tkinter as tk
 from tkinter import simpledialog, messagebox
 import json
 from pathlib import Path
+from common.path import BASE_DIR
 
-CLIENT_CONFIG_FILE = Path("config/client_config.json")
+CONFIG_FILE = BASE_DIR / "config" / "client_config.json"
 
 def load_client_config():
     with open(CLIENT_CONFIG_FILE, "r", encoding="utf-8") as f:

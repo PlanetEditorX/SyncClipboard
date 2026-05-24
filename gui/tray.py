@@ -12,7 +12,9 @@ from PIL import Image
 import winreg   # 仅 Windows，若需跨平台请自行替换
 
 # ---------- 路径配置 ----------
-BASE_DIR = Path(__file__).parent.parent   # 项目根目录
+# 项目根目录
+from common.path import BASE_DIR
+
 CLIENT_CONFIG = BASE_DIR / "config" / "client_config.json"
 SERVER_CONFIG = BASE_DIR / "config" / "server_config.json"
 STATE_FILE = BASE_DIR / "config" / "gui_state.json"
@@ -117,11 +119,22 @@ class TrayManager:
             if icon: icon.update_menu()
             return
         try:
-            self.server_process = subprocess.Popen(
-                [sys.executable, "-m", "server.run"],
-                cwd=BASE_DIR,
-                creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
-            )
+            if getattr(sys, "frozen", False):
+                exe_dir = Path(sys.executable).parent
+
+                self.server_process = subprocess.Popen(
+                    [str(exe_dir / "SyncClipboardServer.exe")],
+                    creationflags=subprocess.CREATE_NO_WINDOW
+                    if sys.platform == "win32" else 0
+                )
+
+            else:
+                self.server_process = subprocess.Popen(
+                    [sys.executable, "-m", "server.run"],
+                    cwd=BASE_DIR,
+                    creationflags=subprocess.CREATE_NO_WINDOW
+                    if sys.platform == "win32" else 0
+                )
             self.server_running = True
             self.save_state()
             self.update_icon()
@@ -164,11 +177,22 @@ class TrayManager:
 
         # 否则启动新进程
         try:
-            self.client_process = subprocess.Popen(
-                [sys.executable, "-m", "client.run"],
-                cwd=BASE_DIR,
-                creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
-            )
+            if getattr(sys, "frozen", False):
+                exe_dir = Path(sys.executable).parent
+
+                self.client_process = subprocess.Popen(
+                    [str(exe_dir / "SyncClipboardClient.exe")],
+                    creationflags=subprocess.CREATE_NO_WINDOW
+                    if sys.platform == "win32" else 0
+                )
+
+            else:
+                self.client_process = subprocess.Popen(
+                    [sys.executable, "-m", "client.run"],
+                    cwd=BASE_DIR,
+                    creationflags=subprocess.CREATE_NO_WINDOW
+                    if sys.platform == "win32" else 0
+                )
             self.client_running = True
             self.save_state()
             self.update_icon()

@@ -22,17 +22,6 @@ from urllib.parse import unquote
 logger = logging.getLogger(__name__)   # 使用模块级 logger，会自动继承根 logger 的 handler
 
 app = Flask(__name__)
-# cache = CacheManager()
-
-# KEY = config["key"]
-# LOCAL_NAME = config["local_name"]
-# SAVE_PATH = config["save_path"]
-# PORT = config["port"]
-
-# file_handler = FileHandler(SAVE_PATH)
-# latest_file = LatestFileManager(SAVE_PATH)
-# latest_file = LatestFileTracker()
-# tracker = ClientTracker()
 
 KEY = None
 LOCAL_NAME = None
@@ -421,7 +410,7 @@ def upload_file():
 # ------------------- 启动函数 -------------------
 def start_flask():
     logging.info("Flask 服务启动，监听端口: %s", PORT)
-    app.run(host="0.0.0.0", port=PORT, debug=False, use_reloader=False)
+    app.run(host="0.0.0.0", port=PORT, debug=True, use_reloader=False)
 
 # ------------------- 独立运行 -------------------
 if __name__ == "__main__":
