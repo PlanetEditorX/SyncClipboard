@@ -142,23 +142,39 @@ def get_latest():
         return jsonify({"status": "error", "message": "密钥错误"}), 403
 
     # 新增：获取请求客户端的名称（用于自动标记粘贴）
-    source = request.args.get("source", "") or request.headers.get("source", "unknow")
+    source = request.args.get("source", "")
 
     latest = tracker.get_global_latest()
 
     # 如果提供了 source，且最新内容存在，且不是该客户端自己推送的，则自动标记粘贴
     if source and latest and latest.get("source") != source:
-        # 构建已粘贴条目（内容、id 保持不变，来源为原始来源）
-        pasted_item = {
-            "id": latest["id"],
-            "type": latest.get("type", "text"),
-            "content": latest["content"],
-            "timestamp": datetime.now().isoformat(),  # 标记时间
-            "source": latest["source"],              # 原始来源
-            "pasted": True
-        }
-        tracker.mark_pasted(source, pasted_item)
-        logging.info("客户端 %s 已获取并标记粘贴: %s (来自 %s)", source, latest["content"][:30], latest["source"])
+
+        client_last = tracker.data.get("clients", {}).get(source)
+
+        already_pasted = (
+            client_last
+            and client_last.get("id") == latest["id"]
+            and client_last.get("pasted") is True
+        )
+
+        if not already_pasted:
+            pasted_item = {
+                "id": latest["id"],
+                "type": latest.get("type", "text"),
+                "content": latest["content"],
+                "timestamp": datetime.now().isoformat(),
+                "source": latest["source"],
+                "pasted": True
+            }
+
+            tracker.mark_pasted(source, pasted_item)
+
+            logging.info(
+                "客户端 %s 已获取并标记粘贴: %s (来自 %s)",
+                source,
+                latest["content"][:30],
+                latest["source"]
+            )
 
     return jsonify({"status": "ok", "latest_global": latest})
 

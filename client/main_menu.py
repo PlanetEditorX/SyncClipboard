@@ -95,10 +95,9 @@ class SyncClient:
         while self.running:
             try:
                 resp = requests.get(
-                    f"{self.server_url}/latest",
+                    f"{self.server_url}/latest?source={self.local_name}",
                     headers={
-                        "key": self.key,
-                        "source": self.local_name
+                        "key": self.key
                     },
                     timeout=5
                 )
