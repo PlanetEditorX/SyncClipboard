@@ -6,6 +6,7 @@ from pathlib import Path
 from common.path import BASE_DIR
 
 CONFIG_FILE = BASE_DIR / "config" / "client_config.json"
+CONFIG_FILE.parent.mkdir(parents=True, exist_ok=True)
 
 def load_client_config():
     with open(CLIENT_CONFIG_FILE, "r", encoding="utf-8") as f:

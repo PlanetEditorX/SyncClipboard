@@ -5,6 +5,8 @@ from pathlib import Path
 from common.path import BASE_DIR
 
 LATEST_FILE = BASE_DIR / "latest" / "latest_file.json"
+LATEST_FILE.parent.mkdir(parents=True, exist_ok=True)
+
 class LatestFileManager:
     def __init__(self, save_dir):
         self.save_dir = save_dir

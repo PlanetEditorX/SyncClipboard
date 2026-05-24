@@ -6,6 +6,8 @@ from pathlib import Path
 from common.path import BASE_DIR
 
 LATEST_FILE = BASE_DIR / "latest" / "client_latest.json"
+LATEST_FILE.parent.mkdir(parents=True, exist_ok=True)
+
 class ClientTracker:
     def __init__(self):
         self.data = self._load()

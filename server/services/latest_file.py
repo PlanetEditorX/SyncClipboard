@@ -4,6 +4,7 @@ from pathlib import Path
 from common.path import BASE_DIR
 
 STATE_FILE = BASE_DIR / "latest" / "latest_file.json"
+STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
 
 class LatestFileTracker:
     def __init__(self):

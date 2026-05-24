@@ -7,6 +7,7 @@ from server.api.flask_app import app, init_services
 from common.path import BASE_DIR
 
 CONFIG_FILE = BASE_DIR / "config" / "server_config.json"
+CONFIG_FILE.parent.mkdir(parents=True, exist_ok=True)
 
 def load_config():
     with open(CONFIG_FILE, "r", encoding="utf-8") as f:

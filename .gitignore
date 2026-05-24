@@ -9,4 +9,6 @@ latest_file.json
 config/*.json
 # 但保留示例模板
 !config/example
-log/gui.log
+log/
+release
+!release/build.py

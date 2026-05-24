@@ -9,6 +9,7 @@ from client.main_menu import SyncClient
 from common.path import BASE_DIR
 
 CONFIG_FILE = BASE_DIR / "config" / "client_config.json"
+CONFIG_FILE.parent.mkdir(parents=True, exist_ok=True)
 
 def load_config():
     if not os.path.exists(CONFIG_FILE):

@@ -18,6 +18,7 @@ from common.path import BASE_DIR
 CLIENT_CONFIG = BASE_DIR / "config" / "client_config.json"
 SERVER_CONFIG = BASE_DIR / "config" / "server_config.json"
 STATE_FILE = BASE_DIR / "config" / "gui_state.json"
+CLIENT_CONFIG.parent.mkdir(parents=True, exist_ok=True)
 
 logger = logging.getLogger("gui")
 
