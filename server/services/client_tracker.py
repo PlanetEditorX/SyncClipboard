@@ -2,8 +2,9 @@
 import json
 import os
 from datetime import datetime
+from pathlib import Path
 
-LATEST_FILE = "client_latest.json"
+LATEST_FILE = Path("latest/client_latest.json")
 
 class ClientTracker:
     def __init__(self):

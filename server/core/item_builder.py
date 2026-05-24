@@ -2,7 +2,7 @@
 import os
 import hashlib
 from datetime import datetime
-from clipboard_manager import generate_stable_id
+from .clipboard_manager import generate_stable_id
 
 def build_text_item(text, source, pasted=False, timestamp=None):
     """

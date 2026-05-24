@@ -4,12 +4,11 @@ import sys
 import os
 import signal
 import threading
+from pathlib import Path
 
-sys.path.insert(0, os.path.dirname(__file__))
+from client.main_menu import start_client_gui
 
-from gui.main_menu import start_client_gui
-
-CONFIG_FILE = "client_config.json"
+CONFIG_FILE = Path("config/client_config.json")
 
 def load_config():
     if not os.path.exists(CONFIG_FILE):

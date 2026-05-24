@@ -1,22 +1,29 @@
-# gui/main_menu.py
-import threading
+# client/main_menu.py
+import os
+import sys
 import time
-import requests
-import pyperclip
 import json
 import logging
-from datetime import datetime
-import sys
-import os
-from tkinter import Tk, filedialog
+import requests
+import threading
+import pyperclip
 import win32clipboard
+from pathlib import Path
+from datetime import datetime
+from tkinter import Tk, filedialog
+import logging
+from logging.handlers import RotatingFileHandler
 
 # 配置日志
-logging.basicConfig(
-    filename="client.log",
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(message)s"
-)
+LOG_FILE = Path("log/client.log")
+LOG_FILE.parent.mkdir(parents=True, exist_ok=True)   # 自动创建 log 目录
+
+handler = RotatingFileHandler(LOG_FILE, maxBytes=1*1024*1024, backupCount=1, encoding='utf-8')
+handler.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(message)s"))
+
+logger = logging.getLogger()
+logger.setLevel(logging.INFO)
+logger.addHandler(handler)
 
 class SyncClient:
     """剪贴板同步客户端：推送本地变化 + 拉取远程最新"""
@@ -129,7 +136,7 @@ class SyncClient:
                             #     logging.error(f"上报粘贴失败: {e}")
             except Exception as e:
                 logging.error(f"拉取失败: {e}")
-            time.sleep(5)  # 每5秒拉取一次
+            time.sleep(3)  # 每3秒拉取一次
 
     def _push_latest_file(self, file_paths):
         """取第一个文件，推送元数据到服务端"""

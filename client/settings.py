@@ -1,9 +1,10 @@
-# gui/settings.py —— 客户端设置界面
+# client/settings.py —— 客户端设置界面
 import tkinter as tk
 from tkinter import simpledialog, messagebox
 import json
+from pathlib import Path
 
-CLIENT_CONFIG_FILE = "client_config.json"
+CLIENT_CONFIG_FILE = Path("config/client_config.json")
 
 def load_client_config():
     with open(CLIENT_CONFIG_FILE, "r", encoding="utf-8") as f:

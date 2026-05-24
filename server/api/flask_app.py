@@ -1,50 +1,65 @@
-# server/flask_app.py —— 修改配置加载路径
+# server/api/flask_app.py
+import os
+import sys
 import json
 import logging
 from pathlib import Path
 from flask import Flask, request, jsonify, send_file
-import sys
-import os
-sys.path.append(os.path.dirname(__file__))  # 添加 server 目录到路径
-from clipboard_manager import get_clipboard_text, set_clipboard_text, generate_id
-# from cache_manager import CacheManager
-from file_handler import FileHandler
-from item_builder import build_text_item
-from logging.handlers import RotatingFileHandler
-from client_tracker import ClientTracker
+
+# 统一使用 server 包路径的绝对导入
+from server.core.clipboard_manager import get_clipboard_text, set_clipboard_text, generate_id
+from server.core.cache_manager import CacheManager
+from server.core.item_builder import build_text_item
+from server.services.file_handler import FileHandler
+from server.services.client_tracker import ClientTracker
+from server.services.file_sync import LatestFileManager
+from server.services.latest_file import LatestFileTracker
+
 from datetime import datetime
-from file_sync import LatestFileManager
-from latest_file import LatestFileTracker
 from urllib.parse import unquote
 
-# 日志配置（保持不变）
-LOG_FILE = Path("syncclipboard.log")
-handler = RotatingFileHandler(LOG_FILE, maxBytes=1*1024*1024, backupCount=0, encoding='utf-8')
-formatter = logging.Formatter(fmt='%(asctime)s [%(levelname)s] %(message)s', datefmt='%Y-%m-%d %H:%M:%S')
-handler.setFormatter(formatter)
-logger = logging.getLogger()
-logger.setLevel(logging.INFO)
-logger.addHandler(handler)
-logging.info("服务初始化完成")
+# ---------- 日志：不再配置 handler，交给 run.py 统一处理 ----------
+logger = logging.getLogger(__name__)   # 使用模块级 logger，会自动继承根 logger 的 handler
 
 app = Flask(__name__)
 # cache = CacheManager()
-tracker = ClientTracker()
 
-# ---------- 从 server_config.json 加载 ----------
-with open("server_config.json", "r", encoding="utf-8") as f:
-    config = json.load(f)
+# KEY = config["key"]
+# LOCAL_NAME = config["local_name"]
+# SAVE_PATH = config["save_path"]
+# PORT = config["port"]
 
-KEY = config["key"]
-LOCAL_NAME = config["local_name"]
-SAVE_PATH = config["save_path"]
-PORT = config["port"]
+# file_handler = FileHandler(SAVE_PATH)
+# latest_file = LatestFileManager(SAVE_PATH)
+# latest_file = LatestFileTracker()
+# tracker = ClientTracker()
 
-file_handler = FileHandler(SAVE_PATH)
-latest_file = LatestFileManager(SAVE_PATH)
-latest_file = LatestFileTracker()
+KEY = None
+LOCAL_NAME = None
+SAVE_PATH = None
+PORT = None
+tracker = None
+file_handler = None
+latest_file = None
 
-logging.info("配置加载完成: %s", config)
+def init_services():
+    """由 run.py 在配置注入后调用，初始化依赖配置的服务"""
+    global tracker, file_handler, latest_file, KEY, LOCAL_NAME, SAVE_PATH, PORT
+    from server.services.client_tracker import ClientTracker
+    from server.services.file_handler import FileHandler
+    from server.services.file_sync import LatestFileManager  # 或 LatestFileTracker
+
+    tracker = ClientTracker()
+    file_handler = FileHandler(app.config['save_path'])
+    latest_file = LatestFileTracker()
+
+    KEY = app.config["key"]
+    LOCAL_NAME = app.config["local_name"]
+    SAVE_PATH = app.config["save_path"]
+    PORT = app.config["port"]
+
+    logger.info("API组件初始化完成")
+
 
 def get_api_key():
     return request.headers.get("key", "")

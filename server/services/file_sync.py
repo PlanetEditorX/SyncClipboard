@@ -1,8 +1,9 @@
 import os
 import json
 import logging
+from pathlib import Path
 
-LATEST_FILE = "latest_file.json"
+LATEST_FILE = Path("latest/latest_file.json")
 
 class LatestFileManager:
     def __init__(self, save_dir):
