@@ -142,7 +142,7 @@ def get_latest():
         return jsonify({"status": "error", "message": "密钥错误"}), 403
 
     # 新增：获取请求客户端的名称（用于自动标记粘贴）
-    source = request.args.get("source", "")
+    source = request.args.get("source", "") or request.headers.get("source", "unknow")
 
     latest = tracker.get_global_latest()
 

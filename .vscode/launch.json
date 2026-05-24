@@ -42,14 +42,6 @@
     {
       "name": "Server + Client",
       "configurations": ["SyncClipboard Server", "SyncClipboard Client"]
-    },
-    {
-      "name": "All (Server + Client + GUI)",
-      "configurations": [
-        "SyncClipboard Server",
-        "SyncClipboard Client",
-        "SyncClipboard GUI"
-      ]
     }
   ]
 }
