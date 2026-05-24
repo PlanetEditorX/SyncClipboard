@@ -2,6 +2,12 @@
 import shutil
 import subprocess
 from pathlib import Path
+import sys
+import io
+
+# 强制 stdout 使用 utf-8，避免 CI 环境编码错误
+if sys.stdout.encoding != 'utf-8':
+    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
 
 # ---------- 路径定义 ----------
 RELEASE_DIR = Path(__file__).resolve().parent          # release/
