@@ -215,6 +215,7 @@ def file_sync():
     if key != KEY:
         return jsonify({"status": "error", "message": "密钥错误"}), 403
 
+    client_ip = request.remote_addr
     data = request.get_json()
     file_id = str(uuid.uuid4())
     path = data.get("path")
@@ -225,7 +226,7 @@ def file_sync():
     if not path or not name or not source:
         return jsonify({"status": "error", "message": "参数不完整"}), 400
 
-    latest_file.set_latest(file_id, path, name, size, source)
+    latest_file.set_latest(file_id, path, name, size, source, client_ip)
     logging.info(f"最新文件已记录: {name} ({size} bytes), 路径: {path}, 来源: {source}")
     return jsonify({"status": "ok"})
 
