@@ -36,10 +36,20 @@ class SyncClient:
         self._last_remote_content = None
         self.push_thread = None
         self.pull_thread = None
+        # 全局锁，避免同时读写剪贴板
+        self.clipboard_lock = threading.Lock()
+
+    def safe_paste(self, retries=5):
+        for _ in range(retries):
+            try:
+                return pyperclip.paste()
+            except Exception:
+                time.sleep(0.05)
+        return ""
 
     def start(self):
         self.running = True
-        self.last_text = pyperclip.paste()
+        self.last_text = self.safe_paste()
         logging.info("客户端剪贴板监听启动")
 
         self.push_thread = threading.Thread(target=self._push_loop, daemon=True)
@@ -49,7 +59,7 @@ class SyncClient:
         self.pull_thread.start()
 
     def _push_loop(self):
-        self.last_text = pyperclip.paste() or ""
+        self.last_text = self.safe_paste() or ""
         self.last_file_set = None
         while self.running:
             try:
@@ -59,11 +69,12 @@ class SyncClient:
                     if current_set != self.last_file_set:
                         self.last_file_set = current_set
                         self._push_latest_file(files)
-                    time.sleep(0.5)
+                    time.sleep(1)
                     continue
 
                 self.last_file_set = None
-                text = pyperclip.paste()
+                with self.clipboard_lock:
+                    text = self.safe_paste()
                 if text is None:
                     text = ""
                 if text != self.last_text:
@@ -107,7 +118,8 @@ class SyncClient:
                     latest = data.get("latest_global")
                     if latest and latest.get("source") != self.local_name:
                         if latest["id"] != self.last_remote_id:
-                            pyperclip.copy(latest["content"])
+                            with self.clipboard_lock:
+                                pyperclip.copy(latest["content"])
                             self.last_remote_id = latest["id"]
                             self._last_remote_content = latest["content"]
                             self.last_text = latest["content"]
@@ -148,11 +160,22 @@ class SyncClient:
 def get_clipboard_files():
     try:
         win32clipboard.OpenClipboard()
-        if win32clipboard.IsClipboardFormatAvailable(win32clipboard.CF_HDROP):
-            files = win32clipboard.GetClipboardData(win32clipboard.CF_HDROP)
-            win32clipboard.CloseClipboard()
-            return list(files)
-        win32clipboard.CloseClipboard()
+
+        if win32clipboard.IsClipboardFormatAvailable(
+                win32clipboard.CF_HDROP):
+            return list(
+                win32clipboard.GetClipboardData(
+                    win32clipboard.CF_HDROP
+                )
+            )
+
         return None
+
     except Exception:
         return None
+
+    finally:
+        try:
+            win32clipboard.CloseClipboard()
+        except:
+            pass
