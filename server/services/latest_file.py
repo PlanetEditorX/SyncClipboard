@@ -20,13 +20,14 @@ class LatestFileTracker:
         with open(STATE_FILE, "w") as f:
             json.dump(self.data, f, indent=2)
 
-    def set_latest(self, uuid, path, name, size, source, ip):
+    def set_latest(self, uuid, path, name, size, source, ip, port):
         self.data["file_id"] = uuid
         self.data["path"] = path
         self.data["name"] = name
         self.data["size"] = size
         self.data["source"] = source
         self.data["ip"] = ip
+        self.data["port"] = port
         self._save()
 
     def get_latest(self):

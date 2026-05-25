@@ -2,9 +2,12 @@
 import os
 import sys
 import json
-import uuid
 import logging
+import requests
+import threading
 from pathlib import Path
+from datetime import datetime
+from urllib.parse import unquote
 from flask import Flask, request, jsonify, send_file
 
 # 统一使用 server 包路径的绝对导入
@@ -15,9 +18,6 @@ from server.services.file_handler import FileHandler
 from server.services.client_tracker import ClientTracker
 from server.services.file_sync import LatestFileManager
 from server.services.latest_file import LatestFileTracker
-
-from datetime import datetime
-from urllib.parse import unquote
 
 # ---------- 日志：不再配置 handler，交给 run.py 统一处理 ----------
 logger = logging.getLogger(__name__)   # 使用模块级 logger，会自动继承根 logger 的 handler
@@ -217,19 +217,26 @@ def file_sync():
 
     client_ip = request.remote_addr
     data = request.get_json()
-    file_id = str(uuid.uuid4())
+    file_id = data.get("file_id", 0)
     path = data.get("path")
     name = data.get("name")
     size = data.get("size", 0)
     source = data.get("source", 0)
+    port = data.get("port", 8899)
 
-    if not path or not name or not source:
+    if not path or not name or not source or not file_id or not port:
         return jsonify({"status": "error", "message": "参数不完整"}), 400
 
-    latest_file.set_latest(file_id, path, name, size, source, client_ip)
+    latest_file.set_latest(file_id, path, name, size, source, client_ip, port)
     logging.info(f"最新文件已记录: {name} ({size} bytes), 路径: {path}, 来源: {source}")
     return jsonify({"status": "ok"})
 
+@app.route('/latest/clear', methods=['GET'])
+def clear_latest():
+    """清理最新文件"""
+    sleep.time(5)
+    latest_file.clear()
+    return jsonify({"status": "ok"})
 
 @app.route('/request_file', methods=['POST'])
 def request_file():
@@ -246,11 +253,31 @@ def request_file():
     # 1. 检查是否有最新文件
     info = latest_file.get_latest()
     path = info.get("path")
-    if path and os.path.isfile(path):
-        filename = info["name"]
-        # 清空文件记录，避免重复下载
-        latest_file.clear()
-        return send_file(path, as_attachment=True, download_name=filename)
+
+    if path:
+        # 服务器能直接访问到
+        if os.path.isfile(path):
+            filename = info["name"]
+            # 清空文件记录，避免重复下载
+            latest_file.clear()
+            return send_file(path, as_attachment=True, download_name=filename)
+        # 为其它客户端的文件
+        else:
+            download_url = (
+                f"http://{info['ip']}:"
+                f"{info['port']}/file/"
+                f"{info['file_id']}"
+            )
+
+            # 5 秒后自动清理，不阻塞当前响应
+            threading.Timer(5, latest_file.clear).start()
+
+            return jsonify({
+                "status": "download",
+                "type": "file",
+                "name": info["name"],
+                "download_url": download_url
+            }), 302
 
     # 2. 没有文件，执行文本拉取逻辑（同 /latest 的标记粘贴）
     latest = tracker.get_global_latest()

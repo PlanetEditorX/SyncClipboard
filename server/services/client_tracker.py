@@ -70,7 +70,7 @@ class ClientTracker:
         self._save()
 
     def get_global_latest(self):
-      return self.data.get("latest_global")
+        return self.data.get("latest_global")
 
     def mark_pasted(self, client_name: str, item: dict):
         """标记客户端已粘贴某内容，更新对应客户端条目和全局最新状态"""

@@ -2,13 +2,14 @@
 import json
 import os
 import sys
-import signal
 import time
+import signal
 import logging
-from logging.handlers import RotatingFileHandler
 from pathlib import Path
-from client.main_menu import SyncClient
 from common.path import BASE_DIR
+from client.main_menu import SyncClient
+from client.file_server import FileServer
+from logging.handlers import RotatingFileHandler
 
 # ---------- 配置文件路径 ----------
 CONFIG_FILE = BASE_DIR / "config" / "client_config.json"
@@ -20,7 +21,8 @@ def load_config():
             "server_host": "127.0.0.1",
             "server_port": 8000,
             "key": "123456",
-            "local_name": "PC-01"
+            "local_name": "PC-01",
+            "file_server_port": 8899
         }
         with open(CONFIG_FILE, "w", encoding="utf-8") as f:
             json.dump(default_config, f, ensure_ascii=False, indent=2)
@@ -47,9 +49,20 @@ def main():
 
     logger.info("客户端进程启动")
 
-    # ---------- 原有启动逻辑 ----------
     config = load_config()
-    client = SyncClient(config)
+    # 启动客户端专用文件服务器
+    file_server = FileServer(
+        port=config.get(
+            "file_server_port",
+            8899
+        )
+    )
+
+    client = SyncClient(
+        config,
+        file_server
+    )
+    file_server.start()
 
     def graceful_exit(signum, frame):
         logger.info("正在关闭客户端...")

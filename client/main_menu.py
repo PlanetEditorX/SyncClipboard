@@ -1,6 +1,7 @@
 # client/main_menu.py
 import os
 import sys
+import uuid
 import time
 import json
 import logging
@@ -26,7 +27,7 @@ logger.addHandler(handler)
 
 class SyncClient:
     """剪贴板同步客户端：推送本地变化 + 拉取远程最新（纯后台版本）"""
-    def __init__(self, config):
+    def __init__(self, config, file_server=None):
         self.server_url = f"http://{config['server_host']}:{config['server_port']}"
         self.key = config["key"]
         self.local_name = config["local_name"]
@@ -36,6 +37,8 @@ class SyncClient:
         self._last_remote_content = None
         self.push_thread = None
         self.pull_thread = None
+        # 文件服务
+        self.file_server = file_server
         # 全局锁，避免同时读写剪贴板
         self.clipboard_lock = threading.Lock()
 
@@ -139,15 +142,24 @@ class SyncClient:
             return
         name = os.path.basename(path)
         size = os.path.getsize(path)
+        file_id = str(uuid.uuid4())
         try:
+            # 注册到 FileServer
+            if self.file_server:
+                self.file_server.register_file(
+                    file_id,
+                    path
+                )
             resp = requests.post(
                 f"{self.server_url}/file_sync",
                 headers={"key": self.key},
                 json={
+                    "file_id": file_id,
                     "path": path,
                     "name": name,
                     "size": size,
-                    "source": self.local_name
+                    "source": self.local_name,
+                    "port": self.file_server.port
                 },
                 timeout=5
             )
