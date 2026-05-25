@@ -129,6 +129,9 @@ class SyncClient:
             time.sleep(3)
 
     def _push_latest_file(self, file_paths):
+        """
+        推送最新的复制文件
+        """
         if not file_paths:
             return
         path = file_paths[0]

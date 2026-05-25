@@ -4,7 +4,7 @@ import logging
 from pathlib import Path
 from common.path import BASE_DIR
 
-LATEST_FILE = BASE_DIR / "latest" / "latest_file.json"
+LATEST_FILE = BASE_DIR / "latest" / "file_latest.json"
 LATEST_FILE.parent.mkdir(parents=True, exist_ok=True)
 
 class LatestFileManager:
