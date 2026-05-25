@@ -273,8 +273,8 @@ class TrayManager:
                 checked=lambda item: self.is_client_running()
             ),
             Menu.SEPARATOR,
-            MenuItem('修改客户端配置', self.edit_client_config),
             MenuItem('修改服务器配置', self.edit_server_config),
+            MenuItem('修改客户端配置', self.edit_client_config),
             Menu.SEPARATOR,
             MenuItem('重启服务', self.restart_services),
             Menu.SEPARATOR,
