@@ -218,12 +218,13 @@ def file_sync():
     path = data.get("path")
     name = data.get("name")
     size = data.get("size", 0)
+    source = data.get("source", 0)
 
     if not path or not name:
         return jsonify({"status": "error", "message": "参数不完整"}), 400
 
-    latest_file.set_latest(path, name, size)
-    logging.info(f"最新文件已记录: {name} ({size} bytes) 路径: {path}")
+    latest_file.set_latest(path, name, size, source)
+    logging.info(f"最新文件已记录: {name} ({size} bytes), 路径: {path}, 来源: {source}")
     return jsonify({"status": "ok"})
 
 
