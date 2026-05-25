@@ -2,6 +2,7 @@
 import os
 import sys
 import json
+import uuid
 import logging
 from pathlib import Path
 from flask import Flask, request, jsonify, send_file
@@ -215,15 +216,16 @@ def file_sync():
         return jsonify({"status": "error", "message": "密钥错误"}), 403
 
     data = request.get_json()
+    file_id = str(uuid.uuid4())
     path = data.get("path")
     name = data.get("name")
     size = data.get("size", 0)
     source = data.get("source", 0)
 
-    if not path or not name:
+    if not path or not name or not source:
         return jsonify({"status": "error", "message": "参数不完整"}), 400
 
-    latest_file.set_latest(path, name, size, source)
+    latest_file.set_latest(file_id, path, name, size, source)
     logging.info(f"最新文件已记录: {name} ({size} bytes), 路径: {path}, 来源: {source}")
     return jsonify({"status": "ok"})
 

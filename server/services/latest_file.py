@@ -20,7 +20,8 @@ class LatestFileTracker:
         with open(STATE_FILE, "w") as f:
             json.dump(self.data, f, indent=2)
 
-    def set_latest(self, path, name, size, source):
+    def set_latest(self, uuid, path, name, size, source):
+        self.data["uuid"] = uuid
         self.data["path"] = path
         self.data["name"] = name
         self.data["size"] = size
@@ -31,5 +32,5 @@ class LatestFileTracker:
         return self.data
 
     def clear(self):
-        self.data = {"path": None, "name": None, "size": 0, "source": None}
+        self.data = {"uuid": None, "path": None, "name": None, "size": 0, "source": None}
         self._save()
