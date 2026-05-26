@@ -1,24 +1,25 @@
-import json
-import logging
-import sys
 import os
-import subprocess
+import re
+import sys
+import json
 import time
-from pathlib import Path
-
-import pystray
-from pystray import MenuItem, Menu
-from PIL import Image
 import winreg   # 仅 Windows，若需跨平台请自行替换
-import multiprocessing
-import requests          # 用于 HTTP 请求
-import pyperclip         # 用于操作剪贴板文本
-import tempfile          # 临时目录（备用）
 import struct
-import win32clipboard    # 用于将文件列表放入剪贴板
-import tkinter as tk
-from tkinter import filedialog, messagebox
+import logging
+import pystray
+import tempfile          # 临时目录（备用）
+import requests          # 用于 HTTP 请求
 import threading
+import pyperclip         # 用于操作剪贴板文本
+import subprocess
+import tkinter as tk
+from PIL import Image
+import win32clipboard    # 用于将文件列表放入剪贴板
+import multiprocessing
+from pathlib import Path
+from urllib.parse import unquote
+from pystray import MenuItem, Menu
+from tkinter import filedialog, messagebox
 
 from server.run import main as server_main
 from client.run import main as client_main
@@ -71,6 +72,29 @@ def show_message(title, msg):
         messagebox.showinfo(title, msg)
         root.destroy()
     threading.Thread(target=_show, daemon=True).start()
+
+# ========== 文件名解析 ==========
+def parse_filename_from_cd(content_disposition):
+    """
+    从 Content-Disposition 头中解析文件名，支持 RFC 5987 (filename*=UTF-8'')
+    返回解码后的文件名，失败返回 None
+    """
+    if not content_disposition:
+        return None
+    # 尝试 filename*=UTF-8''...
+    match = re.search(r"filename\*=UTF-8''([^;]+)", content_disposition, re.IGNORECASE)
+    if match:
+        encoded = match.group(1)
+        return unquote(encoded)   # 解码 % 编码
+    # 尝试 filename="..."
+    match = re.search(r'filename="([^"]+)"', content_disposition, re.IGNORECASE)
+    if match:
+        return match.group(1)
+    # 尝试 filename=... (无引号)
+    match = re.search(r'filename=([^;]+)', content_disposition, re.IGNORECASE)
+    if match:
+        return match.group(1).strip('"')
+    return None
 
 # ========== 托盘管理类 ==========
 class TrayManager:
@@ -326,10 +350,10 @@ class TrayManager:
                     "attachment" in content_disposition)
 
             if is_file:
-                # 解析文件名
-                filename = "downloaded_file"
-                if "filename=" in content_disposition:
-                    filename = content_disposition.split("filename=")[-1].strip('"')
+                # 解析文件名（支持中文）
+                filename = parse_filename_from_cd(content_disposition)
+                if not filename:
+                    filename = "downloaded_file"
                 self._save_file_from_response(resp, filename)
                 return
 
@@ -400,7 +424,7 @@ class TrayManager:
                 f.write(response.content)
             logger.info(f"文件已保存到: {save_path}")
             if copy_files_to_clipboard([save_path]):
-                show_message("获取成功", f"文件已保存并复制到剪贴板\n{save_path}")
+                show_message("获取成功", f"文件已保存并到\n{save_path}")
             else:
                 show_message("下载成功但复制剪贴板失败", f"文件保存在:\n{save_path}")
         except Exception as e:
@@ -482,7 +506,12 @@ class TrayManager:
 
     # -------- 菜单构建 --------
     def create_menu(self):
+        # 将获取文件设为默认菜单项（左键触发）
+        get_file_item = MenuItem('获取文件', self.fetch_file, default=True)
+
         return Menu(
+            get_file_item,           # 左键点击会执行这个
+            Menu.SEPARATOR,
             MenuItem(
                 '开机启动',
                 self.toggle_autostart,
@@ -505,10 +534,14 @@ class TrayManager:
             Menu.SEPARATOR,
             MenuItem('重启服务', self.restart_services),
             Menu.SEPARATOR,
-            MenuItem('获取文件', self.fetch_file),
-            Menu.SEPARATOR,
+            # 注意：这里不要重复添加获取文件菜单项，否则右键会出现两个
+            # MenuItem('获取文件', self.fetch_file),  # 删除或注释掉
             MenuItem('退出', self.quit_app)
         )
+
+    def on_left_click(self, icon):
+        """左键点击托盘图标时触发的动作"""
+        self.fetch_file(icon, None)
 
     # -------- 运行托盘 --------
     def run(self):
@@ -530,6 +563,7 @@ class TrayManager:
             self.start_client()
 
         self.icon = pystray.Icon("SyncClipboard", image, "SyncClipboard", self.create_menu())
+        self.icon.on_click = self.on_left_click
         self.update_icon()
         self.icon.run()
 
