@@ -1,33 +1,26 @@
 # client/file_server.py
 import os
 import logging
-import requests
 from threading import Thread
-
-from flask import Flask, jsonify
-from flask import Flask, jsonify, send_file
+import requests
+from flask import Flask, jsonify, send_file, after_this_request, request
 
 logger = logging.getLogger("client")
 
-
 class FileServer:
-    def __init__(self, port=8899):
+    def __init__(self, port=8899, center_host="127.0.0.1", center_port=8000):
         self.port = port
-
-        # file_id -> path
+        self.center_host = center_host
+        self.center_port = center_port
         self.shared_files = {}
-
         self.app = Flask(__name__)
-
         # 关闭 Flask 默认访问日志
         logging.getLogger("werkzeug").setLevel(
             logging.ERROR
         )
-
         self._register_routes()
 
     def _register_routes(self):
-
         @self.app.route("/ping", methods=["GET"])
         def ping():
             return jsonify({
@@ -37,44 +30,59 @@ class FileServer:
 
         @self.app.route("/files", methods=["GET"])
         def files():
+            if os.getenv("DEBUG_MODE") == "1":
+                import debugpy
+                debugpy.breakpoint()
+            client_ip = request.remote_addr
+            logger.info(f"获取文件下载列表 - 请求来自: {client_ip}")
             return jsonify({
                 "count": len(self.shared_files),
                 "files": self.shared_files
             })
 
-        @self.app.route(
-            "/file/<file_id>",
-            methods=["GET"]
-        )
+        @self.app.route("/file/<file_id>", methods=["GET"])
         def download_file(file_id):
+            # 调试断点（仅在 DEBUG_MODE=1 时生效）
+            if os.getenv("DEBUG_MODE") == "1":
+                import debugpy
+                debugpy.breakpoint()
+
+            client_ip = request.remote_addr
+            logger.info(f"获取文件下载 - 请求来自: {client_ip}")
+
             path = self.shared_files.get(file_id)
             if not path:
-                return jsonify({
-                    "status": "error",
-                    "message": "file_id不存在"
-                }), 404
+                return jsonify({"status": "error", "message": "file_id不存在"}), 404
 
             if not os.path.isfile(path):
-                return jsonify({
-                    "status": "error",
-                    "message": "文件不存在"
-                }), 404
+                return jsonify({"status": "error", "message": "文件不存在"}), 404
 
-            logger.info(
-                "文件下载请求: %s -> %s",
-                file_id,
-                path
-            )
+            logger.info("文件下载请求: %s -> %s", file_id, path)
 
-            return send_file(
-                path,
-                as_attachment=True
-            )
+            # 注册一个后置回调：文件发送完成后执行清理和通知
+            @after_this_request
+            def after_download(response):
+                # 1. 取消本机共享
+                self.unregister_file(file_id)
+
+                # 2. 通知中心服务器清理 latest_file
+                try:
+                    clear_url = f"http://{self.center_host}:{self.center_port}/latest/clear"
+                    resp = requests.get(clear_url, timeout=3)
+                    if resp.status_code == 200:
+                        logger.info(f"成功通知中心服务器清理 latest_file (file_id={file_id})")
+                    else:
+                        logger.warning(f"通知中心服务器返回非200: {resp.status_code}")
+                except Exception as e:
+                    logger.error(f"通知中心服务器清理失败: {e}")
+
+                return response
+
+            return send_file(path, as_attachment=True)
 
     def register_file(self, file_id, path):
         """
         注册共享文件
-
         Parameters
         ----------
         file_id : str
@@ -83,7 +91,6 @@ class FileServer:
             本地文件路径
         """
         self.shared_files[file_id] = path
-
         logger.info(
             "注册共享文件: %s -> %s",
             file_id,
@@ -96,7 +103,6 @@ class FileServer:
         """
         if file_id in self.shared_files:
             path = self.shared_files.pop(file_id)
-
             logger.info(
                 "取消共享文件: %s -> %s",
                 file_id,
@@ -108,7 +114,6 @@ class FileServer:
         清空共享列表
         """
         self.shared_files.clear()
-
         logger.info(
             "共享文件列表已清空"
         )
@@ -125,7 +130,6 @@ class FileServer:
                 "文件服务启动: 0.0.0.0:%s",
                 self.port
             )
-
             self.app.run(
                 host="0.0.0.0",
                 port=self.port,
@@ -133,7 +137,6 @@ class FileServer:
                 use_reloader=False,
                 threaded=True
             )
-
         Thread(
             target=run,
             daemon=True

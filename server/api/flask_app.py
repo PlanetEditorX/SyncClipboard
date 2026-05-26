@@ -50,7 +50,6 @@ def init_services():
 
     logger.info("API组件初始化完成")
 
-
 def get_api_key():
     return request.headers.get("key", "")
 
@@ -231,12 +230,29 @@ def file_sync():
     logging.info(f"最新文件已记录: {name} ({size} bytes), 路径: {path}, 来源: {source}")
     return jsonify({"status": "ok"})
 
+# # 文件锁定接口
+# @app.route('/lock_file', methods=['POST'])
+# def lock_file():
+#     client_id = request.json.get('client_id')
+#     with file_lock:
+#         try:
+#             with open(LATEST_FILE, 'r') as jf:
+#                 meta = json.load(jf)
+#         except:
+#             return jsonify({"code":1, "msg":"no file"})
+#         if meta.get('status') != 'pending':
+#             return jsonify({"code":2, "msg":"already locked"})
+#         meta['status'] = 'locked'
+#         meta['locked_by'] = client_id
+#         with open(LATEST_FILE, 'w') as jf:
+#             json.dump(meta, jf)
+#     return jsonify({"code":0, "meta": meta})
+
 @app.route('/latest/clear', methods=['GET'])
 def clear_latest():
     """清理最新文件"""
-    sleep.time(5)
     latest_file.clear()
-    return jsonify({"status": "ok"})
+    return jsonify({"status": "ok"}), 200
 
 @app.route('/request_file', methods=['POST'])
 def request_file():
@@ -270,7 +286,7 @@ def request_file():
             )
 
             # 5 秒后自动清理，不阻塞当前响应
-            threading.Timer(5, latest_file.clear).start()
+            # threading.Timer(5, latest_file.clear).start()
 
             return jsonify({
                 "status": "download",
