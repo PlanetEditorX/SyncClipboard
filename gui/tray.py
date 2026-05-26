@@ -400,7 +400,7 @@ class TrayManager:
         def ask_filename():
             root = tk.Tk()
             root.withdraw()
-            initial_dir = str(Path.home() / "Downloads")
+            initial_dir = str(Path.home() / "Desktop")
             file_path = filedialog.asksaveasfilename(
                 title="保存文件",
                 initialdir=initial_dir,
@@ -440,8 +440,8 @@ class TrayManager:
         def ask_filename():
             root = tk.Tk()
             root.withdraw()
-            # 设置默认保存路径为“下载”文件夹
-            initial_dir = str(Path.home() / "Downloads")
+            # 设置默认保存路径为“桌面”文件夹
+            initial_dir = str(Path.home() / "Desktop")
             file_path = filedialog.asksaveasfilename(
                 title="保存文件",
                 initialdir=initial_dir,
