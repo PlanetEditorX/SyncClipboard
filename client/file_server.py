@@ -30,9 +30,6 @@ class FileServer:
 
         @self.app.route("/files", methods=["GET"])
         def files():
-            if os.getenv("DEBUG_MODE") == "1":
-                import debugpy
-                debugpy.breakpoint()
             client_ip = request.remote_addr
             logger.info(f"获取文件下载列表 - 请求来自: {client_ip}")
             return jsonify({

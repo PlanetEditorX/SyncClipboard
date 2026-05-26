@@ -128,7 +128,8 @@ class SyncClient:
                             self.last_text = latest["content"]
                             logging.info(f"拉取并更新剪贴板: {latest['content'][:50]} (来自 {latest['source']})")
             except Exception as e:
-                logging.error(f"拉取失败: {e}")
+                logging.error(f"拉取失败: {e} 等待10秒后重试")
+                time.sleep(7)
             time.sleep(3)
 
     def _push_latest_file(self, file_paths):
