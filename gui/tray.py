@@ -11,13 +11,20 @@ from pystray import MenuItem, Menu
 from PIL import Image
 import winreg   # 仅 Windows，若需跨平台请自行替换
 import multiprocessing
+import requests          # 用于 HTTP 请求
+import pyperclip         # 用于操作剪贴板文本
+import tempfile          # 临时目录（备用）
+import struct
+import win32clipboard    # 用于将文件列表放入剪贴板
+import tkinter as tk
+from tkinter import filedialog, messagebox
+import threading
+
 from server.run import main as server_main
 from client.run import main as client_main
-
-# ---------- 路径配置 ----------
-# 项目根目录
 from common.path import BASE_DIR
 
+# ---------- 配置文件路径 ----------
 CLIENT_CONFIG = BASE_DIR / "config" / "client_config.json"
 SERVER_CONFIG = BASE_DIR / "config" / "server_config.json"
 STATE_FILE = BASE_DIR / "config" / "gui_state.json"
@@ -25,6 +32,47 @@ CLIENT_CONFIG.parent.mkdir(parents=True, exist_ok=True)
 
 logger = logging.getLogger("gui")
 
+# ========== 辅助函数：复制文件列表到剪贴板（Windows） ==========
+def copy_files_to_clipboard(file_paths):
+    """
+    将文件路径列表复制到剪贴板，之后可以在资源管理器中粘贴出这些文件。
+    参数: file_paths - 文件路径字符串列表
+    返回: bool 成功返回 True
+    """
+    if not file_paths:
+        return False
+    try:
+        # 构建 CF_HDROP 格式的数据
+        # 格式：DROPFILES 结构 + 双NULL结尾的文件路径列表（ANSI编码）
+        files_joined = '\0'.join(file_paths) + '\0\0'
+        dropfiles = struct.pack('IIII', 20, 0, 0, 0) + files_joined.encode('mbcs')
+        win32clipboard.OpenClipboard()
+        win32clipboard.EmptyClipboard()
+        win32clipboard.SetClipboardData(win32clipboard.CF_HDROP, dropfiles)
+        logger.info(f"已复制 {len(file_paths)} 个文件到剪贴板")
+        return True
+    except Exception as e:
+        logger.error(f"复制文件到剪贴板失败: {e}")
+        return False
+    finally:
+        try:
+            win32clipboard.CloseClipboard()
+        except:
+            pass
+
+# ========== 辅助函数：显示简单的消息框（线程安全） ==========
+def show_message(title, msg):
+    """
+    在一个独立线程中弹出 tkinter 消息框，避免阻塞托盘主循环。
+    """
+    def _show():
+        root = tk.Tk()
+        root.withdraw()
+        messagebox.showinfo(title, msg)
+        root.destroy()
+    threading.Thread(target=_show, daemon=True).start()
+
+# ========== 托盘管理类 ==========
 class TrayManager:
     def __init__(self):
         self.icon = None
@@ -54,7 +102,7 @@ class TrayManager:
                 'client_running': self.client_running
             }, f)
 
-    # -------- 图标 --------
+    # -------- 图标更新 --------
     def update_icon(self):
         """根据运行状态更新托盘图标"""
         if not self.icon:
@@ -83,7 +131,7 @@ class TrayManager:
         key_path, name = self._autostart_key()
 
         try:
-            if item.checked:
+            if item.checked:   # 当前是开启状态，用户点击后要关闭开机启动
                 with winreg.OpenKey(
                     winreg.HKEY_CURRENT_USER,
                     key_path,
@@ -92,7 +140,7 @@ class TrayManager:
                 ) as key:
                     winreg.DeleteValue(key, name)
 
-            else:
+            else:              # 当前是关闭状态，用户点击后要开启开机启动
                 if getattr(sys, "frozen", False):
                     cmd = f'"{sys.executable}"'
                 else:
@@ -118,7 +166,6 @@ class TrayManager:
     # -------- 服务器启停 --------
     def start_server(self, icon=None, item=None):
         logger.info(f"尝试启动服务器，当前状态: running={self.server_running}")
-        # 如果已有活着的进程，直接更新状态
         if self.server_process and self.server_process.is_alive():
             self.server_running = True
             if icon: icon.update_menu()
@@ -127,7 +174,7 @@ class TrayManager:
         try:
             self.server_process = multiprocessing.Process(
                 target=server_main,
-                daemon=True   # 主进程退出时自动终止
+                daemon=True
             )
             self.server_process.start()
             self.server_running = True
@@ -227,22 +274,202 @@ class TrayManager:
         else:
             logger.warning("服务器配置文件不存在")
 
+    # -------- 手动获取文件/文本 --------
+    def fetch_file(self, icon, item):
+        """
+        托盘菜单『获取文件』的回调函数。
+        向服务器 /request_file 发送 POST 请求，根据响应：
+        - 如果是文件（status=download）：弹出保存对话框，下载文件并复制到剪贴板
+        - 如果是文本（type=text）：直接复制文本到剪贴板
+        """
+        logger.info("用户点击『获取文件』")
+
+        # 1. 读取客户端配置，获取服务器地址、密钥、本机名称
+        if not CLIENT_CONFIG.exists():
+            logger.error("客户端配置文件不存在")
+            show_message("错误", "未找到 client_config.json")
+            return
+        try:
+            with open(CLIENT_CONFIG, 'r', encoding='utf-8') as f:
+                config = json.load(f)
+            server_host = config.get("server_host", "127.0.0.1")
+            server_port = config.get("server_port", 8000)
+            key = config.get("key", "")
+            local_name = config.get("local_name", "unknown")
+        except Exception as e:
+            logger.error(f"读取配置文件失败: {e}")
+            show_message("错误", "读取配置文件失败")
+            return
+
+        # 2. 构造请求 URL 并发送 POST
+        url = f"http://{server_host}:{server_port}/request_file"
+        try:
+            resp = requests.post(
+                url,
+                headers={"key": key},
+                json={"source": local_name},
+                timeout=10
+            )
+        except Exception as e:
+            logger.error(f"请求服务器失败: {e}")
+            show_message("请求失败", f"无法连接服务器: {e}")
+            return
+
+        # 3. 根据状态码处理响应
+        if resp.status_code == 200:
+            content_type = resp.headers.get("Content-Type", "")
+            content_disposition = resp.headers.get("Content-Disposition", "")
+
+            # 判断是否为文件下载响应
+            is_file = ("application/octet-stream" in content_type or
+                    "application/x-msdownload" in content_type or
+                    "attachment" in content_disposition)
+
+            if is_file:
+                # 解析文件名
+                filename = "downloaded_file"
+                if "filename=" in content_disposition:
+                    filename = content_disposition.split("filename=")[-1].strip('"')
+                self._save_file_from_response(resp, filename)
+                return
+
+            # 否则按 JSON 处理
+            try:
+                data = resp.json()
+            except Exception:
+                logger.error("响应既不是文件也不是合法JSON")
+                show_message("错误", "服务器返回格式无法识别")
+                return
+
+            # 原有的 JSON 处理逻辑（文件下载链接或文本）
+            if data.get("status") == "download" and data.get("type") == "file":
+                download_url = data.get("download_url")
+                filename = data.get("name", "downloaded_file")
+                self._download_and_save_file(download_url, filename)
+            elif data.get("type") == "text":
+                latest = data.get("latest_global")
+                if latest and latest.get("content"):
+                    pyperclip.copy(latest["content"])
+                    logger.info(f"获取文本成功: {latest['content'][:50]}")
+                    show_message("获取成功", "文本已复制到剪贴板")
+                else:
+                    show_message("无内容", "服务器没有可用的文本")
+            else:
+                logger.warning(f"未知响应格式: {data}")
+                show_message("未知响应", "服务器返回格式无法识别")
+        elif resp.status_code == 302:
+            # 情况3：服务器直接返回重定向（比如直接 send_file 返回文件）
+            location = resp.headers.get("Location")
+            if location:
+                self._download_and_save_file(location, "downloaded_file")
+            else:
+                logger.error("302重定向无Location头")
+                show_message("错误", "服务器重定向错误")
+        else:
+            logger.warning(f"服务器返回错误状态码: {resp.status_code}")
+            show_message("请求失败", f"HTTP {resp.status_code}")
+
+    def _save_file_from_response(self, response, default_filename):
+        """将响应内容（文件流）保存为用户选择的文件"""
+        result = [None]
+
+        def ask_filename():
+            root = tk.Tk()
+            root.withdraw()
+            initial_dir = str(Path.home() / "Downloads")
+            file_path = filedialog.asksaveasfilename(
+                title="保存文件",
+                initialdir=initial_dir,
+                initialfile=default_filename,
+                defaultextension="",
+                filetypes=[("所有文件", "*.*")]
+            )
+            root.destroy()
+            result[0] = file_path
+
+        t = threading.Thread(target=ask_filename)
+        t.start()
+        t.join()
+        save_path = result[0]
+        if not save_path:
+            logger.info("用户取消保存")
+            return
+
+        try:
+            with open(save_path, 'wb') as f:
+                f.write(response.content)
+            logger.info(f"文件已保存到: {save_path}")
+            if copy_files_to_clipboard([save_path]):
+                show_message("获取成功", f"文件已保存并复制到剪贴板\n{save_path}")
+            else:
+                show_message("下载成功但复制剪贴板失败", f"文件保存在:\n{save_path}")
+        except Exception as e:
+            logger.error(f"保存文件失败: {e}")
+            show_message("保存失败", str(e))
+
+    def _download_and_save_file(self, url, default_filename):
+        """
+        下载文件，弹出保存对话框让用户选择保存位置，下载完成后将文件复制到剪贴板。
+        """
+        result = [None]  # 用于线程间传递选择的结果
+
+        def ask_filename():
+            root = tk.Tk()
+            root.withdraw()
+            # 设置默认保存路径为“下载”文件夹
+            initial_dir = str(Path.home() / "Downloads")
+            file_path = filedialog.asksaveasfilename(
+                title="保存文件",
+                initialdir=initial_dir,
+                initialfile=default_filename,
+                defaultextension="",
+                filetypes=[("所有文件", "*.*")]
+            )
+            root.destroy()
+            result[0] = file_path
+
+        t = threading.Thread(target=ask_filename)
+        t.start()
+        t.join()  # 等待用户选择
+
+        save_path = result[0]
+        if not save_path:
+            logger.info("用户取消了文件保存")
+            return
+
+        # 开始下载
+        try:
+            with requests.get(url, stream=True, timeout=30) as r:
+                r.raise_for_status()
+                with open(save_path, 'wb') as f:
+                    for chunk in r.iter_content(chunk_size=8192):
+                        f.write(chunk)
+            logger.info(f"文件已保存到: {save_path}")
+            # 将下载的文件复制到剪贴板
+            if copy_files_to_clipboard([save_path]):
+                show_message("获取成功", f"文件已保存到\n{save_path}")
+            else:
+                show_message("下载成功但复制剪贴板失败", f"文件保存在:\n{save_path}")
+        except Exception as e:
+            logger.error(f"下载文件失败: {e}")
+            show_message("下载失败", str(e))
+
     # -------- 退出程序 --------
     def quit_app(self, icon):
-        # 1. 记住退出前的运行状态
+        # 记住退出前的运行状态
         keep_server = self.server_running
         keep_client = self.client_running
 
-        # 2. 停止所有服务（这会修改 self.server_running = False 并保存）
+        # 停止所有服务（这会修改 self.server_running = False 并保存）
         self.stop_server()
         self.stop_client()
 
-        # 3. 恢复真实的意图状态，并保存到文件
+        # 恢复真实的意图状态，并保存到文件
         self.server_running = keep_server
         self.client_running = keep_client
         self.save_state()
 
-        # 4. 退出托盘
+        # 退出托盘
         icon.stop()
         os._exit(0)
 
@@ -278,6 +505,8 @@ class TrayManager:
             Menu.SEPARATOR,
             MenuItem('重启服务', self.restart_services),
             Menu.SEPARATOR,
+            MenuItem('获取文件', self.fetch_file),
+            Menu.SEPARATOR,
             MenuItem('退出', self.quit_app)
         )
 
@@ -303,3 +532,9 @@ class TrayManager:
         self.icon = pystray.Icon("SyncClipboard", image, "SyncClipboard", self.create_menu())
         self.update_icon()
         self.icon.run()
+
+
+# ========== 主入口 ==========
+if __name__ == "__main__":
+    multiprocessing.freeze_support()
+    TrayManager().run()

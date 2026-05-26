@@ -230,24 +230,6 @@ def file_sync():
     logging.info(f"最新文件已记录: {name} ({size} bytes), 路径: {path}, 来源: {source}")
     return jsonify({"status": "ok"})
 
-# # 文件锁定接口
-# @app.route('/lock_file', methods=['POST'])
-# def lock_file():
-#     client_id = request.json.get('client_id')
-#     with file_lock:
-#         try:
-#             with open(LATEST_FILE, 'r') as jf:
-#                 meta = json.load(jf)
-#         except:
-#             return jsonify({"code":1, "msg":"no file"})
-#         if meta.get('status') != 'pending':
-#             return jsonify({"code":2, "msg":"already locked"})
-#         meta['status'] = 'locked'
-#         meta['locked_by'] = client_id
-#         with open(LATEST_FILE, 'w') as jf:
-#             json.dump(meta, jf)
-#     return jsonify({"code":0, "meta": meta})
-
 @app.route('/latest/clear', methods=['GET'])
 def clear_latest():
     """清理最新文件"""
@@ -256,7 +238,7 @@ def clear_latest():
 
 @app.route('/request_file', methods=['POST'])
 def request_file():
-    """手机统一拉取接口：有文件则返回文件并清空，无文件则返回最新文本"""
+    """统一拉取接口：有文件则返回文件并清空，无文件则返回最新文本"""
     key = request.headers.get("key", "")
     if key != KEY:
         return jsonify({"status": "error", "message": "密钥错误"}), 403
@@ -285,15 +267,12 @@ def request_file():
                 f"{info['file_id']}"
             )
 
-            # 5 秒后自动清理，不阻塞当前响应
-            # threading.Timer(5, latest_file.clear).start()
-
             return jsonify({
                 "status": "download",
                 "type": "file",
                 "name": info["name"],
                 "download_url": download_url
-            }), 302
+            }), 200
 
     # 2. 没有文件，执行文本拉取逻辑（同 /latest 的标记粘贴）
     latest = tracker.get_global_latest()
