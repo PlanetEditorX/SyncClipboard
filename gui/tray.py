@@ -24,11 +24,13 @@ from tkinter import filedialog, messagebox
 from server.run import main as server_main
 from client.run import main as client_main
 from common.path import BASE_DIR
+from common.notification import show_notification
 
 # ---------- 配置文件路径 ----------
 CLIENT_CONFIG = BASE_DIR / "config" / "client_config.json"
 SERVER_CONFIG = BASE_DIR / "config" / "server_config.json"
 STATE_FILE = BASE_DIR / "config" / "gui_state.json"
+CLIENT_LATEST_FILE = BASE_DIR / "latest" / "client_latest.json"
 CLIENT_CONFIG.parent.mkdir(parents=True, exist_ok=True)
 
 logger = logging.getLogger("gui")
@@ -104,6 +106,11 @@ class TrayManager:
         self.client_process = None
         self.server_running = False
         self.client_running = False
+        self.last_global_id = None
+        self.latest_file = CLIENT_LATEST_FILE
+        self.last_global_id = None
+        self._monitor_running = False
+        self._monitor_thread = None
         # 加载上次运行状态
         self.load_state()
 
@@ -153,7 +160,6 @@ class TrayManager:
 
     def toggle_autostart(self, icon, item):
         key_path, name = self._autostart_key()
-
         try:
             if item.checked:   # 当前是开启状态，用户点击后要关闭开机启动
                 with winreg.OpenKey(
@@ -455,12 +461,10 @@ class TrayManager:
         t = threading.Thread(target=ask_filename)
         t.start()
         t.join()  # 等待用户选择
-
         save_path = result[0]
         if not save_path:
             logger.info("用户取消了文件保存")
             return
-
         # 开始下载
         try:
             with requests.get(url, stream=True, timeout=30) as r:
@@ -504,6 +508,43 @@ class TrayManager:
     def is_client_running(self):
         return self.client_running
 
+    # -------- 通知查询 --------
+    # 监控线程方法
+    def _monitor_latest_file(self):
+        while self._monitor_running:
+            try:
+                if not self.latest_file.exists():
+                    time.sleep(2)
+                    continue
+                with open(self.latest_file, 'r', encoding='utf-8') as f:
+                    data = json.load(f)
+                latest = data.get('latest_global')
+                if not latest:
+                    time.sleep(2)
+                    continue
+
+                current_id = latest.get('id')
+                if current_id and current_id != self.last_global_id:
+                    self.last_global_id = current_id
+                    source = latest.get('source', '未知来源')
+                    content = latest.get('content', '')
+                    ctype = latest.get('type', 'text')
+
+                    if ctype == 'text':
+                        preview = content[:60] + ('...' if len(content) > 60 else '')
+                        msg = f"【{source}】\n{preview}"
+                    elif ctype == 'file':
+                        msg = f"【{source}】\n收到文件：{content}"
+                    else:
+                        msg = f"【{source}】\n新内容（{ctype}）"
+
+                    # 使用公共通知，右下角自动消失
+                    show_notification("新剪贴板内容", msg)
+
+            except Exception as e:
+                logger.error(f"监控文件失败: {e}")
+            time.sleep(2)
+
     # -------- 菜单构建 --------
     def create_menu(self):
         # 将获取文件设为默认菜单项（左键触发）
@@ -546,7 +587,6 @@ class TrayManager:
     # -------- 运行托盘 --------
     def run(self):
         active = self.server_running or self.client_running
-
         icon_name = "icon-active.png" if active else "icon-stop.png"
         icon_path = BASE_DIR / "gui" / "icon" / icon_name
 
@@ -562,11 +602,18 @@ class TrayManager:
         if self.client_running:
             self.start_client()
 
+        # 启动文件监控
+        self._monitor_running = True
+        self._monitor_thread = threading.Thread(target=self._monitor_latest_file, daemon=True)
+        self._monitor_thread.start()
+
+        # 托盘
         self.icon = pystray.Icon("SyncClipboard", image, "SyncClipboard", self.create_menu())
         self.icon.on_click = self.on_left_click
         self.update_icon()
         self.icon.run()
-
+        # 托盘退出后停止监控
+        self._monitor_running = False
 
 # ========== 主入口 ==========
 if __name__ == "__main__":

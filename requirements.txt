@@ -5,3 +5,4 @@ pystray
 Pillow
 pyinstaller
 pywin32
+winotify
