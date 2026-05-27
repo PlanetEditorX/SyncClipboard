@@ -13,7 +13,7 @@ def get_api_key():
     return request.headers.get("key", "")
 
 class FileServer:
-    def __init__(self, port=8899, center_host="127.0.0.1", center_port=8000):
+    def __init__(self, port=8899, center_host="127.0.0.1", center_port=8000, key=123456):
         self.port = port
         self.center_host = center_host
         self.center_port = center_port
@@ -29,6 +29,7 @@ class FileServer:
         self.last_remote_id = None
         self._last_remote_content = None
         self.last_text = ""
+        self.KEY = key
 
     def _register_routes(self):
         @self.app.route("/ping", methods=["GET"])
@@ -50,7 +51,7 @@ class FileServer:
         @self.app.route("/update/client_latest", methods=["POST"])
         def update_client_latest():
             key = get_api_key()
-            if key != KEY:
+            if key != self.KEY:
                 return jsonify({"status": "error", "message": "密钥错误"}), 403
             client_ip = request.remote_addr
             logger.info(f"更新文字列表 - 请求来自: {client_ip}")
