@@ -33,6 +33,7 @@ SERVER_CONFIG = BASE_DIR / "config" / "server_config.json"
 STATE_FILE = BASE_DIR / "config" / "gui_state.json"
 CLIENT_LATEST_FILE = BASE_DIR / "latest" / "client_latest.json"
 FILE_LATEST_FILE = BASE_DIR / "latest" / "file_latest.json"
+CLIENT_IP_FILE = Path(__file__).resolve().parent.parent.parent / "config" / "client_ip.json"
 CLIENT_CONFIG.parent.mkdir(parents=True, exist_ok=True)
 
 logger = logging.getLogger("gui")
@@ -121,6 +122,7 @@ class TrayManager:
         self.server_port = None
         self.key = None
         self.local_name = None
+        self.clients = []  # 内存中的客户端列表
 
     def load_client_config(self):
         # 1. 读取客户端配置，获取服务器地址、密钥、本机名称
@@ -520,10 +522,23 @@ class TrayManager:
     # ---------- 文件变化时的处理函数 ----------
     def _on_file_changed(self, changed_path):
         """根据变化的文件路径分发到不同处理函数"""
+        changed_type = "text"
         if changed_path == self.client_latest.resolve():
             self._handle_client_latest()
         elif changed_path == self.file_latest.resolve():
             self._handle_file_latest()
+            changed_type = "file"
+        # 如果是服务器运行，那么通知服务器发送
+        if self.server_running:
+            import requests
+            try:
+                requests.post(
+                    f"http://127.0.0.1:{self.server_port}/internal/notify_clients",
+                    json={"changed_type": changed_type},
+                    timeout=3
+                )
+            except Exception as e:
+                logger.error(f"客户端通知内部服务器异常:{e}")
 
     def _handle_client_latest(self):
         # 处理 client_latest.json 的逻辑

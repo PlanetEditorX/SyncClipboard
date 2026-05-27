@@ -13,7 +13,7 @@ def get_api_key():
     return request.headers.get("key", "")
 
 class FileServer:
-    def __init__(self, port=8899, center_host="127.0.0.1", center_port=8000, key=123456):
+    def __init__(self, port=8899, center_host="127.0.0.1", center_port=8000, local_name="PC-01", key="123456"):
         self.port = port
         self.center_host = center_host
         self.center_port = center_port
@@ -29,7 +29,8 @@ class FileServer:
         self.last_remote_id = None
         self._last_remote_content = None
         self.last_text = ""
-        self.KEY = key
+        self.KEY = str(key)
+        self.local_name = local_name
 
     def _register_routes(self):
         @self.app.route("/ping", methods=["GET"])
@@ -50,24 +51,23 @@ class FileServer:
 
         @self.app.route("/update/client_latest", methods=["POST"])
         def update_client_latest():
-            key = get_api_key()
-            if key != self.KEY:
-                return jsonify({"status": "error", "message": "密钥错误"}), 403
-            client_ip = request.remote_addr
-            logger.info(f"更新文字列表 - 请求来自: {client_ip}")
-
             data = request.get_json()
             if not data:
                 return jsonify({"status": "error", "message": "无效的请求数据"}), 400
-            latest = data.get("latest_global")
-            if latest and latest.get("source") != self.local_name:
-                if latest["id"] != self.last_remote_id:
-                    with self.clipboard_lock:
-                        pyperclip.copy(latest["content"])
-                    self.last_remote_id = latest["id"]
-                    self._last_remote_content = latest["content"]
-                    self.last_text = latest["content"]
-                    logging.info(f"更新剪贴板: {latest['content'][:50]} (来自 {latest['source']})")
+            if data.get("key") != self.KEY:
+                return jsonify({"status": "error", "message": "密钥错误"}), 403
+            client_ip = request.remote_addr
+            if data.get("type") == "text":
+                logger.info(f"更新文字列表 - 请求来自: {client_ip}")
+                latest = data.get("latest_global")
+                if latest and latest.get("source") != self.local_name:
+                    if latest["id"] != self.last_remote_id:
+                        with self.clipboard_lock:
+                            pyperclip.copy(latest["content"])
+                        self.last_remote_id = latest["id"]
+                        self._last_remote_content = latest["content"]
+                        self.last_text = latest["content"]
+                        logging.info(f"更新剪贴板: {latest['content'][:50]} (来自 {latest['source']})")
 
             return jsonify({
                 "status": "ok",

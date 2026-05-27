@@ -58,8 +58,8 @@ class SyncClient:
         self.push_thread = threading.Thread(target=self._push_loop, daemon=True)
         self.push_thread.start()
 
-        self.pull_thread = threading.Thread(target=self._pull_loop, daemon=True)
-        self.pull_thread.start()
+        # self.pull_thread = threading.Thread(target=self._pull_loop, daemon=True)
+        # self.pull_thread.start()
 
     def _push_loop(self):
         self.last_text = self.safe_paste() or ""

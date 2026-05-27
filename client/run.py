@@ -53,10 +53,11 @@ def main():
     config = load_config()
     # 启动客户端专用文件服务器
     file_server = FileServer(
-        port=config.get("file_server_port", 8899),
-        center_host=config.get("server_host", "127.0.0.1"),
-        center_port=config.get("server_port", 8000),
-        key=123456
+        port=config.get("file_server_port"),
+        center_host=config.get("server_host"),
+        center_port=config.get("server_port"),
+        local_name=config.get("local_name"),
+        key=config.get("key")
     )
 
     client = SyncClient(

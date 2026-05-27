@@ -57,6 +57,7 @@ def get_api_key():
 clients = []  # 内存中的客户端列表
 _lock = threading.Lock()
 CLIENT_IP_FILE = Path(__file__).resolve().parent.parent.parent / "config" / "client_ip.json"
+
 def load_clients():
     global clients
     if CLIENT_IP_FILE.exists():
@@ -92,6 +93,68 @@ def add_or_update_client(ip, port, local_name):
     })
     save_clients()
     return True
+
+# 通知客户端
+def notify_clients(_type):
+    for client in clients:
+        # 通知客户端的名称
+        source = client["local_name"]
+        latest = tracker.get_global_latest()
+        if latest is None:
+            latest_global = {}
+        else:
+            latest_global = latest.copy()
+        # 如果提供了 source，且最新内容存在，且不是该客户端自己推送的，则自动标记粘贴
+        if source and latest and latest.get("source") != source:
+
+            client_last = tracker.data.get("clients", {}).get(source)
+
+            already_pasted = (
+                client_last
+                and client_last.get("id") == latest["id"]
+                and client_last.get("pasted") is True
+            )
+
+            # 首次
+            if not already_pasted:
+                latest_global = latest.copy()
+                pasted_item = {
+                    "id": latest["id"],
+                    "type": latest.get("type", "text"),
+                    "content": latest["content"],
+                    "timestamp": datetime.now().isoformat(),
+                    "source": latest["source"],
+                    "pasted": True
+                }
+
+                tracker.mark_pasted(source, pasted_item)
+
+                logging.info(
+                    "客户端 %s 已获取并标记粘贴: %s (来自 %s)",
+                    source,
+                    latest["content"][:30],
+                    latest["source"]
+                )
+
+            # 为其它客户端的文件
+            update_url = f"http://{client['ip']}:{client['port']}/update/client_latest"
+            try:
+                resp = requests.post(
+                    update_url,
+                    json={
+                        "key": KEY,
+                        "latest_global": latest,
+                        "server_source": LOCAL_NAME,
+                        "type": _type
+                    },
+                    timeout=5
+                )
+                if resp.status_code == 200:
+                    logging.info(f"推送成功: {text[:50]}...")
+                else:
+                    logging.warning(f"推送失败: {resp.status_code} {resp.text}")
+            except Exception as e:
+                logging.error(f"连接服务端失败: {e}")
 
 # ------------------- 文字同步接口 -------------------
 @app.route('/text_sync', methods=['POST'])
@@ -169,12 +232,6 @@ def get_latest():
     key = get_api_key()
     if key != KEY:
         return jsonify({"status": "error", "message": "密钥错误"}), 403
-
-    # logger.info(
-    #     "LATEST REQUEST source=%s ua=%s",
-    #     request.args.get("source"),
-    #     request.headers.get("User-Agent")
-    # )
 
     # 获取请求客户端的名称（用于自动标记粘贴）
     source = request.args.get("source", "")
@@ -419,6 +476,15 @@ def register():
         "is_new": is_new,
         "server_ip": ip  # 告诉客户端服务器认为它的 IP 是什么
     })
+
+# 内部通知接口
+@app.route('/internal/notify_clients', methods=['POST'])
+def internal_notify():
+    # 验证请求来源是本地
+    if request.remote_addr == '127.0.0.1':
+        data = request.get_json()
+        notify_clients(data['changed_type'])
+        return {'status': 'ok'}
 
 # ------------------- 启动函数 -------------------
 def start_flask():
