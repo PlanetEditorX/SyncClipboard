@@ -25,6 +25,8 @@ from server.run import main as server_main
 from client.run import main as client_main
 from common.path import BASE_DIR
 from common.notification import show_notification
+from common.file_watcher import watch_file
+from common.notification import show_notification
 
 # ---------- 配置文件路径 ----------
 CLIENT_CONFIG = BASE_DIR / "config" / "client_config.json"
@@ -109,6 +111,7 @@ class TrayManager:
         self.last_global_id = None
         self.latest_file = CLIENT_LATEST_FILE
         self.last_global_id = None
+        self._file_observer = None
         self._monitor_running = False
         self._monitor_thread = None
         # 加载上次运行状态
@@ -513,43 +516,54 @@ class TrayManager:
     def is_client_running(self):
         return self.client_running
 
-    # -------- 通知查询 --------
-    # 监控线程方法
-    def _monitor_latest_file(self):
-        while self._monitor_running:
-            try:
-                if not self.latest_file.exists():
-                    time.sleep(2)
-                    continue
-                with open(self.latest_file, 'r', encoding='utf-8') as f:
-                    data = json.load(f)
-                latest = data.get('latest_global')
-                if not latest:
-                    time.sleep(2)
-                    continue
+    # ---------- 文件变化时的处理函数 ----------
+    def _on_latest_file_changed(self):
+        """当 client_latest.json 被修改时调用（已防抖）"""
+        try:
+            if not self.latest_file.exists():
+                return
+            with open(self.latest_file, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+            latest = data.get('latest_global')
+            if not latest:
+                return
 
-                current_id = latest.get('id')
-                source = latest.get('source')
-                if current_id and current_id != self.last_global_id and source != self.local_name:
-                    self.last_global_id = current_id
-                    source = latest.get('source', '未知来源')
-                    content = latest.get('content', '')
-                    ctype = latest.get('type', 'text')
+            current_id = latest.get('id')
+            source = latest.get('source')
+            if current_id and current_id != self.last_global_id and source != self.local_name:
+                self.last_global_id = current_id
+                source = latest.get('source', '未知来源')
+                content = latest.get('content', '')
+                ctype = latest.get('type', 'text')
+                if ctype == 'text':
+                    preview = content[:60] + ('...' if len(content) > 60 else '')
+                    msg = f"【{source}】\n{preview}"
+                elif ctype == 'file':
+                    msg = f"【{source}】\n收到文件：{content}"
+                else:
+                    msg = f"【{source}】\n新内容（{ctype}）"
+                show_notification("新剪贴板内容", msg)
+        except Exception as e:
+            logger.error(f"处理文件变化失败: {e}")
 
-                    if ctype == 'text':
-                        preview = content[:60] + ('...' if len(content) > 60 else '')
-                        msg = f"【{source}】\n{preview}"
-                    elif ctype == 'file':
-                        msg = f"【{source}】\n收到文件：{content}"
-                    else:
-                        msg = f"【{source}】\n新内容（{ctype}）"
+    # ---------- 启动文件监听 ----------
+    def _start_file_watcher(self):
+        if self._file_observer is not None:
+            return
+        self._file_observer = watch_file(
+            self.latest_file,
+            self._on_latest_file_changed,
+            debounce_seconds=0.8   # 防抖时间，避免频繁读取
+        )
+        logger.info("文件监控已启动")
 
-                    # 使用公共通知，右下角自动消失
-                    show_notification("新剪贴板内容", msg)
-
-            except Exception as e:
-                logger.error(f"监控文件失败: {e}")
-            time.sleep(2)
+    # ---------- 停止文件监听 ----------
+    def _stop_file_watcher(self):
+        if self._file_observer:
+            self._file_observer.stop()
+            self._file_observer.join()
+            self._file_observer = None
+            logger.info("文件监控已停止")
 
     # -------- 菜单构建 --------
     def create_menu(self):
@@ -610,17 +624,15 @@ class TrayManager:
             self.start_client()
 
         # 启动文件监控
-        self._monitor_running = True
-        self._monitor_thread = threading.Thread(target=self._monitor_latest_file, daemon=True)
-        self._monitor_thread.start()
+        self._start_file_watcher()
 
         # 托盘
         self.icon = pystray.Icon("SyncClipboard", image, "SyncClipboard", self.create_menu())
         self.icon.on_click = self.on_left_click
         self.update_icon()
         self.icon.run()
-        # 托盘退出后停止监控
-        self._monitor_running = False
+        # 托盘退出后停止文件监控
+        self._stop_file_watcher()
 
 # ========== 主入口 ==========
 if __name__ == "__main__":
