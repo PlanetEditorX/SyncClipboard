@@ -4,12 +4,14 @@ import threading
 import logging
 
 from windows_toasts import (
-    WindowsToaster,
+    InteractableWindowsToaster,
     Toast
 )
 
+AUMID = "PlanetEditorX.SyncClipboard"
+
 logger = logging.getLogger("gui")
-toaster = WindowsToaster("SyncClipboard")
+toaster = InteractableWindowsToaster("SyncClipboard", notifierAUMID=AUMID)
 
 def show_notification(title, msg):
     try:

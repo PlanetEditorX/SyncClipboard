@@ -23,7 +23,7 @@ ICON_FILE = PROJECT_ROOT / "gui" / "icon" / "icon-active.png"
 # ---------- 清理 release 目录下所有旧文件（保留本脚本自身）----------
 print("[Clean] 清理 release 目录下所有旧文件（除 build.py）...")
 for item in RELEASE_DIR.iterdir():
-    if item.name == "build.py":
+    if item.name == "build.py" or item.name == "bat":
         continue
     if item.is_dir():
         shutil.rmtree(item, ignore_errors=True)
@@ -74,6 +74,14 @@ for fname in ["icon.ico", "icon-active.png", "icon-stop.png"]:
     if src.exists():
         shutil.copy2(src, dst_icon / fname)
 print(f"  ✓ 图标 -> {dst_icon}")
+
+# 3. bat文件夹
+src_bat = RELEASE_DIR / "bat"
+dst_bat = DIST_DIR
+if src_bat.exists():
+    for file in src_bat.glob("*.bat"):
+        shutil.copy2(file, dst_bat / file.name)
+    print(f"  ✓ bat 文件 -> {dst_bat}")
 
 print(f"\n[Success] 打包成功！")
 print(f"单文件 exe 位置: {exe_path}")
