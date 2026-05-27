@@ -1,22 +1,44 @@
 # common/notification.py
+
+import threading
 import logging
-from winotify import Notification
+
+from windows_toasts import (
+    WindowsToaster,
+    Toast
+)
 
 logger = logging.getLogger("notification")
+toaster = WindowsToaster("SyncClipboard")
 
-def show_notification(title, msg, duration='short'):
-    """
-    弹出右下角系统通知，自动消失。
-    duration: 'short' (约5秒) 或 'long' (约25秒)
-    """
+def show_notification(title, msg):
     try:
-        toast = Notification(
-            app_id="SyncClipboard",
-            title=title,
-            msg=msg,
-            duration=duration
-        )
-        toast.show()       # 阻塞时间极短，内部会异步显示
-        logger.debug(f"通知弹出成功: {title}")
+        toast = Toast()
+        # 标题
+        toast.text_fields = [
+            title,
+            msg
+        ]
+        toaster.show_toast(toast)
     except Exception as e:
         logger.error(f"通知弹出失败: {e}")
+
+def show_notification_with_click(title, msg, callback):
+    try:
+        toast = Toast()
+        toast.text_fields = [
+            title,
+            msg
+        ]
+        def _clicked(event_args):
+            try:
+                threading.Thread(
+                    target=callback,
+                    daemon=True
+                ).start()
+            except Exception as e:
+                logger.error(f"通知回调失败: {e}")
+        toast.on_activated = _clicked
+        toaster.show_toast(toast)
+    except Exception as e:
+        logger.error(f"带点击通知失败: {e}")

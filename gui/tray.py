@@ -24,9 +24,8 @@ from tkinter import filedialog, messagebox
 from server.run import main as server_main
 from client.run import main as client_main
 from common.path import BASE_DIR
-from common.notification import show_notification
 from common.file_watcher import watch_files
-from common.notification import show_notification
+from common.notification import show_notification, show_notification_with_click
 
 # ---------- 配置文件路径 ----------
 CLIENT_CONFIG = BASE_DIR / "config" / "client_config.json"
@@ -567,7 +566,11 @@ class TrayManager:
             if file_id and source != self.local_name:
                 name = data.get('name', '未知文件')
                 msg = f"来源：{source}\n文件：{name}"
-                show_notification("检测到文件发布", msg)
+                show_notification_with_click(
+                    "检测到文件发布, 点击保存。",
+                    msg,
+                    lambda: self.fetch_file(None, None)
+                )
         except Exception as e:
             logger.error(f"处理文件变化失败: {e}")
 
@@ -620,8 +623,6 @@ class TrayManager:
             Menu.SEPARATOR,
             MenuItem('重启服务', self.restart_services),
             Menu.SEPARATOR,
-            # 注意：这里不要重复添加获取文件菜单项，否则右键会出现两个
-            # MenuItem('获取文件', self.fetch_file),  # 删除或注释掉
             MenuItem('退出', self.quit_app)
         )
 

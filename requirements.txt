@@ -1,9 +1,9 @@
 Flask
-pyperclip
-requests
-pystray
 Pillow
-pyinstaller
+pystray
 pywin32
-winotify
+requests
 watchdog
+pyperclip
+pyinstaller
+windows-toasts
