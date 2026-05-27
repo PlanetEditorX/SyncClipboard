@@ -1,5 +1,5 @@
 # common/notification.py
-
+import time
 import threading
 import logging
 
@@ -8,7 +8,7 @@ from windows_toasts import (
     Toast
 )
 
-logger = logging.getLogger("notification")
+logger = logging.getLogger("gui")
 toaster = WindowsToaster("SyncClipboard")
 
 def show_notification(title, msg):
@@ -20,6 +20,9 @@ def show_notification(title, msg):
             msg
         ]
         toaster.show_toast(toast)
+        time.sleep(5)
+        # 这会移除操作中心里的历史记录，但不影响已经弹出的横幅。
+        toaster.clear_toasts()
     except Exception as e:
         logger.error(f"通知弹出失败: {e}")
 
@@ -40,5 +43,7 @@ def show_notification_with_click(title, msg, callback):
                 logger.error(f"通知回调失败: {e}")
         toast.on_activated = _clicked
         toaster.show_toast(toast)
+        time.sleep(5)
+        toaster.clear_toasts()
     except Exception as e:
         logger.error(f"带点击通知失败: {e}")
