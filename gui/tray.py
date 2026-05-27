@@ -113,6 +113,28 @@ class TrayManager:
         self._monitor_thread = None
         # 加载上次运行状态
         self.load_state()
+        self.server_host = None
+        self.server_port = None
+        self.key = None
+        self.local_name = None
+
+    def load_client_config(self):
+        # 1. 读取客户端配置，获取服务器地址、密钥、本机名称
+        if not CLIENT_CONFIG.exists():
+            logger.error("客户端配置文件不存在")
+            show_message("错误", "未找到 client_config.json")
+            return
+        try:
+            with open(CLIENT_CONFIG, 'r', encoding='utf-8') as f:
+                config = json.load(f)
+            self.server_host = config.get("server_host", "127.0.0.1")
+            self.server_port = config.get("server_port", 8000)
+            self.key = config.get("key", "")
+            self.local_name = config.get("local_name", "unknown")
+        except Exception as e:
+            logger.error(f"读取配置文件失败: {e}")
+            show_message("错误", "读取配置文件失败")
+            return
 
     # -------- 状态持久化 --------
     def load_state(self):
@@ -314,30 +336,13 @@ class TrayManager:
         """
         logger.info("用户点击『获取文件』")
 
-        # 1. 读取客户端配置，获取服务器地址、密钥、本机名称
-        if not CLIENT_CONFIG.exists():
-            logger.error("客户端配置文件不存在")
-            show_message("错误", "未找到 client_config.json")
-            return
-        try:
-            with open(CLIENT_CONFIG, 'r', encoding='utf-8') as f:
-                config = json.load(f)
-            server_host = config.get("server_host", "127.0.0.1")
-            server_port = config.get("server_port", 8000)
-            key = config.get("key", "")
-            local_name = config.get("local_name", "unknown")
-        except Exception as e:
-            logger.error(f"读取配置文件失败: {e}")
-            show_message("错误", "读取配置文件失败")
-            return
-
-        # 2. 构造请求 URL 并发送 POST
-        url = f"http://{server_host}:{server_port}/request_file"
+        # 构造请求 URL 并发送 POST
+        url = f"http://{self.server_host}:{self.server_port}/request_file"
         try:
             resp = requests.post(
                 url,
-                headers={"key": key},
-                json={"source": local_name},
+                headers={"key": self.key},
+                json={"source": self.local_name},
                 timeout=10
             )
         except Exception as e:
@@ -524,7 +529,8 @@ class TrayManager:
                     continue
 
                 current_id = latest.get('id')
-                if current_id and current_id != self.last_global_id:
+                source = latest.get('source')
+                if current_id and current_id != self.last_global_id and source != self.local_name:
                     self.last_global_id = current_id
                     source = latest.get('source', '未知来源')
                     content = latest.get('content', '')
@@ -589,7 +595,8 @@ class TrayManager:
         active = self.server_running or self.client_running
         icon_name = "icon-active.png" if active else "icon-stop.png"
         icon_path = BASE_DIR / "gui" / "icon" / icon_name
-
+        # 读取客户端配置
+        self.load_client_config()
         if icon_path.exists():
             image = Image.open(icon_path)
         else:
