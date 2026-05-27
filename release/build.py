@@ -63,9 +63,7 @@ if not exe_path.exists():
 # 1. config 文件夹（复制 example 配置）
 src_config = PROJECT_ROOT / "config" / "example"
 dst_config = DIST_DIR / "config"
-if dst_config.exists():
-    shutil.rmtree(dst_config)
-shutil.copytree(src_config, dst_config)
+shutil.copytree(src_config, dst_config, dirs_exist_ok=True)
 print(f"  ✓ config -> {dst_config}")
 
 # 2. 图标文件夹

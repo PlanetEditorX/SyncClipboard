@@ -10,5 +10,5 @@ config/*.json
 # 但保留示例模板
 !config/example
 log/
-release
+release/*
 !release/build.py
