@@ -39,7 +39,7 @@ cmd = [
     "--noconfirm",
     "--clean",
     "--onefile",
-    "--windowed",                     # ← 隐藏黑框
+    "--windowed",
     "--name=SyncClipboard",
     "--distpath", str(DIST_DIR),
     "--workpath", str(WORK_DIR),
@@ -47,6 +47,9 @@ cmd = [
     f"--icon={ICON_FILE}",
     "--paths", str(PROJECT_ROOT),
     "--hidden-import=win32clipboard",
+    "--hidden-import=watchdog",
+    "--hidden-import=watchdog.observers",
+    "--hidden-import=watchdog.events",
     str(ENTRY_SCRIPT)
 ]
 
