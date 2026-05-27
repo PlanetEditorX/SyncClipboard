@@ -55,8 +55,8 @@ class SyncClient:
         self.last_text = self.safe_paste()
         logging.info("客户端剪贴板监听启动")
 
-        self.push_thread = threading.Thread(target=self._push_loop, daemon=True)
-        self.push_thread.start()
+        # self.push_thread = threading.Thread(target=self._push_loop, daemon=True)
+        # self.push_thread.start()
 
         # self.pull_thread = threading.Thread(target=self._pull_loop, daemon=True)
         # self.pull_thread.start()
