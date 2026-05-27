@@ -2,10 +2,15 @@
 import os
 import logging
 from threading import Thread
+import threading
+import pyperclip
 import requests
 from flask import Flask, jsonify, send_file, after_this_request, request
 
 logger = logging.getLogger("client")
+
+def get_api_key():
+    return request.headers.get("key", "")
 
 class FileServer:
     def __init__(self, port=8899, center_host="127.0.0.1", center_port=8000):
@@ -19,6 +24,11 @@ class FileServer:
             logging.ERROR
         )
         self._register_routes()
+        # 全局锁，避免同时读写剪贴板
+        self.clipboard_lock = threading.Lock()
+        self.last_remote_id = None
+        self._last_remote_content = None
+        self.last_text = ""
 
     def _register_routes(self):
         @self.app.route("/ping", methods=["GET"])
@@ -35,6 +45,31 @@ class FileServer:
             return jsonify({
                 "count": len(self.shared_files),
                 "files": self.shared_files
+            })
+
+        @self.app.route("/update/client_latest", methods=["POST"])
+        def update_client_latest():
+            key = get_api_key()
+            if key != KEY:
+                return jsonify({"status": "error", "message": "密钥错误"}), 403
+            client_ip = request.remote_addr
+            logger.info(f"更新文字列表 - 请求来自: {client_ip}")
+
+            data = request.get_json()
+            if not data:
+                return jsonify({"status": "error", "message": "无效的请求数据"}), 400
+            latest = data.get("latest_global")
+            if latest and latest.get("source") != self.local_name:
+                if latest["id"] != self.last_remote_id:
+                    with self.clipboard_lock:
+                        pyperclip.copy(latest["content"])
+                    self.last_remote_id = latest["id"]
+                    self._last_remote_content = latest["content"]
+                    self.last_text = latest["content"]
+                    logging.info(f"更新剪贴板: {latest['content'][:50]} (来自 {latest['source']})")
+
+            return jsonify({
+                "status": "ok",
             })
 
         @self.app.route("/check/<file_id>", methods=["GET"])

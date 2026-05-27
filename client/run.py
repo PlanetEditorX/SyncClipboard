@@ -5,6 +5,7 @@ import sys
 import time
 import signal
 import logging
+import requests
 from pathlib import Path
 from common.path import BASE_DIR
 from client.main_menu import SyncClient
@@ -62,6 +63,22 @@ def main():
         file_server
     )
     file_server.start()
+
+    # 注册信息到服务器
+    resp = requests.post(
+        f"http://{config['server_host']}:{config['server_port']}/register",
+        json={
+            "file_server_port": config["file_server_port"],
+            "local_name": config["local_name"],
+            "key": config["key"]
+        }
+    )
+    if resp.status_code == 200:
+        data = resp.json()
+        if data.get("is_new"):
+            logger.info("首次注册成功...")
+        else:
+            logger.info("更新注册成功...")
 
     def graceful_exit(signum, frame):
         logger.info("正在关闭客户端...")

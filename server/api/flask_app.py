@@ -53,6 +53,46 @@ def init_services():
 def get_api_key():
     return request.headers.get("key", "")
 
+# ------------------- 客户端列表 -------------------
+clients = []  # 内存中的客户端列表
+_lock = threading.Lock()
+CLIENT_IP_FILE = Path(__file__).resolve().parent.parent.parent / "config" / "client_ip.json"
+def load_clients():
+    global clients
+    if CLIENT_IP_FILE.exists():
+        try:
+            with open(CLIENT_IP_FILE, "r") as f:
+                clients = json.load(f)
+        except:
+            clients = []
+
+def save_clients():
+    with _lock:
+        with open(CLIENT_IP_FILE, "w") as f:
+            json.dump(clients, f, indent=2, ensure_ascii=False)
+
+def add_or_update_client(ip, port, local_name):
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    # 查找是否已存在同 IP
+    for c in clients:
+        if c["ip"] == ip:
+            c["last_seen"] = now
+            # 可更新端口和名称（如果变化）
+            c["port"] = port
+            c["local_name"] = local_name
+            save_clients()
+            return False  # 已存在，仅更新
+    # 新客户端
+    clients.append({
+        "ip": ip,
+        "port": port,
+        "local_name": local_name,
+        "first_seen": now,
+        "last_seen": now
+    })
+    save_clients()
+    return True
+
 # ------------------- 文字同步接口 -------------------
 @app.route('/text_sync', methods=['POST'])
 def text_sync():
@@ -356,6 +396,29 @@ def status():
         "status": "ok",
         "message": "SyncClipboard Server Running"
     }), 200
+
+# 客户端注册
+@app.route('/register', methods=['POST'])
+def register():
+    data = request.get_json(silent=True) or {}
+    # IP 优先使用服务器看到的 remote_addr
+    ip = request.remote_addr
+    # 如果客户端明确传了 ip，且与 remote_addr 不同，可根据需求选择
+
+    port = data.get('file_server_port', 0)
+    local_name = data.get('local_name', 'unknown')
+    key = data.get('key')
+
+    # 可在此验证密钥，与 server_config 中的 key 比对
+    if key != app.config.get('key'):
+        return jsonify({"status": "error", "msg": "invalid key"}), 403
+    load_clients()
+    is_new = add_or_update_client(ip, port, local_name)
+    return jsonify({
+        "status": "ok",
+        "is_new": is_new,
+        "server_ip": ip  # 告诉客户端服务器认为它的 IP 是什么
+    })
 
 # ------------------- 启动函数 -------------------
 def start_flask():
