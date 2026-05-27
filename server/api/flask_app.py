@@ -140,8 +140,10 @@ def get_latest():
     source = request.args.get("source", "")
 
     latest = tracker.get_global_latest()
-    latest_global = latest.copy()
-
+    if latest is None:
+        latest_global = {}
+    else:
+        latest_global = latest.copy()
     # 如果提供了 source，且最新内容存在，且不是该客户端自己推送的，则自动标记粘贴
     if source and latest and latest.get("source") != source:
 
