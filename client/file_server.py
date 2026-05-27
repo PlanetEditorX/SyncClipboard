@@ -37,6 +37,21 @@ class FileServer:
                 "files": self.shared_files
             })
 
+        @self.app.route("/check/<file_id>", methods=["GET"])
+        def check_files(file_id):
+            client_ip = request.remote_addr
+            logger.info(f"检测文件状态 - 请求来自: {client_ip}")
+
+            path = self.shared_files.get(file_id)
+            if not path:
+                return jsonify({"status": "error", "message": "file_id不存在"}), 404
+
+            if not os.path.isfile(path):
+                return jsonify({"status": "error", "message": "文件不存在"}), 404
+
+            logger.info("文件正常: %s -> %s", file_id, path)
+            return jsonify({"status": "ok", "message": "文件正常"}), 200
+
         @self.app.route("/file/<file_id>", methods=["GET"])
         def download_file(file_id):
             # 调试断点（仅在 DEBUG_MODE=1 时生效）

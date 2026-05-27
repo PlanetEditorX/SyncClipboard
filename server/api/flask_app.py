@@ -259,20 +259,49 @@ def request_file():
             # 清空文件记录，避免重复下载
             latest_file.clear()
             return send_file(path, as_attachment=True, download_name=filename)
-        # 为其它客户端的文件
         else:
-            download_url = (
-                f"http://{info['ip']}:"
-                f"{info['port']}/file/"
-                f"{info['file_id']}"
-            )
-
-            return jsonify({
-                "status": "download",
-                "type": "file",
-                "name": info["name"],
-                "download_url": download_url
-            }), 200
+            # 为其它客户端的文件
+            download_url = f"http://{info['ip']}:{info['port']}/file/{info['file_id']}"
+            check_url = f"http://{info['ip']}:{info['port']}/check/{info['file_id']}"
+            try:
+                resp = requests.get(check_url, timeout=5)
+                if resp.status_code == 200:
+                    data = resp.json()
+                    if data.get("status") == "ok":
+                        # 文件正常，返回给客户端
+                        return jsonify({
+                            "status": "download",
+                            "type": "file",
+                            "name": info["name"],
+                            "download_url": download_url
+                        }), 200
+                    else:
+                        # 远程文件不可用，提取它返回的 message
+                        remote_msg = data.get("message", "未知错误")
+                        latest_file.clear()
+                        return jsonify({
+                            "status": "error",
+                            "message": f"远程文件[{info['name']}]不可用: {remote_msg}"
+                        }), 503
+                else:
+                    # HTTP 状态码非 200，尝试提取错误信息
+                    remote_msg = ""
+                    try:
+                        err_data = resp.json()
+                        remote_msg = err_data.get("message", "")
+                    except:
+                        pass
+                    latest_file.clear()
+                    return jsonify({
+                        "status": "error",
+                        "message": f"远程检查失败，HTTP {resp.status_code}" + (f": {remote_msg}" if remote_msg else "")
+                    }), 503
+            except requests.exceptions.RequestException as e:
+                latest_file.clear()
+                return jsonify({
+                    "status": "error",
+                    "message": f"无法连接到 {info['ip']}:{info['port']}，原因：{str(e)}"
+                }), 503
 
     # 2. 没有文件，执行文本拉取逻辑（同 /latest 的标记粘贴）
     latest = tracker.get_global_latest()
