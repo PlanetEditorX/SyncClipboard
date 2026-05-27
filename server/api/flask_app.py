@@ -126,7 +126,7 @@ def notify_clients(_type):
                     "source": latest["source"],
                     "pasted": True
                 }
-
+                # 标记为已粘贴
                 tracker.mark_pasted(source, pasted_item)
 
                 logging.info(
@@ -136,25 +136,25 @@ def notify_clients(_type):
                     latest["source"]
                 )
 
-            # 为其它客户端的文件
-            update_url = f"http://{client['ip']}:{client['port']}/update/client_latest"
-            try:
-                resp = requests.post(
-                    update_url,
-                    json={
-                        "key": KEY,
-                        "latest_global": latest,
-                        "server_source": LOCAL_NAME,
-                        "type": _type
-                    },
-                    timeout=5
-                )
-                if resp.status_code == 200:
-                    logging.info(f"推送成功: {text[:50]}...")
-                else:
-                    logging.warning(f"推送失败: {resp.status_code} {resp.text}")
-            except Exception as e:
-                logging.error(f"连接服务端失败: {e}")
+                # 更新客户端文件
+                update_url = f"http://{client['ip']}:{client['port']}/update/client_latest"
+                try:
+                    resp = requests.post(
+                        update_url,
+                        json={
+                            "key": KEY,
+                            "latest_global": latest,
+                            "server_source": LOCAL_NAME,
+                            "type": _type
+                        },
+                        timeout=5
+                    )
+                    if resp.status_code == 200:
+                        logging.info(f"推送成功: {text[:50]}...")
+                    else:
+                        logging.warning(f"推送失败: {resp.status_code} {resp.text}")
+                except Exception as e:
+                    logging.error(f"连接服务端失败: {e}")
 
 # ------------------- 文字同步接口 -------------------
 @app.route('/text_sync', methods=['POST'])
