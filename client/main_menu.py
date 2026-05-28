@@ -102,14 +102,14 @@ class SyncClient:
                         "content": text,
                         "source": self.local_name
                     },
-                    timeout=5
+                    timeout=30
                 )
                 if resp.status_code == 200:
                     logging.info(f"推送成功: {text[:50]}...")
                 else:
                     logging.warning(f"推送失败: {resp.status_code} {resp.text}")
-        except Exception as e:
-            logging.error(f"连接服务端失败: {e}")
+        except Exception:
+            logger.exception("连接服务端失败")
 
     def _push_latest_file(self, file_paths):
         """
