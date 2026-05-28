@@ -41,6 +41,7 @@ def main():
     logger.setLevel(logging.INFO)
     # 清除从父进程继承的 handler，避免日志写入 gui.log
     logger.handlers.clear()
+    logger.propagate = False   # 防止传播到 root logger
 
     handler = RotatingFileHandler(
         LOG_FILE, maxBytes=1*1024*1024, backupCount=1, encoding='utf-8'
