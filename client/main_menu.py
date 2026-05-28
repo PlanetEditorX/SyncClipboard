@@ -94,7 +94,7 @@ class SyncClient:
     def push_text(self, text):
         try:
             latest_global = self.tracker.get_global_latest()
-            if latest_global["content"] != text:
+            if latest_global == None or latest_global["content"] != text:
                 resp = SAFE_POST(
                     f"{self.server_url}/text_sync",
                     json={
