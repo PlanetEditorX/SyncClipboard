@@ -96,65 +96,84 @@ def add_or_update_client(ip, port, local_name):
 
 # 通知客户端
 def notify_clients(_type):
+    # 获取全局最新内容
+    latest = tracker.get_global_latest()
+    if latest is None:
+        return  # 如果没有最新内容，直接退出
+    else:
+        latest_global = latest.copy()
+
     for client in clients:
-        # 通知客户端的名称
         source = client["local_name"]
-        latest = tracker.get_global_latest()
-        if latest is None:
-            latest_global = {}
-        else:
-            latest_global = latest.copy()
-        # 如果提供了 source，且最新内容存在，且不是该客户端自己推送的，则自动标记粘贴
-        if source and latest and latest.get("source") != source:
+        client_ip = client['ip']
 
-            client_last = tracker.data.get("clients", {}).get(source)
+        # 核心判断：如果最新内容不是该客户端自己推送的，才需要通知它
+        if latest.get("source") == source:
+            continue
 
-            already_pasted = (
-                client_last
-                and client_last.get("id") == latest["id"]
-                and client_last.get("pasted") is True
+        # 检查该客户端是否已经标记过粘贴（防止重复推送）
+        client_last = tracker.data.get("clients", {}).get(source)
+        already_pasted = (
+            client_last
+            and client_last.get("id") == latest["id"]
+            and client_last.get("pasted") is True
+        )
+
+        if already_pasted:
+            continue
+
+        # --- 第一步：检查客户端是否在线 ---
+        check_url = f"http://{client_ip}:{client['port']}/ping"
+        try:
+            resp = requests.get(check_url, timeout=5)
+            if resp.status_code != 200:
+                logging.warning(f"客户端 {source}({client_ip}) 状态异常: {resp.status_code}")
+                continue
+            logging.info(f"客户端 {source}({client_ip}) 在线，准备推送")
+        except Exception:
+            logging.warning(f"客户端 {source}({client_ip}) 离线")
+            continue
+
+        # --- 第二步：在线状态确认无误后，执行推送 ---
+        # 标记为已粘贴
+        pasted_item = {
+            "id": latest["id"],
+            "type": latest.get("type", "text"),
+            "content": latest["content"],
+            "timestamp": datetime.now().isoformat(),
+            "source": latest["source"],
+            "pasted": True
+        }
+        tracker.mark_pasted(source, pasted_item)
+
+        logging.info(
+            "客户端 %s 已获取并标记粘贴: %s (来自 %s)",
+            source,
+            str(latest["content"])[:30], # 防止 content 不是字符串导致报错
+            latest["source"]
+        )
+
+        # 推送更新到客户端
+        update_url = f"http://{client_ip}:{client['port']}/update/client_latest"
+        try:
+            resp = requests.post(
+                update_url,
+                json={
+                    "key": KEY,
+                    "latest_global": latest_global,
+                    "server_source": LOCAL_NAME,
+                    "type": _type
+                },
+                timeout=5
             )
-
-            # 首次
-            if not already_pasted:
-                latest_global = latest.copy()
-                pasted_item = {
-                    "id": latest["id"],
-                    "type": latest.get("type", "text"),
-                    "content": latest["content"],
-                    "timestamp": datetime.now().isoformat(),
-                    "source": latest["source"],
-                    "pasted": True
-                }
-                # 标记为已粘贴
-                tracker.mark_pasted(source, pasted_item)
-
-                logging.info(
-                    "客户端 %s 已获取并标记粘贴: %s (来自 %s)",
-                    source,
-                    latest["content"][:30],
-                    latest["source"]
-                )
-
-                # 更新客户端文件
-                update_url = f"http://{client['ip']}:{client['port']}/update/client_latest"
-                try:
-                    resp = requests.post(
-                        update_url,
-                        json={
-                            "key": KEY,
-                            "latest_global": latest,
-                            "server_source": LOCAL_NAME,
-                            "type": _type
-                        },
-                        timeout=5
-                    )
-                    if resp.status_code == 200:
-                        logging.info(f"推送成功: {text[:50]}...")
-                    else:
-                        logging.warning(f"推送失败: {resp.status_code} {resp.text}")
-                except Exception as e:
-                    logging.error(f"连接服务端失败: {e}")
+            if resp.status_code == 200:
+                # 修复了原代码中 text 未定义的问题，改用 latest["content"]
+                content_preview = str(latest["content"])[:50]
+                logging.info(f"推送成功: {content_preview}...")
+            else:
+                logging.warning(f"推送失败: {resp.status_code} {resp.text}")
+        except Exception as e:
+            logging.error(f"连接客户端 {source} 失败: {e}")
 
 # ------------------- 文字同步接口 -------------------
 @app.route('/text_sync', methods=['POST'])
@@ -471,6 +490,7 @@ def register():
         return jsonify({"status": "error", "msg": "invalid key"}), 403
     load_clients()
     is_new = add_or_update_client(ip, port, local_name)
+    logging.info(f"客户端 {local_name}({ip}) 已成功注册。")
     return jsonify({
         "status": "ok",
         "is_new": is_new,
