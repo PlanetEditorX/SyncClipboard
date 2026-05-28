@@ -96,28 +96,35 @@ def add_or_update_client(ip, port, local_name):
 
 # 通知客户端
 def notify_clients(_type):
-    # 获取全局最新内容
-    latest = tracker.get_global_latest()
-    if latest is None:
-        return  # 如果没有最新内容，直接退出
+    if _type == "text":
+        # 获取全局最新内容
+        latest = tracker.get_global_latest()
+        if latest is None:
+            return  # 如果没有最新内容，直接退出
+        else:
+            latest_global = latest.copy()
     else:
-        latest_global = latest.copy()
-
+        latest  = latest_file.get_latest()
     for client in clients:
         source = client["local_name"]
         client_ip = client['ip']
 
         # 核心判断：如果最新内容不是该客户端自己推送的，才需要通知它
-        if latest.get("source") == source:
+        if latest.get("source") == source or latest == None:
             continue
 
-        # 检查该客户端是否已经标记过粘贴（防止重复推送）
-        client_last = tracker.data.get("clients", {}).get(source)
-        already_pasted = (
-            client_last
-            and client_last.get("id") == latest["id"]
-            and client_last.get("pasted") is True
-        )
+        if _type == "text":
+            # 检查该客户端是否已经标记过粘贴（防止重复推送）
+            client_last = tracker.data.get("clients", {}).get(source)
+            already_pasted = (
+                client_last
+                and client_last.get("id") == latest["id"]
+                and client_last.get("pasted") is True
+            )
+        else:
+            # 文件默认未使用，已粘贴的文件会自动清理数据
+            already_pasted = False
+            latest_global = latest.copy()
 
         if already_pasted:
             continue
@@ -135,24 +142,31 @@ def notify_clients(_type):
             continue
 
         # --- 第二步：在线状态确认无误后，执行推送 ---
-        # 标记为已粘贴
-        pasted_item = {
-            "id": latest["id"],
-            "type": latest.get("type", "text"),
-            "content": latest["content"],
-            "timestamp": datetime.now().isoformat(),
-            "source": latest["source"],
-            "pasted": True
-        }
-        tracker.mark_pasted(source, pasted_item)
+        if _type == "text":
+            # 标记为已粘贴
+            pasted_item = {
+                "id": latest["id"],
+                "type": latest.get("type", "text"),
+                "content": latest["content"],
+                "timestamp": datetime.now().isoformat(),
+                "source": latest["source"],
+                "pasted": True
+            }
+            tracker.mark_pasted(source, pasted_item)
 
-        logging.info(
-            "客户端 %s 已获取并标记粘贴: %s (来自 %s)",
-            source,
-            str(latest["content"])[:30], # 防止 content 不是字符串导致报错
-            latest["source"]
-        )
-
+            logging.info(
+                "客户端 %s 已获取并标记粘贴: %s (来自 %s)",
+                source,
+                str(latest["content"])[:30], # 防止 content 不是字符串导致报错
+                latest["source"]
+            )
+        else:
+            logging.info(
+                "客户端 %s 已获取文件发布通知: %s (来自 %s)",
+                client["local_name"],
+                latest["name"],
+                latest["source"]
+            )
         # 推送更新到客户端
         update_url = f"http://{client_ip}:{client['port']}/update/client_latest"
         try:

@@ -31,7 +31,10 @@ class LatestFileTracker:
         self._save()
 
     def get_latest(self):
-        return self.data
+        '''返回文件信息'''
+        if self.data["file_id"]:
+            return self.data
+        return None
 
     def clear(self):
         self.data = {"file_id": None, "path": None, "name": None, "size": 0, "source": None, "ip": None}
