@@ -379,7 +379,9 @@ def request_file():
 
     # 1. 检查是否有最新文件
     info = latest_file.get_latest()
-    path = info.get("path")
+    path = None
+    if info:
+        path = info.get("path")
 
     if path:
         # 服务器能直接访问到
