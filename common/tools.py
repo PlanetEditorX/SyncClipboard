@@ -47,8 +47,9 @@ def safe_post(url, **kwargs):
     返回:
         成功时返回 Response 对象，失败时返回 None 并弹出提示。
     """
+    timeout = kwargs.pop("timeout", 5)
     try:
-        return requests.post(url, timeout=5, **kwargs)
+        return requests.post(url, timeout=timeout, **kwargs)
     except requests.exceptions.ConnectTimeout:
         logger.error(f"连接超时: {url}")
         show_message("连接失败", "服务器连接超时")
