@@ -12,7 +12,7 @@ class LatestFileTracker:
 
     def _load(self):
         if os.path.exists(STATE_FILE):
-            with open(STATE_FILE, "r") as f:
+            with open(STATE_FILE, "r", encoding="utf-8") as f:
                 return json.load(f)
         return {"path": None, "name": None, "size": 0}
 

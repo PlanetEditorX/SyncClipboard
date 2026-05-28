@@ -18,6 +18,17 @@ logger = logging.getLogger("client")
 def get_api_key():
     return request.headers.get("key", "")
 
+def get_current_file_id():
+    """读取 files_latest.json 中存储的 file_id，如果文件不存在或无效则返回 None"""
+    if not FILES_LATEST_FILE.exists():
+        return None
+    try:
+        with open(FILES_LATEST_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        return data.get("file_id")
+    except (json.JSONDecodeError, AttributeError):
+        return None
+
 class FileServer:
     def __init__(self, port=8899, center_host="127.0.0.1", center_port=8000, local_name="PC-01", key="123456"):
         self.port = port
@@ -88,10 +99,17 @@ class FileServer:
             else:
                 logger.info(f"更新文件列表 - 请求来自: {client_ip}")
                 latest = data.get("latest_global")
-                if latest and latest.get("source") != self.local_name:
-                    # 将 latest 写入 files_latest.json
+                latest_file_id = latest["file_id"]
+                # 获取本地已存储的文件ID
+                local_file_id = get_current_file_id()
+
+                # 只有当 file_id 不一致时才写入
+                if latest_file_id != local_file_id:
                     with open(FILES_LATEST_FILE, "w", encoding="utf-8") as f:
                         json.dump(latest, f, ensure_ascii=False, indent=2)
+                    logger.info(f"文件ID已更新: {local_file_id} -> {latest_file_id}")
+                else:
+                    logger.info(f"文件ID未变化 ({latest_file_id})，跳过写入")
             return jsonify({
                 "status": "ok",
             })

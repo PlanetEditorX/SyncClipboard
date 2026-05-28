@@ -108,9 +108,10 @@ def notify_clients(_type):
     for client in clients:
         source = client["local_name"]
         client_ip = client['ip']
+        local_name = client['local_name']
 
         # 核心判断：如果最新内容不是该客户端自己推送的，才需要通知它
-        if latest.get("source") == source or latest == None:
+        if latest.get("source") == source or latest.get("source") == local_name or latest == None:
             continue
 
         if _type == "text":
@@ -181,9 +182,11 @@ def notify_clients(_type):
                 timeout=5
             )
             if resp.status_code == 200:
-                # 修复了原代码中 text 未定义的问题，改用 latest["content"]
-                content_preview = str(latest["content"])[:50]
-                logging.info(f"推送成功: {content_preview}...")
+                if _type == "text":
+                    content_preview = str(latest["content"])[:50]
+                    logging.info(f"文字推送成功: {content_preview}...")
+                else:
+                    logging.info(f"文件发布推送成功: {latest["name"]}...")
             else:
                 logging.warning(f"推送失败: {resp.status_code} {resp.text}")
         except Exception as e:
