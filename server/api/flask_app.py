@@ -18,6 +18,7 @@ from server.services.file_handler import FileHandler
 from server.services.client_tracker import ClientTracker
 from server.services.file_sync import LatestFileManager
 from server.services.latest_file import LatestFileTracker
+from common.path import BASE_DIR
 
 # ---------- 日志：不再配置 handler，交给 run.py 统一处理 ----------
 logger = logging.getLogger(__name__)   # 使用模块级 logger，会自动继承根 logger 的 handler
@@ -56,8 +57,7 @@ def get_api_key():
 # ------------------- 客户端列表 -------------------
 clients = []  # 内存中的客户端列表
 _lock = threading.Lock()
-CLIENT_IP_FILE = Path(__file__).resolve().parent.parent.parent / "config" / "client_ip.json"
-
+CLIENT_IP_FILE = BASE_DIR / "config" / "client_ip.json"
 def load_clients_ip():
     global clients
     # 如果文件不存在，先创建一个空的 JSON 文件

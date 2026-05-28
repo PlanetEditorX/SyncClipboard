@@ -33,7 +33,6 @@ SERVER_CONFIG = BASE_DIR / "config" / "server_config.json"
 STATE_FILE = BASE_DIR / "config" / "gui_state.json"
 CLIENT_LATEST_FILE = BASE_DIR / "latest" / "client_latest.json"
 FILE_LATEST_FILE = BASE_DIR / "latest" / "file_latest.json"
-CLIENT_IP_FILE = Path(__file__).resolve().parent.parent.parent / "config" / "client_ip.json"
 CLIENT_CONFIG.parent.mkdir(parents=True, exist_ok=True)
 
 logger = logging.getLogger("gui")
