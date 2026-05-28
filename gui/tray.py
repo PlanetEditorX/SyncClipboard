@@ -81,7 +81,7 @@ class DownloadProgressDialog:
     def __init__(self, title="下载进度"):
         self.root = tk.Tk()
         self.root.title(title)
-        self.root.geometry("400x150")
+        self.root.geometry("450x200")
         self.root.resizable(False, False)
 
         # 居中显示
@@ -92,28 +92,63 @@ class DownloadProgressDialog:
         y = (self.root.winfo_screenheight() // 2) - (height // 2)
         self.root.geometry(f'{width}x{height}+{x}+{y}')
 
-        # 标签
-        self.label = tk.Label(self.root, text="正在下载文件...", font=("微软雅黑", 10))
-        self.label.pack(pady=10)
+        # 设置样式
+        style = ttk.Style()
+        style.theme_use('clam')  # 使用更现代的主题
+        style.configure("TProgressbar", thickness=20)  # 进度条更粗
+
+        # 标签 - 增大字体
+        self.label = tk.Label(
+            self.root,
+            text="正在下载文件...",
+            font=("微软雅黑", 11, "bold")
+        )
+        self.label.pack(pady=(15, 10))
+
+        # 进度条容器（添加边距）
+        progress_frame = tk.Frame(self.root)
+        progress_frame.pack(fill=tk.X, padx=30, pady=5)
 
         # 进度条
         self.progress_var = tk.DoubleVar()
         self.progress_bar = ttk.Progressbar(
-            self.root,
+            progress_frame,
             variable=self.progress_var,
             maximum=100,
             length=350,
-            mode='determinate'
+            mode='determinate',
+            style="TProgressbar"
         )
-        self.progress_bar.pack(pady=10)
+        self.progress_bar.pack(fill=tk.X)
 
         # 详细信息标签
-        self.detail_label = tk.Label(self.root, text="0.0 MB / 0.0 MB", font=("微软雅黑", 9))
-        self.detail_label.pack(pady=5)
+        self.detail_label = tk.Label(
+            self.root,
+            text="准备下载...",
+            font=("微软雅黑", 9)
+        )
+        self.detail_label.pack(pady=10)
 
-        # 取消按钮
-        self.cancel_button = tk.Button(self.root, text="取消", command=self.cancel)
-        self.cancel_button.pack(pady=10)
+        # 取消按钮容器
+        button_frame = tk.Frame(self.root)
+        button_frame.pack(pady=(5, 15))
+
+        # 取消按钮 - 增大尺寸
+        self.cancel_button = tk.Button(
+            button_frame,
+            text="取消下载",
+            command=self.cancel,
+            font=("微软雅黑", 10),
+            width=12,  # 按钮宽度（字符数）
+            height=1,   # 按钮高度
+            bg="#f0f0f0",
+            relief=tk.RAISED,
+            cursor="hand2"  # 鼠标悬停时显示手型
+        )
+        self.cancel_button.pack()
+
+        # 绑定窗口关闭事件
+        self.root.protocol("WM_DELETE_WINDOW", self.cancel)
 
         self.cancelled = False
         self._running = True
@@ -122,18 +157,28 @@ class DownloadProgressDialog:
         """更新进度"""
         if not self._running:
             return
-        self.progress_var.set(percentage)
-        if total_mb > 0:
-            self.detail_label.config(text=f"{downloaded_mb:.1f} MB / {total_mb:.1f} MB")
-        else:
-            self.detail_label.config(text=f"已下载: {downloaded_mb:.1f} MB")
-        self.root.update()
+        try:
+            self.progress_var.set(percentage)
+            if total_mb > 0:
+                self.detail_label.config(
+                    text=f"下载进度：{percentage}%  ({downloaded_mb:.1f} MB / {total_mb:.1f} MB)"
+                )
+            else:
+                self.detail_label.config(
+                    text=f"已下载：{downloaded_mb:.1f} MB"
+                )
+            self.root.update()
+        except:
+            pass
 
     def cancel(self):
         """取消下载"""
         self.cancelled = True
         self._running = False
-        self.root.destroy()
+        try:
+            self.root.destroy()
+        except:
+            pass
 
     def close(self):
         """关闭对话框"""
