@@ -144,6 +144,14 @@ class TrayManager:
                 "last_dir",
                 str(Path.home() / "Downloads")
             )
+            logger.info(
+                f"读取到客户端配置 | "
+                f"服务器地址={self.server_host}, "
+                f"服务器端口={self.server_port}, "
+                f"客户端端口={self.file_server_port}, "
+                f"客户端名字={self.local_name}, "
+                f"记住保存地址={self.last_dir}"
+            )
         except Exception as e:
             logger.error(f"读取配置文件失败: {e}")
             show_message("错误", "读取配置文件失败")
