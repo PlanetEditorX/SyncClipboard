@@ -538,7 +538,7 @@ def internal_notify():
     if request.remote_addr == '127.0.0.1':
         data = request.get_json()
         notify_clients(data['changed_type'])
-        return {'status': 'ok'}
+        return jsonify({"status": "ok"})
 
 # ------------------- 启动函数 -------------------
 def start_flask():

@@ -23,7 +23,7 @@ from tkinter import filedialog, messagebox
 
 from server.run import main as server_main
 from client.run import main as client_main
-from common.tools import BASE_DIR
+from common.tools import BASE_DIR, SAFE_POST
 from common.file_watcher import watch_files
 from common.notification import show_notification, show_notification_with_click
 
@@ -567,13 +567,17 @@ class TrayManager:
         if self.server_running:
             import requests
             try:
-                requests.post(
+                resp = SAFE_POST(
                     f"http://127.0.0.1:{self.server_port}/internal/notify_clients",
                     json={"changed_type": changed_type},
-                    timeout=3
+                    timeout=60
                 )
-            except Exception as e:
-                logger.error(f"客户端通知内部服务器异常:{e}")
+                if resp.status_code == 200:
+                    logging.info(f"通知服务器成功...")
+                else:
+                    logging.warning(f"通知服务器失败: {resp.status_code} {resp.text}")
+            except Exception:
+                logger.exception("客户端通知内部服务器异常")   # 会自动附加 traceback
 
     def _handle_client_latest(self):
         # 处理 client_latest.json 的逻辑
