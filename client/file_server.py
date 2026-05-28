@@ -7,6 +7,11 @@ import pyperclip
 import requests
 from flask import Flask, jsonify, send_file, after_this_request, request
 from server.services.client_tracker import ClientTracker
+from common.path import BASE_DIR
+import json
+
+FILES_LATEST_FILE = BASE_DIR / "latest" / "file_latest.json"
+FILES_LATEST_FILE.parent.mkdir(parents=True, exist_ok=True)
 
 logger = logging.getLogger("client")
 
@@ -80,7 +85,13 @@ class FileServer:
                         self._last_remote_content = latest["content"]
                         self.last_text = latest["content"]
                         logging.info(f"更新剪贴板: {latest['content'][:50]} (来自 {latest['source']})")
-
+            else:
+                logger.info(f"更新文件列表 - 请求来自: {client_ip}")
+                latest = data.get("latest_global")
+                if latest and latest.get("source") != self.local_name:
+                    # 将 latest 写入 files_latest.json
+                    with open(FILES_LATEST_FILE, "w", encoding="utf-8") as f:
+                        json.dump(latest, f, ensure_ascii=False, indent=2)
             return jsonify({
                 "status": "ok",
             })

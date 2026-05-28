@@ -563,7 +563,7 @@ class TrayManager:
                     msg = f"来源：{source}\n内容：{preview}"
                 else:
                     msg = f"来源：{source}\n类型：{ctype}"
-                show_notification("检测到剪贴板更新", msg)
+                show_notification(title, msg)
         except Exception as e:
             logger.error(f"处理文件变化失败: {e}")
 
