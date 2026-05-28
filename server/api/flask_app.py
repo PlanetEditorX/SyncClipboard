@@ -243,23 +243,30 @@ def sync():
     else:
         # 内容没变 → 纯拉取操作
         latest = tracker.get_global_latest()
-        latest_global = latest.copy()
-        latest_global["pasted"] = False
         # 如果全局最新不是自己，则标记该手机已粘贴（更新 clients）
         if source and latest and latest.get("source") != source:
-            pasted_item = {
-                "id": latest["id"],
-                "type": latest.get("type", "text"),
-                "content": latest["content"],
-                "timestamp": datetime.now().isoformat(),
-                "source": latest["source"],   # 保留原始来源
-                "pasted": True
-            }
-            tracker.mark_pasted(source, pasted_item)
+            # 新内容
+            if latest.get("content") != content:
+                latest_global = latest.copy()
+                latest_global["pasted"] = False
+                pasted_item = {
+                    "id": latest["id"],
+                    "type": latest.get("type", "text"),
+                    "content": latest["content"],
+                    "timestamp": datetime.now().isoformat(),
+                    "source": latest["source"],   # 保留原始来源
+                    "pasted": True
+                }
+                tracker.mark_pasted(source, pasted_item)
+            else:
+                latest_global = {
+                    "pasted": False
+                }
 
     return jsonify({"status": "ok", "latest_global": latest_global})
 
 @app.route('/latest', methods=['GET'])
+# 最新数据
 def get_latest():
     key = get_api_key()
     if key != KEY:
@@ -267,7 +274,6 @@ def get_latest():
 
     # 获取请求客户端的名称（用于自动标记粘贴）
     source = request.args.get("source", "")
-
     latest = tracker.get_global_latest()
     if latest is None:
         latest_global = {}
@@ -305,6 +311,10 @@ def get_latest():
                 latest["content"][:30],
                 latest["source"]
             )
+        else:
+            latest_global = {
+                "pasted": False
+            }
 
     return jsonify({"status": "ok", "latest_global": latest_global}), 200
 
