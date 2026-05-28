@@ -75,7 +75,7 @@ def main():
         "key": config["key"]
     }
 
-    resp = SAFE_POST(url, json=payload)   # 直接调用，内置超时和异常处理
+    resp = SAFE_POST(url, json=payload, timeout=30)
 
     if resp is None:
         # 请求失败
