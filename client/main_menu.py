@@ -55,8 +55,9 @@ class SyncClient:
         self.last_text = self.safe_paste()
         logging.info("客户端剪贴板监听启动")
 
-        # self.push_thread = threading.Thread(target=self._push_loop, daemon=True)
-        # self.push_thread.start()
+        # 推送线程
+        self.push_thread = threading.Thread(target=self._push_loop, daemon=True)
+        self.push_thread.start()
 
         # self.pull_thread = threading.Thread(target=self._pull_loop, daemon=True)
         # self.pull_thread.start()
@@ -106,32 +107,6 @@ class SyncClient:
         except Exception as e:
             logging.error(f"连接服务端失败: {e}")
 
-    def _pull_loop(self):
-        while self.running:
-            try:
-                resp = requests.get(
-                    f"{self.server_url}/latest?source={self.local_name}",
-                    headers={
-                        "key": self.key
-                    },
-                    timeout=5
-                )
-                if resp.status_code == 200:
-                    data = resp.json()
-                    latest = data.get("latest_global")
-                    if latest and latest.get("source") != self.local_name:
-                        if latest["id"] != self.last_remote_id:
-                            with self.clipboard_lock:
-                                pyperclip.copy(latest["content"])
-                            self.last_remote_id = latest["id"]
-                            self._last_remote_content = latest["content"]
-                            self.last_text = latest["content"]
-                            logging.info(f"拉取并更新剪贴板: {latest['content'][:50]} (来自 {latest['source']})")
-            except Exception as e:
-                logging.error(f"拉取失败: {e} 等待10秒后重试")
-                time.sleep(7)
-            time.sleep(3)
-
     def _push_latest_file(self, file_paths):
         """
         推送最新的复制文件
@@ -169,14 +144,45 @@ class SyncClient:
         except Exception as e:
             logging.error(f"同步文件路径失败: {e}")
 
+    def _pull_loop(self):
+        while self.running:
+            try:
+                resp = requests.get(
+                    f"{self.server_url}/latest?source={self.local_name}",
+                    headers={
+                        "key": self.key
+                    },
+                    timeout=5
+                )
+                if resp.status_code == 200:
+                    data = resp.json()
+                    latest = data.get("latest_global")
+                    if latest and latest.get("source") != self.local_name:
+                        if latest["id"] != self.last_remote_id:
+                            with self.clipboard_lock:
+                                pyperclip.copy(latest["content"])
+                            self.last_remote_id = latest["id"]
+                            self._last_remote_content = latest["content"]
+                            self.last_text = latest["content"]
+                            logging.info(f"拉取并更新剪贴板: {latest['content'][:50]} (来自 {latest['source']})")
+            except Exception as e:
+                logging.error(f"拉取失败: {e} 等待10秒后重试")
+                time.sleep(7)
+            time.sleep(3)
+
     def stop(self):
         self.running = False
         logging.info("客户端已停止")
 
 def get_clipboard_files():
+    """
+    获取剪贴板中的文件路径列表。
+    如果剪贴板中包含从资源管理器复制的文件，则返回文件路径列表；
+    否则返回 None。
+    """
     try:
+        # 打开剪贴板
         win32clipboard.OpenClipboard()
-
         if win32clipboard.IsClipboardFormatAvailable(
                 win32clipboard.CF_HDROP):
             return list(
@@ -192,6 +198,7 @@ def get_clipboard_files():
 
     finally:
         try:
+            # 关闭剪贴板，释放系统资源
             win32clipboard.CloseClipboard()
         except:
             pass

@@ -51,6 +51,9 @@ class FileServer:
 
         @self.app.route("/update/client_latest", methods=["POST"])
         def update_client_latest():
+            if os.getenv("DEBUG_MODE") == "1":
+                import debugpy
+                debugpy.breakpoint()
             data = request.get_json()
             if not data:
                 return jsonify({"status": "error", "message": "无效的请求数据"}), 400
