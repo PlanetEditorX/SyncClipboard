@@ -3,18 +3,18 @@ import re
 import sys
 import json
 import time
-import winreg   # 仅 Windows，若需跨平台请自行替换
+import winreg
 import struct
 import logging
 import pystray
-import tempfile          # 临时目录（备用）
-import requests          # 用于 HTTP 请求
+import requests
 import threading
-import pyperclip         # 用于操作剪贴板文本
+import pyperclip
 import subprocess
 import tkinter as tk
+from tkinter import ttk
 from PIL import Image
-import win32clipboard    # 用于将文件列表放入剪贴板
+import win32clipboard
 import multiprocessing
 from pathlib import Path
 from urllib.parse import unquote
@@ -47,8 +47,6 @@ def copy_files_to_clipboard(file_paths):
     if not file_paths:
         return False
     try:
-        # 构建 CF_HDROP 格式的数据
-        # 格式：DROPFILES 结构 + 双NULL结尾的文件路径列表（ANSI编码）
         files_joined = '\0'.join(file_paths) + '\0\0'
         dropfiles = struct.pack('IIII', 20, 0, 0, 0) + files_joined.encode('mbcs')
         win32clipboard.OpenClipboard()
@@ -77,6 +75,78 @@ def show_message(title, msg):
         root.destroy()
     threading.Thread(target=_show, daemon=True).start()
 
+# ========== 进度对话框类（基于 tkinter） ==========
+class DownloadProgressDialog:
+    """下载进度对话框，使用 tkinter 实现"""
+    def __init__(self, title="下载进度"):
+        self.root = tk.Tk()
+        self.root.title(title)
+        self.root.geometry("400x150")
+        self.root.resizable(False, False)
+
+        # 居中显示
+        self.root.update_idletasks()
+        width = self.root.winfo_width()
+        height = self.root.winfo_height()
+        x = (self.root.winfo_screenwidth() // 2) - (width // 2)
+        y = (self.root.winfo_screenheight() // 2) - (height // 2)
+        self.root.geometry(f'{width}x{height}+{x}+{y}')
+
+        # 标签
+        self.label = tk.Label(self.root, text="正在下载文件...", font=("微软雅黑", 10))
+        self.label.pack(pady=10)
+
+        # 进度条
+        self.progress_var = tk.DoubleVar()
+        self.progress_bar = ttk.Progressbar(
+            self.root,
+            variable=self.progress_var,
+            maximum=100,
+            length=350,
+            mode='determinate'
+        )
+        self.progress_bar.pack(pady=10)
+
+        # 详细信息标签
+        self.detail_label = tk.Label(self.root, text="0.0 MB / 0.0 MB", font=("微软雅黑", 9))
+        self.detail_label.pack(pady=5)
+
+        # 取消按钮
+        self.cancel_button = tk.Button(self.root, text="取消", command=self.cancel)
+        self.cancel_button.pack(pady=10)
+
+        self.cancelled = False
+        self._running = True
+
+    def update_progress(self, percentage, downloaded_mb, total_mb):
+        """更新进度"""
+        if not self._running:
+            return
+        self.progress_var.set(percentage)
+        if total_mb > 0:
+            self.detail_label.config(text=f"{downloaded_mb:.1f} MB / {total_mb:.1f} MB")
+        else:
+            self.detail_label.config(text=f"已下载: {downloaded_mb:.1f} MB")
+        self.root.update()
+
+    def cancel(self):
+        """取消下载"""
+        self.cancelled = True
+        self._running = False
+        self.root.destroy()
+
+    def close(self):
+        """关闭对话框"""
+        self._running = False
+        try:
+            self.root.destroy()
+        except:
+            pass
+
+    def is_cancelled(self):
+        """检查是否已取消"""
+        return self.cancelled
+
 # ========== 文件名解析 ==========
 def parse_filename_from_cd(content_disposition):
     """
@@ -85,16 +155,13 @@ def parse_filename_from_cd(content_disposition):
     """
     if not content_disposition:
         return None
-    # 尝试 filename*=UTF-8''...
     match = re.search(r"filename\*=UTF-8''([^;]+)", content_disposition, re.IGNORECASE)
     if match:
         encoded = match.group(1)
         return unquote(encoded)   # 解码 % 编码
-    # 尝试 filename="..."
     match = re.search(r'filename="([^"]+)"', content_disposition, re.IGNORECASE)
     if match:
         return match.group(1)
-    # 尝试 filename=... (无引号)
     match = re.search(r'filename=([^;]+)', content_disposition, re.IGNORECASE)
     if match:
         return match.group(1).strip('"')
@@ -111,22 +178,19 @@ class TrayManager:
         self.last_global_id = None
         self.client_latest = CLIENT_LATEST_FILE
         self.file_latest = FILE_LATEST_FILE
-        self.last_global_id = None
         self._file_observer = None
         self._monitor_running = False
         self._monitor_thread = None
-        # 加载上次运行状态
         self.load_state()
         self.server_host = None
         self.server_port = None
         self.key = None
         self.local_name = None
         self.file_server_port = None
-        self.clients = []  # 内存中的客户端列表
+        self.clients = []
         self.last_dir = str(Path.home() / "Downloads")
 
     def load_client_config(self):
-        # 1. 读取客户端配置，获取服务器地址、密钥、本机名称
         if not CLIENT_CONFIG.exists():
             logger.error("客户端配置文件不存在")
             show_message("错误", "未找到 client_config.json")
@@ -186,10 +250,8 @@ class TrayManager:
                 "file_server_port": self.file_server_port,
                 "last_dir": self.last_dir
             }
-
             with open(CLIENT_CONFIG, 'w', encoding='utf-8') as f:
                 json.dump(config, f, ensure_ascii=False, indent=4)
-
         except Exception as e:
             logger.error(f"保存配置失败: {e}")
 
@@ -201,7 +263,6 @@ class TrayManager:
         active = self.server_running or self.client_running
         icon_name = "icon-active.png" if active else "icon-stop.png"
         icon_path = BASE_DIR / "gui" / "icon" / icon_name
-
         if icon_path.exists():
             self.icon.icon = Image.open(icon_path)
 
@@ -221,7 +282,8 @@ class TrayManager:
     def toggle_autostart(self, icon, item):
         key_path, name = self._autostart_key()
         try:
-            if item.checked:   # 当前是开启状态，用户点击后要关闭开机启动
+            # 当前是开启状态，用户点击后要关闭开机启动
+            if item.checked:
                 with winreg.OpenKey(
                     winreg.HKEY_CURRENT_USER,
                     key_path,
@@ -229,13 +291,12 @@ class TrayManager:
                     winreg.KEY_SET_VALUE
                 ) as key:
                     winreg.DeleteValue(key, name)
-
-            else:              # 当前是关闭状态，用户点击后要开启开机启动
+            else:
+                # 当前是关闭状态，用户点击后要开启开机启动
                 if getattr(sys, "frozen", False):
                     cmd = f'"{sys.executable}"'
                 else:
                     cmd = f'"{sys.executable}" -m gui.run'
-
                 with winreg.OpenKey(
                     winreg.HKEY_CURRENT_USER,
                     key_path,
@@ -249,7 +310,6 @@ class TrayManager:
                         winreg.REG_SZ,
                         cmd
                     )
-
         except Exception as e:
             logger.error(f"开机启动操作失败: {e}")
 
@@ -260,7 +320,6 @@ class TrayManager:
             self.server_running = True
             if icon: icon.update_menu()
             return
-
         try:
             self.server_process = multiprocessing.Process(
                 target=server_main,
@@ -374,21 +433,20 @@ class TrayManager:
         """
         logger.info("用户点击『获取文件』")
 
-        # 构造请求 URL 并发送 POST
         url = f"http://{self.server_host}:{self.server_port}/request_file"
         try:
             resp = requests.post(
                 url,
                 headers={"key": self.key},
                 json={"source": self.local_name},
-                timeout=10
+                timeout=10,
+                stream=True  # 启用流式传输
             )
         except Exception as e:
             logger.error(f"请求服务器失败: {e}")
             show_message("请求失败", f"无法连接服务器: {e}")
             return
 
-        # 3. 根据状态码处理响应
         if resp.status_code == 200:
             content_type = resp.headers.get("Content-Type", "")
             content_disposition = resp.headers.get("Content-Disposition", "")
@@ -399,14 +457,13 @@ class TrayManager:
                     "attachment" in content_disposition)
 
             if is_file:
-                # 解析文件名（支持中文）
+                # 解析文件名
                 filename = parse_filename_from_cd(content_disposition)
                 if not filename:
                     filename = "downloaded_file"
-                self._save_file_from_response(resp, filename)
+                self._save_file_stream(resp, filename)
                 return
 
-            # 否则按 JSON 处理
             try:
                 data = resp.json()
             except Exception:
@@ -431,7 +488,6 @@ class TrayManager:
                 logger.warning(f"未知响应格式: {data}")
                 show_message("未知响应", "服务器返回格式无法识别")
         elif resp.status_code == 302:
-            # 情况3：服务器直接返回重定向（比如直接 send_file 返回文件）
             location = resp.headers.get("Location")
             if location:
                 self._download_and_save_file(location, "downloaded_file")
@@ -442,8 +498,15 @@ class TrayManager:
             logger.warning(f"服务器返回错误状态码: {resp.status_code}")
             show_message("请求失败", f"HTTP {resp.status_code}")
 
-    def _save_file_from_response(self, response, default_filename):
-        """将响应内容（文件流）保存为用户选择的文件"""
+    def _save_file_stream(self, response, filename):
+        """
+        流式接收文件并直接写入磁盘（边下载边写入），显示实时进度。
+
+        Args:
+            response: requests.Response 对象（需已启用 stream=True）
+            filename: 建议的文件名
+        """
+        # 弹出保存对话框
         result = [None]
 
         def ask_filename():
@@ -452,7 +515,7 @@ class TrayManager:
             file_path = filedialog.asksaveasfilename(
                 title="保存文件",
                 initialdir=self.last_dir,
-                initialfile=default_filename,
+                initialfile=filename,
                 defaultextension="",
                 filetypes=[("所有文件", "*.*")]
             )
@@ -465,28 +528,85 @@ class TrayManager:
         t = threading.Thread(target=ask_filename)
         t.start()
         t.join()
-        save_path = result[0]
-        if not save_path:
-            logger.info("用户取消保存")
+
+        file_path = result[0]
+        if not file_path:
+            logger.info("用户取消保存文件")
+            response.close()
             return
 
-        try:
-            with open(save_path, 'wb') as f:
-                f.write(response.content)
-            logger.info(f"文件已保存到: {save_path}")
-            if copy_files_to_clipboard([save_path]):
-                show_message("获取成功", f"文件已保存并到\n{save_path}")
-            else:
-                show_message("下载成功但复制剪贴板失败", f"文件保存在:\n{save_path}")
-        except Exception as e:
-            logger.error(f"保存文件失败: {e}")
-            show_message("保存失败", str(e))
+        # 创建进度对话框
+        progress = DownloadProgressDialog("下载进度")
 
-    def _download_and_save_file(self, url, default_filename):
+        try:
+            total_size = int(response.headers.get('content-length', 0))
+            downloaded = 0
+            last_percentage = -1
+
+            with open(file_path, 'wb') as f:
+                for chunk in response.iter_content(chunk_size=8192):
+                    if chunk:
+                        # 检查用户是否取消
+                        if progress.is_cancelled():
+                            logger.info("用户取消下载")
+                            f.close()
+                            try:
+                                os.remove(file_path)
+                            except:
+                                pass
+                            show_message("已取消", "文件下载已取消")
+                            return
+
+                        f.write(chunk)
+                        downloaded += len(chunk)
+
+                        # 更新进度
+                        if total_size > 0:
+                            percentage = int(downloaded / total_size * 100)
+                            if percentage != last_percentage:
+                                downloaded_mb = downloaded / (1024 * 1024)
+                                total_mb = total_size / (1024 * 1024)
+                                progress.update_progress(percentage, downloaded_mb, total_mb)
+                                last_percentage = percentage
+                        else:
+                            if downloaded % (100 * 1024) == 0:
+                                downloaded_mb = downloaded / (1024 * 1024)
+                                progress.update_progress(0, downloaded_mb, 0)
+
+            # 下载完成
+            progress.update_progress(100, downloaded / (1024 * 1024), downloaded / (1024 * 1024))
+            progress.close()
+
+            logger.info(f"文件已保存: {file_path} ({downloaded} 字节)")
+
+            # 复制文件到剪贴板
+            if copy_files_to_clipboard([file_path]):
+                show_message("保存成功", f"文件已保存至:\n{file_path}\n路径已复制到剪贴板")
+            else:
+                show_message("保存成功", f"文件已保存至:\n{file_path}")
+
+        except Exception as e:
+            progress.close()
+            logger.error(f"保存文件失败: {e}")
+            show_message("保存失败", f"无法保存文件: {e}")
+            try:
+                if os.path.exists(file_path):
+                    os.remove(file_path)
+            except:
+                pass
+        finally:
+            response.close()
+
+    def _download_and_save_file(self, download_url, filename):
         """
-        下载文件，弹出保存对话框让用户选择保存位置，下载完成后将文件复制到剪贴板。
+        从下载链接流式下载文件，显示实时进度。
+
+        Args:
+            download_url: 文件下载链接
+            filename: 建议的文件名
         """
-        result = [None]  # 用于线程间传递选择的结果
+        # 弹出保存对话框
+        result = [None]
 
         def ask_filename():
             root = tk.Tk()
@@ -494,7 +614,7 @@ class TrayManager:
             file_path = filedialog.asksaveasfilename(
                 title="保存文件",
                 initialdir=self.last_dir,
-                initialfile=default_filename,
+                initialfile=filename,
                 defaultextension="",
                 filetypes=[("所有文件", "*.*")]
             )
@@ -506,27 +626,71 @@ class TrayManager:
 
         t = threading.Thread(target=ask_filename)
         t.start()
-        t.join()  # 等待用户选择
-        save_path = result[0]
-        if not save_path:
-            logger.info("用户取消了文件保存")
+        t.join()
+
+        file_path = result[0]
+        if not file_path:
+            logger.info("用户取消保存文件")
             return
-        # 开始下载
+
+        # 创建进度对话框
+        progress = DownloadProgressDialog("下载进度")
+
         try:
-            with requests.get(url, stream=True, timeout=30) as r:
+            with requests.get(download_url, stream=True, timeout=30) as r:
                 r.raise_for_status()
-                with open(save_path, 'wb') as f:
+
+                total_size = int(r.headers.get('content-length', 0))
+                downloaded = 0
+                last_percentage = -1
+
+                with open(file_path, 'wb') as f:
                     for chunk in r.iter_content(chunk_size=8192):
-                        f.write(chunk)
-            logger.info(f"文件已保存到: {save_path}")
-            # 将下载的文件复制到剪贴板
-            if copy_files_to_clipboard([save_path]):
-                show_message("获取成功", f"文件已保存到\n{save_path}")
+                        if chunk:
+                            if progress.is_cancelled():
+                                logger.info("用户取消下载")
+                                f.close()
+                                try:
+                                    os.remove(file_path)
+                                except:
+                                    pass
+                                show_message("已取消", "文件下载已取消")
+                                return
+
+                            f.write(chunk)
+                            downloaded += len(chunk)
+
+                            if total_size > 0:
+                                percentage = int(downloaded / total_size * 100)
+                                if percentage != last_percentage:
+                                    downloaded_mb = downloaded / (1024 * 1024)
+                                    total_mb = total_size / (1024 * 1024)
+                                    progress.update_progress(percentage, downloaded_mb, total_mb)
+                                    last_percentage = percentage
+                            else:
+                                if downloaded % (100 * 1024) == 0:
+                                    downloaded_mb = downloaded / (1024 * 1024)
+                                    progress.update_progress(0, downloaded_mb, 0)
+
+            # 下载完成
+            progress.update_progress(100, downloaded / (1024 * 1024), downloaded / (1024 * 1024))
+            progress.close()
+
+            logger.info(f"文件从URL下载成功: {file_path}")
+            if copy_files_to_clipboard([file_path]):
+                show_message("保存成功", f"文件已保存至:\n{file_path}\n路径已复制到剪贴板")
             else:
-                show_message("下载成功但复制剪贴板失败", f"文件保存在:\n{save_path}")
+                show_message("保存成功", f"文件已保存至:\n{file_path}")
+
         except Exception as e:
-            logger.error(f"下载文件失败: {e}")
-            show_message("下载失败", str(e))
+            progress.close()
+            logger.error(f"从URL下载文件失败: {e}")
+            show_message("下载失败", f"下载失败: {e}")
+            try:
+                if os.path.exists(file_path):
+                    os.remove(file_path)
+            except:
+                pass
 
     # -------- 退出程序 --------
     def quit_app(self, icon):
@@ -577,10 +741,9 @@ class TrayManager:
                 else:
                     logging.warning(f"通知服务器失败: {resp.status_code} {resp.text}")
             except Exception:
-                logger.exception("客户端通知内部服务器异常")   # 会自动附加 traceback
+                logger.exception("客户端通知内部服务器异常")
 
     def _handle_client_latest(self):
-        # 处理 client_latest.json 的逻辑
         try:
             if not self.client_latest.exists():
                 return
@@ -607,26 +770,85 @@ class TrayManager:
             logger.error(f"处理文件变化失败: {e}")
 
     def _handle_file_latest(self):
-        # 处理 file_latest.json 的逻辑
+        """
+        处理 file_latest.json 的逻辑。
+        检测到新文件时弹出通知，点击后自动下载并显示进度。
+        """
         try:
             if not self.file_latest.exists():
                 return
+
             with open(self.file_latest, 'r', encoding='utf-8') as f:
                 data = json.load(f)
+
             file_id = data.get('file_id')
             if not file_id:
                 return
+
             source = data.get('source', '未知来源')
             if file_id and source != self.local_name:
                 name = data.get('name', '未知文件')
                 msg = f"来源：{source}\n文件：{name}"
+
                 show_notification_with_click(
                     "检测到文件发布, 点击保存。",
                     msg,
-                    lambda: self.fetch_file(None, None)
+                    lambda: self.fetch_file_with_progress(name)
                 )
         except Exception as e:
             logger.error(f"处理文件变化失败: {e}")
+
+    def fetch_file_with_progress(self, suggested_filename="downloaded_file"):
+        """
+        专门用于通知点击下载的方法，支持显示进度。
+
+        Args:
+            suggested_filename: 建议的文件名
+        """
+        logger.info(f"开始下载文件: {suggested_filename}")
+
+        url = f"http://{self.server_host}:{self.server_port}/request_file"
+        try:
+            resp = requests.post(
+                url,
+                headers={"key": self.key},
+                json={"source": self.local_name},
+                timeout=10,
+                stream=True
+            )
+        except Exception as e:
+            logger.error(f"请求服务器失败: {e}")
+            show_message("请求失败", f"无法连接服务器: {e}")
+            return
+
+        if resp.status_code == 200:
+            content_type = resp.headers.get("Content-Type", "")
+            content_disposition = resp.headers.get("Content-Disposition", "")
+
+            is_file = ("application/octet-stream" in content_type or
+                    "application/x-msdownload" in content_type or
+                    "attachment" in content_disposition)
+
+            if is_file:
+                filename = parse_filename_from_cd(content_disposition)
+                if not filename:
+                    filename = suggested_filename
+                self._save_file_stream(resp, filename)
+            else:
+                try:
+                    data = resp.json()
+                    if data.get("status") == "download" and data.get("type") == "file":
+                        download_url = data.get("download_url")
+                        filename = data.get("name", suggested_filename)
+                        self._download_and_save_file(download_url, filename)
+                    else:
+                        show_message("错误", "服务器返回了非文件响应")
+                except Exception as e:
+                    logger.error(f"解析服务器响应失败: {e}")
+                    show_message("错误", "服务器响应格式异常")
+        else:
+            logger.warning(f"服务器返回错误状态码: {resp.status_code}")
+            show_message("请求失败", f"HTTP {resp.status_code}")
 
     # ---------- 启动文件监听 ----------
     def _start_file_watchers(self):
@@ -653,7 +875,7 @@ class TrayManager:
         get_file_item = MenuItem('获取文件', self.fetch_file, default=True)
 
         return Menu(
-            get_file_item,           # 左键点击会执行这个
+            get_file_item, # 左键点击会执行这个
             Menu.SEPARATOR,
             MenuItem(
                 '开机启动',
@@ -699,7 +921,7 @@ class TrayManager:
         # 根据历史状态自动恢复服务
         logger.info(f"状态恢复: server={self.server_running}, client={self.client_running}")
         if self.server_running:
-            self.start_server()   # 不带 icon，容错
+            self.start_server()
         if self.client_running:
             self.start_client()
 
@@ -712,7 +934,7 @@ class TrayManager:
         self.update_icon()
         self.icon.run()
         # 托盘退出后停止文件监控
-        self._stop_file_watcher()
+        self._stop_file_watchers()
 
 # ========== 主入口 ==========
 if __name__ == "__main__":
