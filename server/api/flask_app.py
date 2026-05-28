@@ -11,14 +11,15 @@ from urllib.parse import unquote
 from flask import Flask, request, jsonify, send_file
 
 # 统一使用 server 包路径的绝对导入
-from server.core.clipboard_manager import get_clipboard_text, set_clipboard_text, generate_id
-from server.core.cache_manager import CacheManager
 from server.core.item_builder import build_text_item
+from server.core.cache_manager import CacheManager
+from server.core.clipboard_manager import get_clipboard_text, set_clipboard_text, generate_id
 from server.services.file_handler import FileHandler
 from server.services.client_tracker import ClientTracker
 from server.services.file_sync import LatestFileManager
 from server.services.latest_file import LatestFileTracker
 from common.tools import BASE_DIR
+from common.notification import show_notification, show_notification_with_click
 
 # ---------- 日志：不再配置 handler，交给 run.py 统一处理 ----------
 logger = logging.getLogger(__name__)   # 使用模块级 logger，会自动继承根 logger 的 handler
@@ -498,6 +499,9 @@ def upload_file():
         f.write(file_data)
 
     logging.info(f"手机上传文件已保存: {save_path}")
+    source = unquote(request.headers.get("source", ""))
+    msg = f"来源：{source}\n文件：{filename}\n保存：{save_path}"
+    show_notification("手机文件已保存", msg)
     return jsonify({"status": "ok", "message": "文件上传成功","path": save_path}), 200
 
 @app.route('/status', methods=['GET'])
