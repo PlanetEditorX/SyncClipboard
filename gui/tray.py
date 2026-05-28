@@ -121,7 +121,9 @@ class TrayManager:
         self.server_port = None
         self.key = None
         self.local_name = None
+        self.file_server_port = None
         self.clients = []  # 内存中的客户端列表
+        self.last_dir = str(Path.home() / "Downloads")
 
     def load_client_config(self):
         # 1. 读取客户端配置，获取服务器地址、密钥、本机名称
@@ -136,6 +138,12 @@ class TrayManager:
             self.server_port = config.get("server_port", 8000)
             self.key = config.get("key", "")
             self.local_name = config.get("local_name", "unknown")
+            self.file_server_port = config.get("file_server_port", 8899)
+            # 加载上次目录
+            self.last_dir = config.get(
+                "last_dir",
+                str(Path.home() / "Downloads")
+            )
         except Exception as e:
             logger.error(f"读取配置文件失败: {e}")
             show_message("错误", "读取配置文件失败")
@@ -159,6 +167,23 @@ class TrayManager:
                 'server_running': self.server_running,
                 'client_running': self.client_running
             }, f)
+
+    def save_client_config(self):
+        try:
+            config = {
+                "server_host": self.server_host,
+                "server_port": self.server_port,
+                "key": self.key,
+                "local_name": self.local_name,
+                "file_server_port": self.file_server_port,
+                "last_dir": self.last_dir
+            }
+
+            with open(CLIENT_CONFIG, 'w', encoding='utf-8') as f:
+                json.dump(config, f, ensure_ascii=False, indent=4)
+
+        except Exception as e:
+            logger.error(f"保存配置失败: {e}")
 
     # -------- 图标更新 --------
     def update_icon(self):
@@ -416,16 +441,18 @@ class TrayManager:
         def ask_filename():
             root = tk.Tk()
             root.withdraw()
-            initial_dir = str(Path.home() / "Desktop")
             file_path = filedialog.asksaveasfilename(
                 title="保存文件",
-                initialdir=initial_dir,
+                initialdir=self.last_dir,
                 initialfile=default_filename,
                 defaultextension="",
                 filetypes=[("所有文件", "*.*")]
             )
             root.destroy()
             result[0] = file_path
+            if file_path:
+                self.last_dir = os.path.dirname(file_path)
+                self.save_client_config()
 
         t = threading.Thread(target=ask_filename)
         t.start()
@@ -456,17 +483,18 @@ class TrayManager:
         def ask_filename():
             root = tk.Tk()
             root.withdraw()
-            # 设置默认保存路径为“桌面”文件夹
-            initial_dir = str(Path.home() / "Desktop")
             file_path = filedialog.asksaveasfilename(
                 title="保存文件",
-                initialdir=initial_dir,
+                initialdir=self.last_dir,
                 initialfile=default_filename,
                 defaultextension="",
                 filetypes=[("所有文件", "*.*")]
             )
             root.destroy()
             result[0] = file_path
+            if file_path:
+                self.last_dir = os.path.dirname(file_path)
+                self.save_client_config()
 
         t = threading.Thread(target=ask_filename)
         t.start()
