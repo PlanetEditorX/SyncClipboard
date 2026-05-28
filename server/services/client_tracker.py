@@ -4,12 +4,14 @@ import os
 from datetime import datetime
 from pathlib import Path
 from common.path import BASE_DIR
+import threading
 
 LATEST_FILE = BASE_DIR / "latest" / "client_latest.json"
 LATEST_FILE.parent.mkdir(parents=True, exist_ok=True)
 
 class ClientTracker:
     def __init__(self):
+        self.lock = threading.Lock()
         self.data = self._load()
 
     def _load(self):
@@ -40,37 +42,43 @@ class ClientTracker:
         return item_id in self.data["global_ids"]
 
     def update(self, item: dict, force_latest=False):
-        source = item.get("source", "unknown")
-        item_id = item["id"]
+        # 写入时加锁，保证原子性
+        with self.lock:
+            source = item.get("source", "unknown")
+            item_id = item["id"]
 
-        if item_id in self.data["global_ids"]:
-            return   # 绝对重复，直接忽略
+            if item_id in self.data["global_ids"]:
+                return   # 绝对重复，直接忽略
 
-        self.data["global_ids"].append(item_id)
-        self.data["clients"][source] = item
+            self.data["global_ids"].append(item_id)
+            self.data["clients"][source] = item
 
-        # 限制 global_ids 最大长度
-        MAX_IDS = 10
-        if len(self.data["global_ids"]) > MAX_IDS:
-            # 计算需要移除的数量
-            remove_count = len(self.data["global_ids"]) - MAX_IDS
-            # 移除最旧的 remove_count 个 ID
-            self.data["global_ids"] = self.data["global_ids"][remove_count:]
+            # 限制 global_ids 最大长度
+            MAX_IDS = 5
+            if len(self.data["global_ids"]) > MAX_IDS:
+                # 计算需要移除的数量
+                remove_count = len(self.data["global_ids"]) - MAX_IDS
+                # 移除最旧的 remove_count 个 ID
+                self.data["global_ids"] = self.data["global_ids"][remove_count:]
 
-        if force_latest:
-            self.data["latest_global"] = item
-        else:
-            global_item = self.data["latest_global"]
-            if global_item is None:
+            if force_latest:
                 self.data["latest_global"] = item
             else:
-                if item["timestamp"] > global_item["timestamp"]:
+                global_item = self.data["latest_global"]
+                if global_item is None:
                     self.data["latest_global"] = item
+                else:
+                    if item["timestamp"] > global_item["timestamp"]:
+                        self.data["latest_global"] = item
 
-        self._save()
+            self._save()
 
     def get_global_latest(self):
-        return self.data.get("latest_global")
+        with self.lock:
+            # 重新加载最新数据，防止覆盖其他进程已添加的 id
+            self.data = self._load()
+            latest = self.data.get("latest_global")
+            return latest.copy() if latest else None
 
     def mark_pasted(self, client_name: str, item: dict):
         """标记客户端已粘贴某内容，更新对应客户端条目和全局最新状态"""

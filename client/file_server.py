@@ -7,7 +7,6 @@ import pyperclip
 import requests
 from flask import Flask, jsonify, send_file, after_this_request, request
 from server.services.client_tracker import ClientTracker
-from server.core.item_builder import build_text_item
 
 logger = logging.getLogger("client")
 
@@ -68,17 +67,20 @@ class FileServer:
                 latest = data.get("latest_global")
                 if latest and latest.get("source") != self.local_name:
                     if latest["id"] != self.last_remote_id:
+                        # 更新到文件
+                        if self.tracker.is_duplicate(latest["id"]):
+                            return jsonify({"status": "duplicate", "message": "重复内容"}), 200
+                        # 更新记录（同时注册 ID、更新客户端最新和全局最新）
+                        self.tracker.update(latest)
+
+                        # 更新剪贴板
                         with self.clipboard_lock:
                             pyperclip.copy(latest["content"])
                         self.last_remote_id = latest["id"]
                         self._last_remote_content = latest["content"]
                         self.last_text = latest["content"]
                         logging.info(f"更新剪贴板: {latest['content'][:50]} (来自 {latest['source']})")
-                        # 去重：用 tracker 的 is_duplicate 方法
-                        if self.tracker.is_duplicate(latest["id"]):
-                            return jsonify({"status": "duplicate", "message": "重复内容"}), 200
-                        # 更新记录（同时注册 ID、更新客户端最新和全局最新）
-                        self.tracker.update(latest)
+
             return jsonify({
                 "status": "ok",
             })

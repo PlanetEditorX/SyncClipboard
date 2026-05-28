@@ -13,6 +13,7 @@ from pathlib import Path
 from datetime import datetime
 from logging.handlers import RotatingFileHandler
 from common.path import BASE_DIR
+from server.services.client_tracker import ClientTracker
 
 # ---------- 日志配置 ----------
 LOG_FILE = BASE_DIR / "log" / "client.log"
@@ -41,6 +42,7 @@ class SyncClient:
         self.file_server = file_server
         # 全局锁，避免同时读写剪贴板
         self.clipboard_lock = threading.Lock()
+        self.tracker = ClientTracker()
 
     def safe_paste(self, retries=5):
         for _ in range(retries):
@@ -91,19 +93,21 @@ class SyncClient:
 
     def push_text(self, text):
         try:
-            resp = requests.post(
-                f"{self.server_url}/text_sync",
-                json={
-                    "key": self.key,
-                    "content": text,
-                    "source": self.local_name
-                },
-                timeout=5
-            )
-            if resp.status_code == 200:
-                logging.info(f"推送成功: {text[:50]}...")
-            else:
-                logging.warning(f"推送失败: {resp.status_code} {resp.text}")
+            latest_global = self.tracker.get_global_latest()
+            if latest_global["content"] != text:
+                resp = requests.post(
+                    f"{self.server_url}/text_sync",
+                    json={
+                        "key": self.key,
+                        "content": text,
+                        "source": self.local_name
+                    },
+                    timeout=5
+                )
+                if resp.status_code == 200:
+                    logging.info(f"推送成功: {text[:50]}...")
+                else:
+                    logging.warning(f"推送失败: {resp.status_code} {resp.text}")
         except Exception as e:
             logging.error(f"连接服务端失败: {e}")
 
