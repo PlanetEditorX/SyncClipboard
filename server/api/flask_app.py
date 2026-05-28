@@ -528,11 +528,14 @@ def register():
         return jsonify({"status": "error", "msg": "invalid key"}), 403
     load_clients_ip()
     is_new = add_or_update_client(ip, port, local_name)
-    logging.info(f"客户端 {local_name}({ip}) 已成功注册。")
+    msg = f"客户端 {local_name}({ip}) 已连接。"
+    logging.info(msg)
+    if ip != "127.0.0.1":
+        show_notification("发现客户端", msg)
     return jsonify({
         "status": "ok",
         "is_new": is_new,
-        "server_ip": ip  # 告诉客户端服务器认为它的 IP 是什么
+        "server_ip": ip
     })
 
 # 内部通知接口
