@@ -239,10 +239,12 @@ def sync():
         item = build_text_item(text=content, source=source, pasted=False)
         if not tracker.is_duplicate(item["id"]):
             tracker.update(item, force_latest=True)
-        latest = tracker.get_global_latest()   # 必然就是这个 item
+        latest_global = tracker.get_global_latest()   # 必然就是这个 item
     else:
         # 内容没变 → 纯拉取操作
         latest = tracker.get_global_latest()
+        latest_global = latest.copy()
+        latest_global["pasted"] = False
         # 如果全局最新不是自己，则标记该手机已粘贴（更新 clients）
         if source and latest and latest.get("source") != source:
             pasted_item = {
@@ -255,7 +257,7 @@ def sync():
             }
             tracker.mark_pasted(source, pasted_item)
 
-    return jsonify({"status": "ok", "latest_global": latest})
+    return jsonify({"status": "ok", "latest_global": latest_global})
 
 @app.route('/latest', methods=['GET'])
 def get_latest():
@@ -285,6 +287,7 @@ def get_latest():
         # 首次
         if not already_pasted:
             latest_global = latest.copy()
+            latest_global["pasted"] = False
             pasted_item = {
                 "id": latest["id"],
                 "type": latest.get("type", "text"),
