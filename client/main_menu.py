@@ -190,12 +190,9 @@ def get_clipboard_files():
                     win32clipboard.CF_HDROP
                 )
             )
-
         return None
-
     except Exception:
         return None
-
     finally:
         try:
             # 关闭剪贴板，释放系统资源

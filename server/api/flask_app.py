@@ -202,9 +202,6 @@ def text_sync():
     # 更新记录（同时注册 ID、更新客户端最新和全局最新）
     tracker.update(item)
 
-    # # 同步到服务端剪贴板（可选，看需求）
-    # set_clipboard_text(content)
-
     logging.info("同步文本: %s", content[:50])
     return jsonify({"status": "ok", "message": "文字同步成功"}), 200
 
