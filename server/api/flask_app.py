@@ -58,14 +58,19 @@ clients = []  # 内存中的客户端列表
 _lock = threading.Lock()
 CLIENT_IP_FILE = Path(__file__).resolve().parent.parent.parent / "config" / "client_ip.json"
 
-def load_clients():
+def load_clients_ip():
     global clients
-    if CLIENT_IP_FILE.exists():
-        try:
-            with open(CLIENT_IP_FILE, "r") as f:
-                clients = json.load(f)
-        except:
-            clients = []
+    # 如果文件不存在，先创建一个空的 JSON 文件
+    if not CLIENT_IP_FILE.exists():
+        with open(CLIENT_IP_FILE, "w", encoding="utf-8") as f:
+            json.dump([], f)
+
+    try:
+        with open(CLIENT_IP_FILE, "r", encoding="utf-8") as f:
+            clients = json.load(f)
+    except (json.JSONDecodeError, FileNotFoundError):
+        # 文件内容损坏或意外被删时，也初始化为空列表
+        clients = []
 
 def save_clients():
     with _lock:
@@ -517,7 +522,7 @@ def register():
     # 可在此验证密钥，与 server_config 中的 key 比对
     if key != app.config.get('key'):
         return jsonify({"status": "error", "msg": "invalid key"}), 403
-    load_clients()
+    load_clients_ip()
     is_new = add_or_update_client(ip, port, local_name)
     logging.info(f"客户端 {local_name}({ip}) 已成功注册。")
     return jsonify({
