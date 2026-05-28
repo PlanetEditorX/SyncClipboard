@@ -7,7 +7,7 @@ import pyperclip
 import requests
 from flask import Flask, jsonify, send_file, after_this_request, request
 from server.services.client_tracker import ClientTracker
-from common.path import BASE_DIR
+from common.tools import BASE_DIR
 import json
 
 FILES_LATEST_FILE = BASE_DIR / "latest" / "file_latest.json"

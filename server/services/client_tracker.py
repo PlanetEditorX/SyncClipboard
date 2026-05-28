@@ -3,7 +3,7 @@ import json
 import os
 from datetime import datetime
 from pathlib import Path
-from common.path import BASE_DIR
+from common.tools import BASE_DIR
 import threading
 
 LATEST_FILE = BASE_DIR / "latest" / "client_latest.json"

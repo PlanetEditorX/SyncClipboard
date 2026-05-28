@@ -7,7 +7,7 @@ import signal
 import logging
 import requests
 from pathlib import Path
-from common.path import BASE_DIR
+from common.tools import BASE_DIR, SAFE_POST
 from client.main_menu import SyncClient
 from client.file_server import FileServer
 from logging.handlers import RotatingFileHandler
@@ -67,21 +67,29 @@ def main():
     )
     file_server.start()
 
-    # 注册信息到服务器
-    resp = requests.post(
-        f"http://{config['server_host']}:{config['server_port']}/register",
-        json={
-            "file_server_port": config["file_server_port"],
-            "local_name": config["local_name"],
-            "key": config["key"]
-        }
-    )
+    # ---------- 使用 SAFE_POST 注册到服务器 ----------
+    url = f"http://{config['server_host']}:{config['server_port']}/register"
+    payload = {
+        "file_server_port": config["file_server_port"],
+        "local_name": config["local_name"],
+        "key": config["key"]
+    }
+
+    resp = SAFE_POST(url, json=payload)   # 直接调用，内置超时和异常处理
+
+    if resp is None:
+        # 请求失败
+        logger.critical("无法注册到服务器，客户端退出")
+        sys.exit(1)
+
     if resp.status_code == 200:
         data = resp.json()
         if data.get("is_new"):
             logger.info("首次注册成功...")
         else:
             logger.info("更新注册成功...")
+    else:
+        logger.warning(f"注册返回异常状态码: {resp.status_code}")
 
     def graceful_exit(signum, frame):
         logger.info("正在关闭客户端...")

@@ -18,7 +18,7 @@ from server.services.file_handler import FileHandler
 from server.services.client_tracker import ClientTracker
 from server.services.file_sync import LatestFileManager
 from server.services.latest_file import LatestFileTracker
-from common.path import BASE_DIR
+from common.tools import BASE_DIR
 
 # ---------- 日志：不再配置 handler，交给 run.py 统一处理 ----------
 logger = logging.getLogger(__name__)   # 使用模块级 logger，会自动继承根 logger 的 handler

@@ -1,7 +1,7 @@
 import json
 from pathlib import Path
 from collections import deque
-from common.path import BASE_DIR
+from common.tools import BASE_DIR
 
 CACHE_FILE = BASE_DIR / "log" / "clipboard_cache.json"
 CACHE_FILE.parent.mkdir(parents=True, exist_ok=True)

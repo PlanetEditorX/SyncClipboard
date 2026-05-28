@@ -23,7 +23,7 @@ from tkinter import filedialog, messagebox
 
 from server.run import main as server_main
 from client.run import main as client_main
-from common.path import BASE_DIR
+from common.tools import BASE_DIR
 from common.file_watcher import watch_files
 from common.notification import show_notification, show_notification_with_click
 

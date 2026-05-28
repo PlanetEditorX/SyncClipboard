@@ -3,7 +3,7 @@ import multiprocessing
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from gui.tray import TrayManager
-from common.path import BASE_DIR
+from common.tools import BASE_DIR
 
 if __name__ == "__main__":
     # PyInstaller 打包后需要调用 freeze_support
