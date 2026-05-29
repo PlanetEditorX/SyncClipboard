@@ -133,9 +133,8 @@ class FileServer:
         @self.app.route("/file/<file_id>", methods=["GET"])
         def download_file(file_id):
             # 调试断点（仅在 DEBUG_MODE=1 时生效）
-            if os.getenv("DEBUG_MODE") == "1":
-                import debugpy
-                debugpy.breakpoint()
+            # if os.getenv("DEBUG_MODE") == "1":
+            #     debugpy.breakpoint()
 
             client_ip = request.remote_addr
             logger.info(f"获取文件下载 - 请求来自: {client_ip}")

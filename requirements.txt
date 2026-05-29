@@ -7,3 +7,4 @@ watchdog
 pyperclip
 pyinstaller
 windows-toasts
+debugpy
