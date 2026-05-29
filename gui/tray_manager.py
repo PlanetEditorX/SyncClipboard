@@ -2,7 +2,7 @@ import logging
 from PIL import Image
 import pystray
 from pathlib import Path
-from common.tools import BASE_DIR
+from common.utils import BASE_DIR
 from gui.config_manager import ConfigManager
 from gui.service_manager import ServiceManager
 from gui.file_handler import FileHandler

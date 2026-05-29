@@ -2,7 +2,7 @@ import logging
 import multiprocessing
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
-from common.tools import BASE_DIR
+from common.utils import BASE_DIR
 from gui.tray_manager import TrayManager
 
 def main():

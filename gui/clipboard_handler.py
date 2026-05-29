@@ -2,7 +2,7 @@ import json
 import logging
 from datetime import datetime, timedelta
 from common.notification import show_notification, show_notification_with_click
-from common.tools import SAFE_POST
+from common.utils import SAFE_POST
 
 logger = logging.getLogger("gui")
 

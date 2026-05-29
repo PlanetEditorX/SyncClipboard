@@ -18,7 +18,7 @@ from server.services.file_handler import FileHandler
 from server.services.client_tracker import ClientTracker
 from server.services.file_sync import LatestFileManager
 from server.services.latest_file import LatestFileTracker
-from common.tools import BASE_DIR
+from common.utils import BASE_DIR
 from common.notification import show_notification, show_notification_with_click
 
 # ---------- 日志：不再配置 handler，交给 run.py 统一处理 ----------

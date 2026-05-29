@@ -3,7 +3,7 @@ import logging
 import winreg
 import sys
 from pathlib import Path
-from common.tools import BASE_DIR
+from common.utils import BASE_DIR
 
 logger = logging.getLogger("gui")
 

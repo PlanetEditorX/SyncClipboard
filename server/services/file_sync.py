@@ -2,7 +2,7 @@ import os
 import json
 import logging
 from pathlib import Path
-from common.tools import BASE_DIR
+from common.utils import BASE_DIR
 
 LATEST_FILE = BASE_DIR / "latest" / "file_latest.json"
 LATEST_FILE.parent.mkdir(parents=True, exist_ok=True)

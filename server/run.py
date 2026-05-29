@@ -5,7 +5,7 @@ from pathlib import Path
 import logging
 from logging.handlers import RotatingFileHandler
 from server.api.flask_app import app, init_services
-from common.tools import BASE_DIR
+from common.utils import BASE_DIR
 
 CONFIG_FILE = BASE_DIR / "config" / "server_config.json"
 CONFIG_FILE.parent.mkdir(parents=True, exist_ok=True)

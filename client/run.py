@@ -7,7 +7,7 @@ import signal
 import logging
 import requests
 from pathlib import Path
-from common.tools import BASE_DIR, SAFE_POST
+from common.utils import BASE_DIR, SAFE_POST
 from client.main_menu import SyncClient
 from client.file_server import FileServer
 from logging.handlers import RotatingFileHandler

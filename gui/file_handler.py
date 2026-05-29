@@ -4,7 +4,7 @@ import logging
 import requests
 import tkinter as tk
 from tkinter import filedialog
-from common.tools import copy_files_to_clipboard, show_message, parse_filename_from_cd
+from common.utils import copy_files_to_clipboard, show_message, parse_filename_from_cd
 from gui.download_dialog import DownloadProgressDialog
 
 logger = logging.getLogger("gui")

@@ -3,7 +3,7 @@ import tkinter as tk
 from tkinter import simpledialog, messagebox
 import json
 from pathlib import Path
-from common.tools import BASE_DIR
+from common.utils import BASE_DIR
 
 CONFIG_FILE = BASE_DIR / "config" / "client_config.json"
 CONFIG_FILE.parent.mkdir(parents=True, exist_ok=True)

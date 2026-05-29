@@ -12,7 +12,7 @@ import win32clipboard
 from pathlib import Path
 from datetime import datetime
 from logging.handlers import RotatingFileHandler
-from common.tools import BASE_DIR, SAFE_POST
+from common.utils import BASE_DIR, SAFE_POST
 from server.services.client_tracker import ClientTracker
 
 # ---------- 日志配置 ----------
