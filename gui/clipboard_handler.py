@@ -77,11 +77,12 @@ class ClipboardHandler:
                 source = file.get('source', '未知来源')
                 if file_id and source != self.config.local_name and self.tray_manager:
                     name = file.get('name', '未知文件')
-                    name_list.append(name)
-                    if msg == "":
-                        msg += f"来源：{source}\n文件：{name}"
-                    else:
-                        msg += f"\n文件：{name}"
+                    if name not in name_list:
+                        name_list.append(name)
+                        if msg == "":
+                            msg += f"来源：{source}\n文件：{name}"
+                        else:
+                            msg += f"\n文件：{name}"
             if name_list and msg:
                 def download_callback():
                     post_to_main_thread_no_wait(

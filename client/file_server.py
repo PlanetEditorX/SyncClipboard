@@ -102,11 +102,11 @@ class FileServer:
                 latest_file_id = latest["file_id"]
                 # 获取本地已存储的文件
                 file_latest = get_current_file()
-
-                if any(d.get("id") == latest_file_id for d in file_latest):
+                if any(d.get("file_id") == latest_file_id for d in file_latest):
                     logger.info(f"文件ID未变化 ({latest_file_id})，跳过写入")
                 else:
                     # 只有当 file_id 不一致时才写入
+                    file_latest = []
                     file_latest.append(latest)
                     with open(FILES_LATEST_FILE, "w", encoding="utf-8") as f:
                         json.dump(file_latest, f, ensure_ascii=False, indent=2)
