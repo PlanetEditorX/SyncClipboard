@@ -14,6 +14,51 @@ from logging.handlers import RotatingFileHandler
 sys.path.insert(0, str(BASE_DIR))
 from gui.config_manager import ConfigManager
 
+def register_to_server(server_host, server_port, file_server_port, local_name, key, logger):
+    """
+    注册到服务器，支持重试机制
+    1分钟后重试一次，如果仍失败则等待总共10分钟后退出
+    """
+    RETRY_DELAY = 60          # 1分钟
+    MAX_WAIT_TIME = 10 * 60   # 10分钟
+    start_time = time.time()
+    attempt = 0
+    url = f"http://{server_host}:{server_port}/register"
+    payload = {
+        "file_server_port": file_server_port,
+        "local_name": local_name,
+        "key": key
+    }
+    while True:
+        attempt += 1
+        elapsed = time.time() - start_time
+        logger.info(f"正在注册到服务器 (第 {attempt} 次尝试)...")
+        try:
+            resp = SAFE_POST(url, json=payload, timeout=30)
+        except Exception as e:
+            logger.error(f"注册请求异常: {e}")
+            resp = None
+        if resp is not None and resp.status_code == 200:
+            data = resp.json()
+            if data.get("is_new"):
+                logger.info("首次注册成功")
+            else:
+                logger.info("连接服务器成功")
+            return True
+        # 注册失败的处理
+        if resp is not None:
+            logger.warning(f"注册失败，状态码: {resp.status_code}")
+        else:
+            logger.warning("注册失败，无法连接到服务器")
+        # 检查是否超过最大等待时间
+        if elapsed >= MAX_WAIT_TIME:
+            logger.critical(f"已等待超过 {MAX_WAIT_TIME/60} 分钟，注册仍然失败，客户端退出")
+            return False
+        # 等待后重试
+        logger.info(f"将在 {RETRY_DELAY} 秒后重试...")
+        time.sleep(RETRY_DELAY)
+
+
 def main():
     # ---------- 客户端独立日志配置 ----------
     LOG_FILE = BASE_DIR / "log" / "client.log"
@@ -70,29 +115,11 @@ def main():
     )
     file_server.start()
 
-    # ---------- 使用 SAFE_POST 注册到服务器 ----------
-    url = f"http://{server_host}:{server_port}/register"
-    payload = {
-        "file_server_port": file_server_port,
-        "local_name": local_name,
-        "key": key
-    }
-
-    resp = SAFE_POST(url, json=payload, timeout=30)
-
-    if resp is None:
-        # 请求失败
+    # ---------- 使用重试机制注册到服务器 ----------
+    if not register_to_server(server_host, server_port, file_server_port, local_name, key, logger):
         logger.critical("无法注册到服务器，客户端退出")
+        file_server.stop()
         sys.exit(1)
-
-    if resp.status_code == 200:
-        data = resp.json()
-        if data.get("is_new"):
-            logger.info("首次注册成功...")
-        else:
-            logger.info("更新注册成功...")
-    else:
-        logger.warning(f"注册返回异常状态码: {resp.status_code}")
 
     def graceful_exit(signum, frame):
         logger.info("正在关闭客户端...")
