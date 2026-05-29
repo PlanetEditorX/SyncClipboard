@@ -85,7 +85,7 @@ class FileHandler:
             logger.info(f"文件已保存: {file_path} ({downloaded} 字节)")
 
             if copy_files_to_clipboard([file_path]):
-                show_message("保存成功", f"文件已保存至:\n{file_path}\n路径已复制到剪贴板")
+                show_message("保存成功", f"文件已保存至:\n{file_path}")
             else:
                 show_message("保存成功", f"文件已保存至:\n{file_path}")
 
@@ -144,7 +144,7 @@ class FileHandler:
 
             logger.info(f"文件从URL下载成功: {file_path}")
             if copy_files_to_clipboard([file_path]):
-                show_message("保存成功", f"文件已保存至:\n{file_path}\n路径已复制到剪贴板")
+                show_message("保存成功", f"文件已保存至:\n{file_path}")
             else:
                 show_message("保存成功", f"文件已保存至:\n{file_path}")
 
@@ -244,8 +244,8 @@ class FileHandler:
             content_disposition = resp.headers.get("Content-Disposition", "")
 
             is_file = ("application/octet-stream" in content_type or
-                      "application/x-msdownload" in content_type or
-                      "attachment" in content_disposition)
+                    "application/x-msdownload" in content_type or
+                    "attachment" in content_disposition)
 
             if is_file:
                 filename = parse_filename_from_cd(content_disposition) or suggested_filename
