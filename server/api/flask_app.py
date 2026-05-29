@@ -2,6 +2,7 @@
 import os
 import sys
 import json
+import socket
 import logging
 import requests
 import threading
@@ -33,6 +34,7 @@ PORT = None
 tracker = None
 file_handler = None
 latest_file = None
+computer_name = socket.gethostname()
 
 def init_services():
     """由 run.py 在配置注入后调用，初始化依赖配置的服务"""
@@ -49,7 +51,6 @@ def init_services():
     LOCAL_NAME = app.config["local_name"]
     SAVE_PATH = app.config["save_path"]
     PORT = app.config["port"]
-
     logger.info("API组件初始化完成")
 
 def get_api_key():
@@ -528,7 +529,8 @@ def register():
     is_new = add_or_update_client(ip, port, local_name)
     msg = f"客户端 {local_name}({ip}) 已连接。"
     logging.info(msg)
-    if ip != "127.0.0.1":
+    # 不是本地的客户端才显示注册
+    if ip != "127.0.0.1" and local_name != computer_name:
         show_notification("发现客户端", msg)
     return jsonify({
         "status": "ok",
