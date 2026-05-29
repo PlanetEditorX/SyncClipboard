@@ -36,7 +36,8 @@
       "python": "${workspaceFolder}/.venv/Scripts/python.exe",
       "console": "integratedTerminal",
       "env": {
-        "PYTHONPATH": "${workspaceFolder}"
+        "PYTHONPATH": "${workspaceFolder}",
+        "DEBUG_MODE": "1"
       }
     }
   ],
