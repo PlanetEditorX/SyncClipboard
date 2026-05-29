@@ -1,14 +1,13 @@
 import os
-import threading
 import logging
 import requests
+import threading
 import tkinter as tk
 from tkinter import filedialog
-from common.utils import post_to_main_thread, show_message, copy_files_to_clipboard, parse_filename_from_cd
 from gui.download_dialog import DownloadProgressDialog
+from common.utils import post_to_main_thread, show_message, copy_files_to_clipboard, parse_filename_from_cd
 
 logger = logging.getLogger("gui")
-
 
 class FileHandler:
     """文件下载处理器"""

@@ -1,24 +1,21 @@
-import json
-import logging
-import winreg
 import sys
+import json
+import winreg
 import socket
+import logging
 from pathlib import Path
 from common.utils import BASE_DIR
 
 logger = logging.getLogger("gui")
 
-
 class ConfigManager:
     """配置管理器"""
-
     # 配置文件路径常量
     CLIENT_CONFIG = BASE_DIR / "config" / "client_config.json"
     SERVER_CONFIG = BASE_DIR / "config" / "server_config.json"
     STATE_FILE = BASE_DIR / "config" / "gui_state.json"
     CLIENT_LATEST_FILE = BASE_DIR / "latest" / "client_latest.json"
     FILE_LATEST_FILE = BASE_DIR / "latest" / "file_latest.json"
-
     def __init__(self):
         self.server_host = None
         self.server_port = None

@@ -1,9 +1,9 @@
 import logging
 import multiprocessing
-from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from common.utils import BASE_DIR
 from gui.tray_manager import TrayManager
+from logging.handlers import RotatingFileHandler
 
 def main():
     """启动托盘程序"""

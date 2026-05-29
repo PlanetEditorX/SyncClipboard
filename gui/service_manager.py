@@ -6,7 +6,6 @@ from client.run import main as client_main
 
 logger = logging.getLogger("gui")
 
-
 class ServiceManager:
     """服务管理器（服务器和客户端的启停）"""
     def __init__(self, config_manager):

@@ -1,9 +1,8 @@
 import json
 import logging
 from datetime import datetime, timedelta
+from common.utils import SAFE_POST, post_to_main_thread_no_wait
 from common.notification import show_notification, show_notification_with_click
-from common.utils import SAFE_POST
-from common.utils import post_to_main_thread_no_wait
 
 logger = logging.getLogger("gui")
 

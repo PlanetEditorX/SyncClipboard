@@ -1,14 +1,14 @@
 import logging
-from PIL import Image
 import pystray
+from PIL import Image
 from pathlib import Path
 from common.utils import BASE_DIR
+from gui.tray_menu import TrayMenu
+from gui.file_handler import FileHandler
 from gui.config_manager import ConfigManager
 from gui.service_manager import ServiceManager
-from gui.file_handler import FileHandler
 from gui.clipboard_handler import ClipboardHandler
 from gui.file_watcher_handler import FileWatcherHandler
-from gui.tray_menu import TrayMenu
 
 logger = logging.getLogger("gui")
 

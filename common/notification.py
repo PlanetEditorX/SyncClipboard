@@ -1,7 +1,7 @@
 # common/notification.py
 import time
-import threading
 import logging
+import threading
 
 from windows_toasts import (
     InteractableWindowsToaster,

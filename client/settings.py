@@ -1,9 +1,9 @@
 # client/settings.py —— 客户端设置界面
-import tkinter as tk
-from tkinter import simpledialog, messagebox
 import json
+import tkinter as tk
 from pathlib import Path
 from common.utils import BASE_DIR
+from tkinter import simpledialog, messagebox
 
 CONFIG_FILE = BASE_DIR / "config" / "client_config.json"
 CONFIG_FILE.parent.mkdir(parents=True, exist_ok=True)

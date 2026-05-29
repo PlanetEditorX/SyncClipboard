@@ -5,9 +5,9 @@ import signal
 import logging
 import requests
 from pathlib import Path
-from common.utils import BASE_DIR, SAFE_POST
 from client.main_menu import SyncClient
 from client.file_server import FileServer
+from common.utils import BASE_DIR, SAFE_POST
 from logging.handlers import RotatingFileHandler
 
 # 导入 ConfigManager

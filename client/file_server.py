@@ -1,14 +1,14 @@
 # client/file_server.py
 import os
+import json
 import logging
-from threading import Thread
 import threading
 import pyperclip
 import requests
-from flask import Flask, jsonify, send_file, after_this_request, request
-from server.services.client_tracker import ClientTracker
+from threading import Thread
 from common.utils import BASE_DIR
-import json
+from server.services.client_tracker import ClientTracker
+from flask import Flask, jsonify, send_file, after_this_request, request
 
 FILES_LATEST_FILE = BASE_DIR / "latest" / "file_latest.json"
 FILES_LATEST_FILE.parent.mkdir(parents=True, exist_ok=True)
