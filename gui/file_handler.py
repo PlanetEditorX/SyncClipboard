@@ -109,7 +109,7 @@ class FileHandler:
             logger.info(f"文件已保存: {file_path} ({downloaded} 字节)")
 
             if copy_files_to_clipboard([file_path]):
-                logger.info("保存成功", f"文件已保存至:\n{file_path}")
+                logger.info(f"保存成功文件已保存至:\n{file_path}")
             else:
                 logger.info(f"文件保存至:\n{file_path}失败")
 
@@ -184,7 +184,7 @@ class FileHandler:
             progress_dialog.update_progress(100, downloaded/(1024*1024), downloaded/(1024*1024))
             logger.info(f"文件从URL下载成功: {file_path}")
             if copy_files_to_clipboard([file_path]):
-                logger.info("保存成功", f"文件已保存至:\n{file_path}")
+                logger.info(f"保存成功,文件已保存至:\n{file_path}")
             else:
                 logger.info(f"文件保存至:\n{file_path}失败")
             return True
