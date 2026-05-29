@@ -201,66 +201,6 @@ class FileHandler:
             if own_dialog:
                 progress_dialog.close()
 
-    def fetch_file(self):
-        """获取文件（托盘菜单回调）"""
-        logger.info("用户点击『获取文件』")
-        url = f"http://{self.config.server_host}:{self.config.server_port}/request_file"
-
-        try:
-            resp = requests.post(
-                url,
-                headers={"key": self.config.key},
-                json={"source": self.config.local_name},
-                timeout=10,
-                stream=True
-            )
-        except Exception as e:
-            logger.error(f"请求服务器失败: {e}")
-            show_message("请求失败", f"无法连接服务器: {e}")
-            return
-
-        if resp.status_code == 200:
-            content_type = resp.headers.get("Content-Type", "")
-            content_disposition = resp.headers.get("Content-Disposition", "")
-
-            is_file = ("application/octet-stream" in content_type or
-                        "application/x-msdownload" in content_type or
-                        "attachment" in content_disposition)
-
-            if is_file:
-                filename = parse_filename_from_cd(content_disposition) or "downloaded_file"
-                self._save_file_stream(resp, filename)
-                return
-
-            try:
-                data = resp.json()
-            except Exception:
-                logger.error("响应既不是文件也不是合法JSON")
-                show_message("错误", "服务器返回格式无法识别")
-                return
-
-            if data.get("status") == "download" and data.get("type") == "file":
-                self._download_from_url(data.get("download_url"), data.get("name", "downloaded_file"))
-            elif data.get("type") == "text":
-                import pyperclip
-                latest = data.get("latest_global")
-                if latest and latest.get("content"):
-                    pyperclip.copy(latest["content"])
-                    logger.info(f"获取文本成功: {latest['content'][:50]}")
-                    show_message("获取成功", "文本已复制到剪贴板")
-                else:
-                    show_message("无内容", "服务器没有可用的文本")
-            else:
-                show_message("未知响应", "服务器返回格式无法识别")
-        elif resp.status_code == 302:
-            location = resp.headers.get("Location")
-            if location:
-                self._download_from_url(location, "downloaded_file")
-            else:
-                show_message("错误", "服务器重定向错误")
-        else:
-            show_message("请求失败", f"HTTP {resp.status_code}")
-
     def fetch_file_with_progress(self, suggested_filename="downloaded_file"):
         """
         点击通知后下载所有待拉取文件

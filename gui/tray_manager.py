@@ -47,7 +47,7 @@ class TrayManager:
             self.icon.icon = Image.open(icon_path)
 
     def on_left_click(self, icon):
-        post_to_main_thread_no_wait(self.file_handler.fetch_file)
+        post_to_main_thread_no_wait(self.file_handler.fetch_file_with_progress)
 
     def quit_app(self, icon):
         """退出程序"""

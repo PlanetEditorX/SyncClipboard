@@ -9,7 +9,7 @@ class TrayMenu:
 
     def create(self):
         """构建菜单"""
-        get_file_item = MenuItem('获取文件', self.manager.file_handler.fetch_file, default=True)
+        get_file_item = MenuItem('获取文件', self.manager.file_handler.fetch_file_with_progress, default=True)
 
         return Menu(
             get_file_item,
