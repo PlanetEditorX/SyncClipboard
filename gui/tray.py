@@ -1,30 +1,35 @@
+# 标准库导入
 import os
 import re
 import sys
 import json
 import time
-import winreg
-import struct
 import logging
-import pystray
-import requests
+import struct
 import threading
-import pyperclip
 import subprocess
 import tkinter as tk
 from tkinter import ttk
-from PIL import Image
+import winreg
 import win32clipboard
+import pyperclip
 import multiprocessing
 from pathlib import Path
 from urllib.parse import unquote
+from datetime import datetime, timedelta, timezone
+
+# 第三方库导入
+import pystray
+import requests
+from PIL import Image
 from pystray import MenuItem, Menu
 from tkinter import filedialog, messagebox
 
+# 本地/项目模块导入
 from server.run import main as server_main
 from client.run import main as client_main
-from common.tools import BASE_DIR, SAFE_POST
 from common.file_watcher import watch_files
+from common.tools import BASE_DIR, SAFE_POST
 from common.notification import show_notification, show_notification_with_click
 
 # ---------- 配置文件路径 ----------
@@ -800,6 +805,17 @@ class TrayManager:
             current_id = latest.get('id')
             source = latest.get('source')
             if current_id and current_id != self.last_global_id and source != self.local_name:
+                # 增加时间判断
+                timestamp_str = latest.get('timestamp')
+                if timestamp_str:
+                    try:
+                        record_time = datetime.fromisoformat(timestamp_str)
+                        if datetime.now() - record_time > timedelta(minutes=10):
+                            logger.info(f"剪贴板记录已过期（超过10分钟），跳过弹窗: {timestamp_str}")
+                            return
+                    except:
+                        pass  # 解析失败就继续显示通知
+
                 self.last_global_id = current_id
                 source = latest.get('source', '未知来源')
                 content = latest.get('content', '')
@@ -811,8 +827,8 @@ class TrayManager:
                 else:
                     msg = f"来源：{source}\n类型：{ctype}"
                 show_notification(title, msg)
-        except Exception as e:
-            logger.error(f"处理文件变化失败: {e}")
+        except Exception:
+            logger.exception(f"处理文件变化失败")
 
     def _handle_file_latest(self):
         """
