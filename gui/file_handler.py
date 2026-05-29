@@ -181,8 +181,8 @@ class FileHandler:
             content_disposition = resp.headers.get("Content-Disposition", "")
 
             is_file = ("application/octet-stream" in content_type or
-                      "application/x-msdownload" in content_type or
-                      "attachment" in content_disposition)
+                        "application/x-msdownload" in content_type or
+                        "attachment" in content_disposition)
 
             if is_file:
                 filename = parse_filename_from_cd(content_disposition) or "downloaded_file"

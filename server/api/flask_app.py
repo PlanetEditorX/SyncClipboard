@@ -401,27 +401,28 @@ def request_file():
 
     # 1. 检查是否有最新文件
     info = latest_file.get_latest()
-    path = None
-    if info:
+
+    if info:  # info 现在保证是字典，不会为 None 时还包含字段
         path = info.get("path")
 
-    if path:
-        # 服务器能直接访问到
-        if os.path.isfile(path):
+        # 情况1：本地文件
+        if path and os.path.isfile(path):
             filename = info["name"]
-            # 清空文件记录，避免重复下载
-            latest_file.clear()
+            latest_file.clear()  # 清空文件记录，避免重复下载
             return send_file(path, as_attachment=True, download_name=filename)
-        else:
-            # 为其它客户端的文件
-            download_url = f"http://{info['ip']}:{info['port']}/file/{info['file_id']}"
-            check_url = f"http://{info['ip']}:{info['port']}/check/{info['file_id']}"
+
+        # 情况2：远程文件
+        elif info.get("file_id"):  # 有 file_id 但没有有效本地路径
+            # 确保 port 字段存在
+            port = info.get("port", 5000)  # 默认端口
+            download_url = f"http://{info['ip']}:{port}/file/{info['file_id']}"
+            check_url = f"http://{info['ip']}:{port}/check/{info['file_id']}"
+
             try:
                 resp = requests.get(check_url, timeout=5)
                 if resp.status_code == 200:
-                    data = resp.json()
-                    if data.get("status") == "ok":
-                        # 文件正常，返回给客户端
+                    check_data = resp.json()
+                    if check_data.get("status") == "ok":
                         return jsonify({
                             "status": "download",
                             "type": "file",
@@ -429,34 +430,30 @@ def request_file():
                             "download_url": download_url
                         }), 200
                     else:
-                        # 远程文件不可用，提取它返回的 message
-                        remote_msg = data.get("message", "未知错误")
+                        remote_msg = check_data.get("message", "未知错误")
                         latest_file.clear()
                         return jsonify({
                             "status": "error",
                             "message": f"远程文件[{info['name']}]不可用: {remote_msg}"
                         }), 503
                 else:
-                    # HTTP 状态码非 200，尝试提取错误信息
-                    remote_msg = ""
-                    try:
-                        err_data = resp.json()
-                        remote_msg = err_data.get("message", "")
-                    except:
-                        pass
+                    # HTTP 错误处理
                     latest_file.clear()
                     return jsonify({
                         "status": "error",
-                        "message": f"远程检查失败，HTTP {resp.status_code}" + (f": {remote_msg}" if remote_msg else "")
+                        "message": f"远程检查失败，HTTP {resp.status_code}"
                     }), 503
             except requests.exceptions.RequestException as e:
                 latest_file.clear()
                 return jsonify({
                     "status": "error",
-                    "message": f"无法连接到 {info['ip']}:{info['port']}，原因：{str(e)}"
+                    "message": f"无法连接到 {info['ip']}:{port}，原因：{str(e)}"
                 }), 503
+        else:
+            # 无效的文件记录，清空它
+            latest_file.clear()
 
-    # 2. 没有文件，执行文本拉取逻辑（同 /latest 的标记粘贴）
+    # 2. 没有文件，执行文本拉取逻辑
     latest = tracker.get_global_latest()
     if source and latest and latest.get("source") != source:
         pasted_item = {
@@ -468,7 +465,8 @@ def request_file():
             "pasted": True
         }
         tracker.mark_pasted(source, pasted_item)
-        logging.info("客户端 %s 已获取并标记粘贴: %s (来自 %s)", source, latest["content"][:30], latest["source"])
+        logging.info("客户端 %s 已获取并标记粘贴: %s (来自 %s)",
+                    source, latest["content"][:30], latest["source"])
 
     return jsonify({
         "status": "ok",
