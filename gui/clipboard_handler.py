@@ -65,20 +65,27 @@ class ClipboardHandler:
                 return
 
             with open(self.config.FILE_LATEST_FILE, 'r', encoding='utf-8') as f:
-                data = json.load(f)
+                file_list = json.load(f)
 
-            file_id = data.get('file_id')
-            if not file_id:
-                return
+            name_list = []
+            msg = ""
+            for file in file_list:
+                file_id = file.get('file_id')
+                if not file_id:
+                    return
 
-            source = data.get('source', '未知来源')
-            if file_id and source != self.config.local_name and self.tray_manager:
-                name = data.get('name', '未知文件')
-                msg = f"来源：{source}\n文件：{name}"
-
+                source = file.get('source', '未知来源')
+                if file_id and source != self.config.local_name and self.tray_manager:
+                    name = file.get('name', '未知文件')
+                    name_list.append(name)
+                    if msg == "":
+                        msg += f"来源：{source}\n文件：{name}"
+                    else:
+                        msg += f"\n文件：{name}"
+            if name_list and msg:
                 def download_callback():
                     """点击通知后的下载回调"""
-                    self.tray_manager.file_handler.fetch_file_with_progress(name)
+                    self.tray_manager.file_handler.fetch_file_with_progress(name_list)
 
                 show_notification_with_click(
                     "检测到文件发布, 点击保存。",

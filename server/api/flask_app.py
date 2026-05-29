@@ -393,7 +393,8 @@ def file_sync():
 
     success_count = 0
     errors = []
-
+    # 先清理文件数据
+    latest_file.clear()
     for file_info in file_list:
         file_id = file_info.get("file_id")
         path = file_info.get("path")
@@ -435,7 +436,7 @@ def clear_latest():
 
 @app.route('/request_file', methods=['POST'])
 def request_file():
-    """统一拉取接口：有文件则返回文件并清空，无文件则返回最新文本"""
+    """统一拉取接口：有文件则返回所有文件列表并清空记录，无文件则返回最新文本"""
     key = request.headers.get("key", "")
     if key != KEY:
         return jsonify({"status": "error", "message": "密钥错误"}), 403
@@ -445,61 +446,43 @@ def request_file():
         return jsonify({"status": "error", "message": "无效请求"}), 400
     source = data.get("source", "unknown")
 
-    # 1. 检查是否有最新文件
-    info = latest_file.get_latest()
+    # 1. 获取所有待拉取文件
+    all_files = latest_file.get_all_files()
+    if all_files:
+        file_list = []
+        for info in all_files:
+            file_id = info.get("file_id")
+            ip = info.get("ip")
+            port = info.get("port")
+            name = info.get("name")
+            size = info.get("size")
+            src = info.get("source")
 
-    if info:  # info 现在保证是字典，不会为 None 时还包含字段
-        path = info.get("path")
+            # 必须有 ip/port/file_id 才能构建下载地址
+            if file_id and ip and port:
+                download_url = f"http://{ip}:{port}/file/{file_id}"
+                file_list.append({
+                    "file_id": file_id,
+                    "name": name,
+                    "size": size,
+                    "source": src,
+                    "download_url": download_url
+                })
+            else:
+                logging.warning(f"跳过无效文件记录: {info}")
 
-        # 情况1：本地文件
-        if path and os.path.isfile(path):
-            filename = info["name"]
-            latest_file.clear()  # 清空文件记录，避免重复下载
-            return send_file(path, as_attachment=True, download_name=filename)
+        # 一次性清空所有记录（文件已交付给请求方）
+        latest_file.clear()
 
-        # 情况2：远程文件
-        elif info.get("file_id"):  # 有 file_id 但没有有效本地路径
-            # 确保 port 字段存在
-            port = info.get("port", 5000)  # 默认端口
-            download_url = f"http://{info['ip']}:{port}/file/{info['file_id']}"
-            check_url = f"http://{info['ip']}:{port}/check/{info['file_id']}"
+        if file_list:
+            return jsonify({
+                "status": "ok",
+                "type": "file_list",
+                "files": file_list
+            }), 200
+        # 如果列表为空（所有记录均无效），继续执行文本逻辑
 
-            try:
-                resp = requests.get(check_url, timeout=5)
-                if resp.status_code == 200:
-                    check_data = resp.json()
-                    if check_data.get("status") == "ok":
-                        return jsonify({
-                            "status": "download",
-                            "type": "file",
-                            "name": info["name"],
-                            "download_url": download_url
-                        }), 200
-                    else:
-                        remote_msg = check_data.get("message", "未知错误")
-                        latest_file.clear()
-                        return jsonify({
-                            "status": "error",
-                            "message": f"远程文件[{info['name']}]不可用: {remote_msg}"
-                        }), 503
-                else:
-                    # HTTP 错误处理
-                    latest_file.clear()
-                    return jsonify({
-                        "status": "error",
-                        "message": f"远程检查失败，HTTP {resp.status_code}"
-                    }), 503
-            except requests.exceptions.RequestException as e:
-                latest_file.clear()
-                return jsonify({
-                    "status": "error",
-                    "message": f"无法连接到 {info['ip']}:{port}，原因：{str(e)}"
-                }), 503
-        else:
-            # 无效的文件记录，清空它
-            latest_file.clear()
-
-    # 2. 没有文件，执行文本拉取逻辑
+    # 2. 无文件时，执行原有的文本拉取逻辑
     latest = tracker.get_global_latest()
     if source and latest and latest.get("source") != source:
         pasted_item = {

@@ -40,6 +40,28 @@ class FileHandler:
         t.join()
         return result[0]
 
+    def _ask_save_directory(self):
+        """弹出选择目录对话框，返回目标文件夹路径"""
+        result = [None]
+
+        def ask():
+            root = tk.Tk()
+            root.withdraw()
+            dir_path = filedialog.askdirectory(
+                title="选择保存文件夹",
+                initialdir=self.config.last_dir
+            )
+            root.destroy()
+            result[0] = dir_path
+            if dir_path:
+                self.config.last_dir = dir_path
+                self.config.save_client_config()
+
+        t = threading.Thread(target=ask)
+        t.start()
+        t.join()
+        return result[0]
+
     def _save_file_stream(self, response, filename):
         """流式接收文件并写入磁盘"""
         file_path = self._ask_save_path(filename)
@@ -101,21 +123,31 @@ class FileHandler:
         finally:
             response.close()
 
-    def _download_from_url(self, download_url, filename):
-        """从URL下载文件"""
-        file_path = self._ask_save_path(filename)
-        if not file_path:
-            return
+    def _download_from_url(self, download_url, filename, save_path=None):
+        """从URL下载文件，若指定 save_path 则直接保存，否则弹框选择"""
+        if save_path is None:
+            # 旧行为：弹出另存为对话框
+            file_path = self._ask_save_path(filename)
+            if not file_path:
+                return
+        else:
+            # 直接存入指定文件夹，文件名保持原样
+            file_path = os.path.join(save_path, filename)
+            # 可选：处理重名问题，比如自动加序号
+            base, ext = os.path.splitext(file_path)
+            counter = 1
+            while os.path.exists(file_path):
+                file_path = f"{base} ({counter}){ext}"
+                counter += 1
 
+        # 后续下载逻辑保持不变……
         progress = DownloadProgressDialog("下载进度")
-
         try:
             with requests.get(download_url, stream=True, timeout=30) as r:
                 r.raise_for_status()
                 total_size = int(r.headers.get('content-length', 0))
                 downloaded = 0
                 last_percentage = -1
-
                 with open(file_path, 'wb') as f:
                     for chunk in r.iter_content(chunk_size=8192):
                         if chunk:
@@ -127,10 +159,8 @@ class FileHandler:
                                     pass
                                 show_message("已取消", "文件下载已取消")
                                 return
-
                             f.write(chunk)
                             downloaded += len(chunk)
-
                             if total_size > 0:
                                 percentage = int(downloaded / total_size * 100)
                                 if percentage != last_percentage:
@@ -138,16 +168,13 @@ class FileHandler:
                                     total_mb = total_size / (1024 * 1024)
                                     progress.update_progress(percentage, downloaded_mb, total_mb)
                                     last_percentage = percentage
-
             progress.update_progress(100, downloaded/(1024*1024), downloaded/(1024*1024))
             progress.close()
-
             logger.info(f"文件从URL下载成功: {file_path}")
             if copy_files_to_clipboard([file_path]):
                 show_message("保存成功", f"文件已保存至:\n{file_path}")
             else:
                 show_message("保存成功", f"文件已保存至:\n{file_path}")
-
         except Exception as e:
             progress.close()
             logger.error(f"从URL下载文件失败: {e}")
@@ -220,10 +247,10 @@ class FileHandler:
 
     def fetch_file_with_progress(self, suggested_filename="downloaded_file"):
         """
-        专门用于通知点击下载的方法
-        这个方法是为了兼容 ClipboardHandler 的回调
+        点击通知后下载所有待拉取文件
+        （兼容旧版单文件流 / 单文件下载链接 / 新版文件列表）
         """
-        logger.info(f"开始下载文件: {suggested_filename}")
+        logger.info("开始拉取服务器文件...")
 
         url = f"http://{self.config.server_host}:{self.config.server_port}/request_file"
         try:
@@ -239,26 +266,60 @@ class FileHandler:
             show_message("请求失败", f"无法连接服务器: {e}")
             return
 
-        if resp.status_code == 200:
-            content_type = resp.headers.get("Content-Type", "")
-            content_disposition = resp.headers.get("Content-Disposition", "")
-
-            is_file = ("application/octet-stream" in content_type or
-                    "application/x-msdownload" in content_type or
-                    "attachment" in content_disposition)
-
-            if is_file:
-                filename = parse_filename_from_cd(content_disposition) or suggested_filename
-                self._save_file_stream(resp, filename)
-            else:
-                try:
-                    data = resp.json()
-                    if data.get("status") == "download" and data.get("type") == "file":
-                        self._download_from_url(data.get("download_url"), data.get("name", suggested_filename))
-                    else:
-                        show_message("错误", "服务器返回了非文件响应")
-                except Exception as e:
-                    logger.error(f"解析服务器响应失败: {e}")
-                    show_message("错误", "服务器响应格式异常")
-        else:
+        if resp.status_code != 200:
             show_message("请求失败", f"HTTP {resp.status_code}")
+            return
+
+        content_type = resp.headers.get("Content-Type", "")
+        # 1. 处理旧版直接文件流（保留兼容）
+        if "application/octet-stream" in content_type or "attachment" in content_type:
+            filename = parse_filename_from_cd(
+                resp.headers.get("Content-Disposition", "")
+            ) or suggested_filename
+            self._save_file_stream(resp, filename)
+            return
+
+        # 2. 解析 JSON 响应
+        try:
+            data = resp.json()
+        except Exception as e:
+            logger.error(f"解析服务器响应失败: {e}")
+            show_message("错误", "服务器响应格式异常")
+            return
+
+        # 2.1 单文件下载链接（旧版兼容）
+        if data.get("status") == "download" and data.get("type") == "file":
+            download_url = data.get("download_url")
+            name = data.get("name", suggested_filename)
+            if download_url:
+                self._download_from_url(download_url, name)
+            return
+
+        # 2.2 新版多文件列表
+        if data.get("type") == "file_list":
+            files = data.get("files", [])
+            if not files:
+                show_message("提示", "没有需要下载的文件")
+                return
+
+            # 只弹一次文件夹选择
+            save_dir = self._ask_save_directory()
+            if not save_dir:
+                logger.info("用户取消选择文件夹")
+                return
+
+            total = len(files)
+            for idx, file in enumerate(files, 1):
+                name = file.get("name", f"file_{idx}")
+                download_url = file.get("download_url")
+                if not download_url:
+                    logger.warning(f"文件 {name} 无下载地址，跳过")
+                    continue
+                logger.info(f"({idx}/{total}) 下载: {name}")
+                self._download_from_url(download_url, name, save_path=save_dir)
+
+            show_message("下载完成", f"已下载 {total} 个文件到:\n{save_dir}")
+            return
+
+        # 其他情况
+        show_message("错误", "服务器返回了未知类型的响应")

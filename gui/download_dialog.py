@@ -22,8 +22,7 @@ class DownloadProgressDialog:
         style.theme_use('clam')
         style.configure("TProgressbar", thickness=20)
 
-        self.label = tk.Label(self.root, text="正在下载文件...",
-                             font=("微软雅黑", 11, "bold"))
+        self.label = tk.Label(self.root, text="正在下载文件...",font=("微软雅黑", 11, "bold"))
         self.label.pack(pady=(15, 10))
 
         progress_frame = tk.Frame(self.root)
