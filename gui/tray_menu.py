@@ -1,5 +1,6 @@
 import os
 from pystray import MenuItem, Menu
+from common.utils import BASE_DIR
 
 class TrayMenu:
     """托盘菜单构建器"""
