@@ -18,14 +18,14 @@ logger = logging.getLogger("client")
 def get_api_key():
     return request.headers.get("key", "")
 
-def get_current_file_id():
-    """读取 files_latest.json 中存储的 file_id，如果文件不存在或无效则返回 None"""
+def get_current_file():
+    """读取 files_latest.json，如果文件不存在或无效则返回 None"""
     if not FILES_LATEST_FILE.exists():
-        return None
+        return []
     try:
         with open(FILES_LATEST_FILE, "r", encoding="utf-8") as f:
             data = json.load(f)
-        return data.get("file_id")
+        return data
     except (json.JSONDecodeError, AttributeError):
         return None
 
@@ -69,9 +69,9 @@ class FileServer:
 
         @self.app.route("/update/client_latest", methods=["POST"])
         def update_client_latest():
-            if os.getenv("DEBUG_MODE") == "1":
-                import debugpy
-                debugpy.breakpoint()
+            # if os.getenv("DEBUG_MODE") == "1":
+            #     import debugpy
+            #     debugpy.breakpoint()
             data = request.get_json()
             if not data:
                 return jsonify({"status": "error", "message": "无效的请求数据"}), 400
@@ -100,16 +100,17 @@ class FileServer:
                 logger.info(f"更新文件列表 - 请求来自: {client_ip}")
                 latest = data.get("latest_global")
                 latest_file_id = latest["file_id"]
-                # 获取本地已存储的文件ID
-                local_file_id = get_current_file_id()
+                # 获取本地已存储的文件
+                file_latest = get_current_file()
 
-                # 只有当 file_id 不一致时才写入
-                if latest_file_id != local_file_id:
-                    with open(FILES_LATEST_FILE, "w", encoding="utf-8") as f:
-                        json.dump(latest, f, ensure_ascii=False, indent=2)
-                    logger.info(f"文件ID已更新: {local_file_id} -> {latest_file_id}")
-                else:
+                if any(d.get("id") == latest_file_id for d in file_latest):
                     logger.info(f"文件ID未变化 ({latest_file_id})，跳过写入")
+                else:
+                    # 只有当 file_id 不一致时才写入
+                    file_latest.append(latest)
+                    with open(FILES_LATEST_FILE, "w", encoding="utf-8") as f:
+                        json.dump(file_latest, f, ensure_ascii=False, indent=2)
+                    logger.info("file_latest文件已更新")
             return jsonify({
                 "status": "ok",
             })
