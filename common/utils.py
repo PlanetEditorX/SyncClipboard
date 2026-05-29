@@ -18,20 +18,88 @@ from typing import Optional, List
 # 创建模块级日志记录器
 logger = logging.getLogger(__name__)
 
-def show_message(title: str, message: str) -> None:
+# ---------- 全局 Tk 根窗口支持 ----------
+import queue
+import threading
+import tkinter as tk
+from tkinter import messagebox
+
+_tk_root = None
+_tk_lock = threading.Lock()
+_ui_queue = queue.Queue()
+
+def set_tk_root(root):
+    """在主线程启动时调用，注册全局根窗口"""
+    global _tk_root
+    with _tk_lock:
+        _tk_root = root
+
+def get_tk_root():
+    with _tk_lock:
+        return _tk_root
+
+def process_ui_queue():
+    try:
+        while True:
+            func, args, kwargs, result_event = _ui_queue.get_nowait()
+            try:
+                ret = func(*args, **kwargs)
+                if result_event is not None:
+                    result_event.set_result(ret)
+            except Exception as e:
+                if result_event is not None:
+                    result_event.set_exception(e)
+            _ui_queue.task_done()
+    except queue.Empty:
+        pass
+    root = get_tk_root()
+    if root is not None:
+        root.after(50, process_ui_queue)
+
+def post_to_main_thread(func, *args, **kwargs):
     """
-    显示提示消息。
-    线程安全，使用 tkinter 消息框。
-    参数:
-        title: 消息框标题
-        message: 消息内容
+    将函数调度到主线程执行，并同步返回结果。
+    调用线程会被阻塞直到函数执行完成。
     """
-    def _show() -> None:
-        root = tk.Tk()
-        root.withdraw()
-        messagebox.showinfo(title, message)
-        root.destroy()
-    threading.Thread(target=_show, daemon=True).start()
+    if threading.current_thread() is threading.main_thread():
+        return func(*args, **kwargs)
+
+    result_event = _ResultEvent()
+    _ui_queue.put((func, args, kwargs, result_event))
+    return result_event.wait()
+
+def post_to_main_thread_no_wait(func, *args, **kwargs):
+    """将函数调度到主线程执行，不等待，不阻塞调用线程"""
+    if threading.current_thread() is threading.main_thread():
+        func(*args, **kwargs)
+    else:
+        _ui_queue.put((func, args, kwargs, None))  # result_event=None 表示不等待
+
+class _ResultEvent:
+    """简单的线程同步结果容器"""
+    def __init__(self):
+        self._event = threading.Event()
+        self._result = None
+        self._exception = None
+
+    def set_result(self, result):
+        self._result = result
+        self._event.set()
+
+    def set_exception(self, exc):
+        self._exception = exc
+        self._event.set()
+
+    def wait(self):
+        self._event.wait()
+        if self._exception is not None:
+            raise self._exception
+        return self._result
+
+
+def show_message(title, message):
+    """线程安全的消息框"""
+    post_to_main_thread(messagebox.showinfo, title, message)
 
 def get_base_dir() -> Path:
     """

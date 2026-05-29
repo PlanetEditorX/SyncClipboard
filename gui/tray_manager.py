@@ -12,6 +12,15 @@ from gui.tray_menu import TrayMenu
 
 logger = logging.getLogger("gui")
 
+import tkinter as tk
+from common.utils import set_tk_root, process_ui_queue
+from common.utils import post_to_main_thread_no_wait
+
+root = tk.Tk()
+root.withdraw()          # 如果不需要显示主窗口
+set_tk_root(root)        # 注册为全局根
+
+root.after(0, process_ui_queue)
 
 class TrayManager:
     """托盘管理器 - 核心调度"""
@@ -38,8 +47,7 @@ class TrayManager:
             self.icon.icon = Image.open(icon_path)
 
     def on_left_click(self, icon):
-        """左键点击"""
-        self.file_handler.fetch_file()
+        post_to_main_thread_no_wait(self.file_handler.fetch_file)
 
     def quit_app(self, icon):
         """退出程序"""
@@ -53,9 +61,14 @@ class TrayManager:
         self.config.client_running = keep_client
         self.config.save_state()
 
+        # 停止托盘
         icon.stop()
-        import os
-        os._exit(0)
+
+        # 结束 tkinter 事件循环，让 run() 方法继续执行后续清理
+        from common.utils import get_tk_root
+        root = get_tk_root()
+        if root:
+            root.quit()
 
     def run(self):
         """运行托盘"""
@@ -83,11 +96,23 @@ class TrayManager:
         # 启动文件监控
         self.watcher.start()
 
-        # 启动托盘
+        # 启动托盘（在后台线程运行 pystray，避免阻塞主线程）
         self.icon = pystray.Icon("SyncClipboard", image, "SyncClipboard", self.menu_builder.create())
         self.icon.on_click = self.on_left_click
         self.update_icon()
-        self.icon.run()
 
-        # 托盘退出后清理
+        # 使用 run_detached() 如果可用，否则自己开线程
+        if hasattr(self.icon, 'run_detached'):
+            self.icon.run_detached()
+        else:
+            import threading
+            threading.Thread(target=self.icon.run, daemon=True).start()
+
+        # 主线程启动 Tkinter 事件循环（驱动 UI 队列和进度窗口等）
+        from common.utils import get_tk_root
+        root = get_tk_root()
+        if root:
+            root.mainloop()
+
+        # 托盘退出后清理（当 quit_app 调用 root.quit() 后，mainloop 结束，执行到这里）
         self.watcher.stop()

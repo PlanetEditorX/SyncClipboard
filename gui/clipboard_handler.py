@@ -3,6 +3,7 @@ import logging
 from datetime import datetime, timedelta
 from common.notification import show_notification, show_notification_with_click
 from common.utils import SAFE_POST
+from common.utils import post_to_main_thread_no_wait
 
 logger = logging.getLogger("gui")
 
@@ -84,8 +85,9 @@ class ClipboardHandler:
                         msg += f"\n文件：{name}"
             if name_list and msg:
                 def download_callback():
-                    """点击通知后的下载回调"""
-                    self.tray_manager.file_handler.fetch_file_with_progress(name_list)
+                    post_to_main_thread_no_wait(
+                        self.tray_manager.file_handler.fetch_file_with_progress
+                    )
 
                 show_notification_with_click(
                     "检测到文件发布, 点击保存。",

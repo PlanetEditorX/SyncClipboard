@@ -4,7 +4,7 @@ import logging
 import requests
 import tkinter as tk
 from tkinter import filedialog
-from common.utils import copy_files_to_clipboard, show_message, parse_filename_from_cd
+from common.utils import post_to_main_thread, show_message, copy_files_to_clipboard, parse_filename_from_cd
 from gui.download_dialog import DownloadProgressDialog
 
 logger = logging.getLogger("gui")
@@ -15,13 +15,30 @@ class FileHandler:
     def __init__(self, config_manager):
         self.config = config_manager
 
-    def _ask_save_path(self, filename):
-        """弹出保存对话框，获取保存路径"""
-        result = [None]
+    def _run_in_main_thread(self, func, *args, **kwargs):
+        """
+        在主线程执行 func 并同步返回结果。
+        若当前已是主线程则直接执行，否则用 after 调度并等待。
+        """
+        root = get_tk_root()
+        if root is None:
+            logger.error("Tk 根窗口未初始化")
+            return None
+        if threading.current_thread() is threading.main_thread():
+            return func(*args, **kwargs)
 
-        def ask():
-            root = tk.Tk()
-            root.withdraw()
+        result = [None]
+        event = threading.Event()
+        def wrapper():
+            result[0] = func(*args, **kwargs)
+            event.set()
+        root.after(0, wrapper)
+        event.wait()
+        return result[0]
+
+    def _ask_save_path(self, filename):
+        """弹出保存对话框（线程安全）"""
+        def _ask():
             file_path = filedialog.asksaveasfilename(
                 title="保存文件",
                 initialdir=self.config.last_dir,
@@ -29,38 +46,24 @@ class FileHandler:
                 defaultextension="",
                 filetypes=[("所有文件", "*.*")]
             )
-            root.destroy()
-            result[0] = file_path
             if file_path:
                 self.config.last_dir = os.path.dirname(file_path)
                 self.config.save_client_config()
-
-        t = threading.Thread(target=ask)
-        t.start()
-        t.join()
-        return result[0]
+            return file_path
+        return post_to_main_thread(_ask)
 
     def _ask_save_directory(self):
-        """弹出选择目录对话框，返回目标文件夹路径"""
-        result = [None]
-
-        def ask():
-            root = tk.Tk()
-            root.withdraw()
+        """弹出目录选择对话框（线程安全）"""
+        def _ask():
             dir_path = filedialog.askdirectory(
                 title="选择保存文件夹",
                 initialdir=self.config.last_dir
             )
-            root.destroy()
-            result[0] = dir_path
             if dir_path:
                 self.config.last_dir = dir_path
                 self.config.save_client_config()
-
-        t = threading.Thread(target=ask)
-        t.start()
-        t.join()
-        return result[0]
+            return dir_path
+        return post_to_main_thread(_ask)
 
     def _save_file_stream(self, response, filename):
         """流式接收文件并写入磁盘"""
@@ -107,9 +110,9 @@ class FileHandler:
             logger.info(f"文件已保存: {file_path} ({downloaded} 字节)")
 
             if copy_files_to_clipboard([file_path]):
-                show_message("保存成功", f"文件已保存至:\n{file_path}")
+                logger.info("保存成功", f"文件已保存至:\n{file_path}")
             else:
-                show_message("保存成功", f"文件已保存至:\n{file_path}")
+                logger.info(f"文件保存至:\n{file_path}失败")
 
         except Exception as e:
             progress.close()
@@ -123,60 +126,70 @@ class FileHandler:
         finally:
             response.close()
 
-    def _download_from_url(self, download_url, filename, save_path=None):
-        """从URL下载文件，若指定 save_path 则直接保存，否则弹框选择"""
+    def _download_from_url(self, download_url, filename, save_path=None, progress_dialog=None):
+        """
+        从URL下载文件。
+        若提供 progress_dialog 则复用该对话框，下载完成后只调用 reset()，
+        最后由外部调用 close()。
+        """
         if save_path is None:
-            # 旧行为：弹出另存为对话框
             file_path = self._ask_save_path(filename)
             if not file_path:
-                return
+                return False
         else:
-            # 直接存入指定文件夹，文件名保持原样
             file_path = os.path.join(save_path, filename)
-            # 可选：处理重名问题，比如自动加序号
             base, ext = os.path.splitext(file_path)
             counter = 1
             while os.path.exists(file_path):
                 file_path = f"{base} ({counter}){ext}"
                 counter += 1
 
-        # 后续下载逻辑保持不变……
-        progress = DownloadProgressDialog("下载进度")
+        # 决定进度对话框：外部传入则复用，否则自己创建
+        own_dialog = False
+        if progress_dialog is None:
+            progress_dialog = DownloadProgressDialog("下载进度")
+            own_dialog = True
+
+        # 准备下载
+        progress_dialog.reset(filename, 0)
         try:
             with requests.get(download_url, stream=True, timeout=30) as r:
                 r.raise_for_status()
                 total_size = int(r.headers.get('content-length', 0))
                 downloaded = 0
                 last_percentage = -1
+
                 with open(file_path, 'wb') as f:
                     for chunk in r.iter_content(chunk_size=8192):
                         if chunk:
-                            if progress.is_cancelled():
+                            if progress_dialog.is_cancelled():
                                 f.close()
                                 try:
                                     os.remove(file_path)
                                 except:
                                     pass
                                 show_message("已取消", "文件下载已取消")
-                                return
+                                return False
+
                             f.write(chunk)
                             downloaded += len(chunk)
+
                             if total_size > 0:
                                 percentage = int(downloaded / total_size * 100)
                                 if percentage != last_percentage:
                                     downloaded_mb = downloaded / (1024 * 1024)
                                     total_mb = total_size / (1024 * 1024)
-                                    progress.update_progress(percentage, downloaded_mb, total_mb)
+                                    progress_dialog.update_progress(percentage, downloaded_mb, total_mb)
                                     last_percentage = percentage
-            progress.update_progress(100, downloaded/(1024*1024), downloaded/(1024*1024))
-            progress.close()
+
+            progress_dialog.update_progress(100, downloaded/(1024*1024), downloaded/(1024*1024))
             logger.info(f"文件从URL下载成功: {file_path}")
             if copy_files_to_clipboard([file_path]):
-                show_message("保存成功", f"文件已保存至:\n{file_path}")
+                logger.info("保存成功", f"文件已保存至:\n{file_path}")
             else:
-                show_message("保存成功", f"文件已保存至:\n{file_path}")
+                logger.info(f"文件保存至:\n{file_path}失败")
+            return True
         except Exception as e:
-            progress.close()
             logger.error(f"从URL下载文件失败: {e}")
             show_message("下载失败", f"下载失败: {e}")
             try:
@@ -184,6 +197,10 @@ class FileHandler:
                     os.remove(file_path)
             except:
                 pass
+            return False
+        finally:
+            if own_dialog:
+                progress_dialog.close()
 
     def fetch_file(self):
         """获取文件（托盘菜单回调）"""
@@ -295,30 +312,40 @@ class FileHandler:
                 self._download_from_url(download_url, name)
             return
 
-        # 2.2 新版多文件列表
+        # 多文件列表
         if data.get("type") == "file_list":
             files = data.get("files", [])
             if not files:
-                show_message("提示", "没有需要下载的文件")
                 return
 
-            # 只弹一次文件夹选择
-            save_dir = self._ask_save_directory()
+            save_dir = post_to_main_thread(self._ask_save_directory)  # 已在主线程执行对话框
             if not save_dir:
-                logger.info("用户取消选择文件夹")
                 return
 
-            total = len(files)
-            for idx, file in enumerate(files, 1):
-                name = file.get("name", f"file_{idx}")
-                download_url = file.get("download_url")
-                if not download_url:
-                    logger.warning(f"文件 {name} 无下载地址，跳过")
-                    continue
-                logger.info(f"({idx}/{total}) 下载: {name}")
-                self._download_from_url(download_url, name, save_path=save_dir)
+            # 在主线程创建进度条
+            progress_dialog = post_to_main_thread(DownloadProgressDialog, "下载进度")
+            try:
+                for idx, file in enumerate(files, 1):
+                    if progress_dialog.is_cancelled():
+                        break
+                    name = file.get("name", f"file_{idx}")
+                    total = len(files)
+                    download_url = file.get("download_url")
+                    if not download_url:
+                        logger.warning(f"文件 {name} 无下载地址，跳过")
+                        continue
+                    logger.info(f"({idx}/{total}) 下载: {name}")
+                    success = self._download_from_url(download_url, name,
+                                                    save_path=save_dir,
+                                                    progress_dialog=progress_dialog)
+                    if not success:
+                        # 下载失败或取消，可根据需求决定是否继续剩余文件
+                        if progress_dialog.is_cancelled():
+                            break
+            finally:
+                progress_dialog.close()
 
-            show_message("下载完成", f"已下载 {total} 个文件到:\n{save_dir}")
+            show_message("下载完成", f"已处理 {total} 个文件\n保存至：{save_dir}")
             return
 
         # 其他情况
