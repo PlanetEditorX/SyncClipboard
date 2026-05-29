@@ -1,11 +1,8 @@
 # client/run.py
-import json
-import os
 import sys
 import time
 import signal
 import logging
-import socket
 import requests
 from pathlib import Path
 from common.utils import BASE_DIR, SAFE_POST
@@ -13,34 +10,9 @@ from client.main_menu import SyncClient
 from client.file_server import FileServer
 from logging.handlers import RotatingFileHandler
 
-# ---------- 配置文件路径 ----------
-CONFIG_FILE = BASE_DIR / "config" / "client_config.json"
-CONFIG_FILE.parent.mkdir(parents=True, exist_ok=True)
-
-def load_config():
-    if not os.path.exists(CONFIG_FILE):
-        default_config = {
-            "server_host": "127.0.0.1",
-            "server_port": 8000,
-            "key": "123456",
-            "local_name": socket.gethostname(),  # 默认使用电脑名称
-            "file_server_port": 8899
-        }
-        with open(CONFIG_FILE, "w", encoding="utf-8") as f:
-            json.dump(default_config, f, ensure_ascii=False, indent=2)
-        return default_config
-
-    with open(CONFIG_FILE, "r", encoding="utf-8") as f:
-        config = json.load(f)
-
-    # 如果 local_name 是默认值 "PC-01"，则替换为电脑名称
-    if config.get("local_name") == "PC-01":
-        config["local_name"] = socket.gethostname()
-        # 更新配置文件
-        with open(CONFIG_FILE, "w", encoding="utf-8") as f:
-            json.dump(config, f, ensure_ascii=False, indent=2)
-
-    return config
+# 导入 ConfigManager
+sys.path.insert(0, str(BASE_DIR))
+from gui.config_manager import ConfigManager
 
 def main():
     # ---------- 客户端独立日志配置 ----------
@@ -62,30 +34,48 @@ def main():
 
     logger.info("客户端进程启动")
 
-    config = load_config()
-    logger.info(f"本机名称: {config['local_name']}")
+    # ---------- 使用 ConfigManager 加载配置 ----------
+    config_manager = ConfigManager()
+    if not config_manager.load_client_config():
+        logger.critical("加载配置文件失败，客户端退出")
+        sys.exit(1)
+
+    # 获取配置值
+    server_host = config_manager.server_host
+    server_port = config_manager.server_port
+    key = config_manager.key
+    local_name = config_manager.local_name
+    file_server_port = config_manager.file_server_port
+
+    logger.info(f"本机名称: {local_name}")
 
     # 启动客户端专用文件服务器
     file_server = FileServer(
-        port=config.get("file_server_port"),
-        center_host=config.get("server_host"),
-        center_port=config.get("server_port"),
-        local_name=config.get("local_name"),
-        key=config.get("key")
+        port=file_server_port,
+        center_host=server_host,
+        center_port=server_port,
+        local_name=local_name,
+        key=key
     )
 
     client = SyncClient(
-        config,
+        {
+            "server_host": server_host,
+            "server_port": server_port,
+            "key": key,
+            "local_name": local_name,
+            "file_server_port": file_server_port
+        },
         file_server
     )
     file_server.start()
 
     # ---------- 使用 SAFE_POST 注册到服务器 ----------
-    url = f"http://{config['server_host']}:{config['server_port']}/register"
+    url = f"http://{server_host}:{server_port}/register"
     payload = {
-        "file_server_port": config["file_server_port"],
-        "local_name": config["local_name"],
-        "key": config["key"]
+        "file_server_port": file_server_port,
+        "local_name": local_name,
+        "key": key
     }
 
     resp = SAFE_POST(url, json=payload, timeout=30)

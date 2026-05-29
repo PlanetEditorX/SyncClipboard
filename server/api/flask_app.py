@@ -36,22 +36,38 @@ file_handler = None
 latest_file = None
 computer_name = socket.gethostname()
 
-def init_services():
+def init_services(config_manager=None):
     """由 run.py 在配置注入后调用，初始化依赖配置的服务"""
     global tracker, file_handler, latest_file, KEY, LOCAL_NAME, SAVE_PATH, PORT
     from server.services.client_tracker import ClientTracker
     from server.services.file_handler import FileHandler
-    from server.services.file_sync import LatestFileManager  # 或 LatestFileTracker
+    from server.services.latest_file import LatestFileTracker
 
+    # 如果传入了 config_manager，使用它来设置 app.config
+    if config_manager:
+        # 确保 app.config 中有必要的配置
+        if not app.config.get('key'):
+            app.config['key'] = config_manager.key
+        if not app.config.get('local_name'):
+            app.config['local_name'] = config_manager.server_local_name
+        if not app.config.get('save_path'):
+            app.config['save_path'] = str(config_manager.save_path) if config_manager.save_path else "D:\\Downloads"
+        if not app.config.get('port'):
+            app.config['port'] = config_manager.server_port
+
+        logger.info(f"使用 ConfigManager 配置 | 保存路径: {app.config['save_path']}")
+
+    # 初始化各个服务
     tracker = ClientTracker()
-    file_handler = FileHandler(app.config['save_path'])
+    file_handler = FileHandler(app.config.get('save_path', 'D:\\Downloads'))
     latest_file = LatestFileTracker()
 
-    KEY = app.config["key"]
-    LOCAL_NAME = app.config["local_name"]
-    SAVE_PATH = app.config["save_path"]
-    PORT = app.config["port"]
-    logger.info("API组件初始化完成")
+    KEY = app.config.get("key", "")
+    LOCAL_NAME = app.config.get("local_name", "Server")
+    SAVE_PATH = app.config.get("save_path", "D:\\Downloads")
+    PORT = app.config.get("port", 8000)
+
+    logger.info(f"API组件初始化完成 | 服务名称: {LOCAL_NAME} | 端口: {PORT}")
 
 def get_api_key():
     return request.headers.get("key", "")

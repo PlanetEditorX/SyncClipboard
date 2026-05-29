@@ -50,14 +50,14 @@ BASE_DIR = get_base_dir()
 
 def safe_post(url, **kwargs):
     """
-    发送 POST 请求，内置超时（5秒）和异常处理。
+    发送 POST 请求，内置超时（10秒）和异常处理。
     参数:
         url: 请求地址
         **kwargs: 其他传递给 requests.post 的关键字参数
     返回:
         成功时返回 Response 对象，失败时返回 None 并弹出提示。
     """
-    timeout = kwargs.pop("timeout", 5)
+    timeout = kwargs.pop("timeout", 10)
     try:
         return requests.post(url, timeout=timeout, **kwargs)
     except requests.exceptions.ConnectTimeout:

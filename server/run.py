@@ -1,18 +1,15 @@
 # server/run.py
-import json
 import re
-from pathlib import Path
+import sys
 import logging
+from pathlib import Path
 from logging.handlers import RotatingFileHandler
 from server.api.flask_app import app, init_services
 from common.utils import BASE_DIR
 
-CONFIG_FILE = BASE_DIR / "config" / "server_config.json"
-CONFIG_FILE.parent.mkdir(parents=True, exist_ok=True)
-
-def load_config():
-    with open(CONFIG_FILE, "r", encoding="utf-8") as f:
-        return json.load(f)
+# 导入 ConfigManager
+sys.path.insert(0, str(BASE_DIR))
+from gui.config_manager import ConfigManager
 
 # ---------- 自定义格式化器：过滤 ANSI 转义序列 ----------
 class CleanFormatter(logging.Formatter):
@@ -25,12 +22,12 @@ class CleanFormatter(logging.Formatter):
 
 def main():
     # ---------- 服务器独立日志配置 ----------
-    LOG_FILE = BASE_DIR / "log" / "syncclipboard.log"   # 也可改为 server.log
+    LOG_FILE = BASE_DIR / "log" / "syncclipboard.log"
     LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
 
     # 获取 root logger，并清除从父进程（gui）继承的 handler
     root_logger = logging.getLogger()
-    root_logger.handlers.clear()          # ← 关键：避免日志写入 gui.log
+    root_logger.handlers.clear()
 
     handler = RotatingFileHandler(
         LOG_FILE, maxBytes=1*1024*1024, backupCount=1, encoding='utf-8'
@@ -48,16 +45,29 @@ def main():
     logging.info("服务初始化完成")
     # ---------------------------------------------------
 
-    config = load_config()
-    app.config.update(config)
+    # ---------- 使用 ConfigManager 加载服务器配置 ----------
+    config_manager = ConfigManager()
 
-    init_services()
+    if not config_manager.load_server_config():
+        logging.critical("加载服务器配置文件失败，服务退出")
+        sys.exit(1)
 
-    logging.info("配置加载完成: %s", config)
+    # 更新 Flask app 配置
+    app.config.update({
+        "port": config_manager.server_port,
+        "key": config_manager.key,
+        "save_path": config_manager.save_path,
+        "local_name": config_manager.local_name
+    })
+
+    # 初始化服务（传递配置）
+    init_services(config_manager)
+
+    logging.info(f"配置加载完成 | 端口: {config_manager.server_port} | 保存路径: {config_manager.save_path}")
 
     app.run(
         host="0.0.0.0",
-        port=config["port"],
+        port=config_manager.server_port,
         debug=False
     )
 

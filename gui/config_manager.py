@@ -28,6 +28,8 @@ class ConfigManager:
         self.last_dir = str(Path.home() / "Downloads")
         self.server_running = False
         self.client_running = False
+        self.save_path = "D:\\Downloads"
+        self.server_local_name = "Server"
 
         # 确保必要的目录存在
         ConfigManager.CLIENT_CONFIG.parent.mkdir(parents=True, exist_ok=True)
@@ -144,6 +146,83 @@ class ConfigManager:
             logger.info(f"客户端配置已保存 | 电脑名称: {self.local_name}")
         except Exception as e:
             logger.error(f"保存配置失败: {e}")
+
+    def load_server_config(self):
+        """加载服务器配置（自动创建默认配置）"""
+        config_file = ConfigManager.SERVER_CONFIG
+
+        # 1. 如果配置文件不存在，创建默认配置
+        if not config_file.exists():
+            logger.info("服务器配置文件不存在，正在创建默认配置...")
+            default_config = {
+                "key": "123456",
+                "save_path": "D:\\Downloads",
+                "port": 8000,
+                "local_name": "Server"
+            }
+            try:
+                with open(config_file, 'w', encoding='utf-8') as f:
+                    json.dump(default_config, f, ensure_ascii=False, indent=4)
+                logger.info(f"默认服务器配置文件已创建，端口: {default_config['port']}")
+            except Exception as e:
+                logger.error(f"创建默认服务器配置文件失败: {e}")
+                return False
+
+        # 2. 读取配置文件
+        try:
+            with open(config_file, 'r', encoding='utf-8') as f:
+                config = json.load(f)
+        except Exception as e:
+            logger.error(f"读取服务器配置文件失败: {e}")
+            return False
+
+        # 3. 检查并补充缺失的字段
+        need_save = False
+        default_fields = {
+            "key": "123456",
+            "save_path": "D:\\Downloads",
+            "port": 8000,
+            "local_name": "Server"
+        }
+
+        for field, default_value in default_fields.items():
+            if field not in config:
+                logger.warning(f"服务器配置文件缺少字段 '{field}'，使用默认值: {default_value}")
+                config[field] = default_value
+                need_save = True
+
+        # 4. 如果有修改，保存配置文件
+        if need_save:
+            try:
+                with open(config_file, 'w', encoding='utf-8') as f:
+                    json.dump(config, f, ensure_ascii=False, indent=4)
+                logger.info("服务器配置文件已更新")
+            except Exception as e:
+                logger.error(f"保存服务器配置文件失败: {e}")
+
+        # 5. 赋值给实例变量
+        self.server_port = config.get("port")
+        self.key = config.get("key", "")
+        self.save_path = config.get("save_path", "D:\\Downloads")
+        self.local_name = config.get("local_name", "Server")
+
+        logger.info(f"读取服务器配置 | 端口={self.server_port} | 保存路径={self.save_path} | 服务器名称={self.local_name}")
+        return True
+
+    def save_server_config(self):
+        """保存服务器配置"""
+        try:
+            config = {
+                "port": self.server_port,
+                "key": self.key,
+                "save_path": getattr(self, 'save_path', "D:\\Downloads"),
+                "local_name": getattr(self, 'local_name', "Server")
+            }
+            with open(ConfigManager.SERVER_CONFIG, 'w', encoding='utf-8') as f:
+                json.dump(config, f, ensure_ascii=False, indent=4)
+            logger.info(f"服务器配置已保存 | 端口: {self.server_port} | 保存路径: {self.save_path}")
+        except Exception as e:
+            logger.error(f"保存服务器配置失败: {e}")
 
     def is_autostart_enabled(self):
         """检查是否已设置开机启动"""
