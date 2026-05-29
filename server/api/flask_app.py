@@ -374,7 +374,7 @@ def mark_pasted():
     return jsonify({"status": "ok"})
 
 # ---------- 文件同步相关路由 ----------
-# ---------- 文件同步（独立于文本）----------
+# ---------- 文件同步----------
 @app.route('/file_sync', methods=['POST'])
 def file_sync():
     """电脑复制文件时调用，告诉服务端最新文件的路径"""
@@ -384,19 +384,48 @@ def file_sync():
 
     client_ip = request.remote_addr
     data = request.get_json()
-    file_id = data.get("file_id", 0)
-    path = data.get("path")
-    name = data.get("name")
-    size = data.get("size", 0)
-    source = data.get("source", 0)
+    file_list = data.get("file_list", [])
+    source = data.get("source", "unknown")
     port = data.get("port", 8899)
 
-    if not path or not name or not source or not file_id or not port:
-        return jsonify({"status": "error", "message": "参数不完整"}), 400
+    if not file_list:
+        return jsonify({"status": "error", "message": "file_list 为空"}), 400
 
-    latest_file.set_latest(file_id, path, name, size, source, client_ip, port)
-    logging.info(f"最新文件已记录: {name} ({size} bytes), 路径: {path}, 来源: {source}")
-    return jsonify({"status": "ok"})
+    success_count = 0
+    errors = []
+
+    for file_info in file_list:
+        file_id = file_info.get("file_id")
+        path = file_info.get("path")
+        name = file_info.get("name")
+        size = file_info.get("size", 0)
+
+        if not file_id or not name or not path:
+            errors.append(f"{name or '未知文件'} 参数不完整")
+            continue
+
+        try:
+            latest_file.upsert_file(
+                file_id=file_id,
+                path=path,
+                name=name,
+                size=size,
+                source=source,
+                ip=client_ip,
+                port=port
+            )
+            success_count += 1
+            logging.info(f"文件已记录: {name} ({size} bytes), 来源: {source}")
+        except Exception as e:
+            logging.error(f"记录文件失败: {name}, 错误: {e}")
+            errors.append(f"{name}: {str(e)}")
+
+    return jsonify({
+        "status": "ok",
+        "success_count": success_count,
+        "error_count": len(errors),
+        "errors": errors
+    })
 
 @app.route('/latest/clear', methods=['GET'])
 def clear_latest():

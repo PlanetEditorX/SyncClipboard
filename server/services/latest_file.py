@@ -1,5 +1,6 @@
 import os
 import json
+import time
 from pathlib import Path
 from common.utils import BASE_DIR
 
@@ -8,82 +9,128 @@ STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
 
 class LatestFileTracker:
     def __init__(self):
-        self.data = self._load()
+        self.data = self._load()   # 现在 data 是一个 list
 
     def _load(self):
-        if os.path.exists(STATE_FILE):
-            with open(STATE_FILE, "r", encoding="utf-8") as f:
-                data = json.load(f)
-                # 确保所有字段都存在（兼容旧数据）
-                return {
-                    "file_id": data.get("file_id"),
-                    "path": data.get("path"),
-                    "name": data.get("name"),
-                    "size": data.get("size", 0),
-                    "source": data.get("source"),
-                    "ip": data.get("ip"),
-                    "port": data.get("port")  # 补全 port 字段
-                }
-        return self._empty_data()
+        """从磁盘加载文件列表，兼容旧版单对象格式"""
+        if not os.path.exists(STATE_FILE):
+            return []
 
-    def _empty_data(self):
-        """返回空数据模板"""
-        return {
-            "file_id": None,
-            "path": None,
-            "name": None,
-            "size": 0,
-            "source": None,
-            "ip": None,
-            "port": None
-        }
+        with open(STATE_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+
+        # 兼容旧版：如果存的是单个字典，转成列表
+        if isinstance(data, dict):
+            # 旧数据可能缺少 port / updated_at，补全后放入列表
+            item = {
+                "file_id": data.get("file_id"),
+                "path": data.get("path"),
+                "name": data.get("name"),
+                "size": data.get("size", 0),
+                "source": data.get("source"),
+                "ip": data.get("ip"),
+                "port": data.get("port"),
+                "updated_at": data.get("updated_at", time.time())
+            }
+            return [item] if item["file_id"] else []
+
+        # 已经是列表，确保每个条目字段完整
+        for item in data:
+            item.setdefault("file_id", None)
+            item.setdefault("path", None)
+            item.setdefault("name", None)
+            item.setdefault("size", 0)
+            item.setdefault("source", None)
+            item.setdefault("ip", None)
+            item.setdefault("port", None)
+            item.setdefault("updated_at", time.time())
+        return data
 
     def _save(self):
         with open(STATE_FILE, "w", encoding="utf-8") as f:
             json.dump(self.data, f, indent=2, ensure_ascii=False)
 
-    def set_latest(self, uuid, path, name, size, source, ip, port):
-        """设置最新的文件信息"""
-        # 验证必要参数
-        if not uuid:
-            raise ValueError("uuid cannot be empty")
+    def upsert_file(self, file_id, path, name, size, source, ip, port):
+        """
+        插入或更新一条文件记录（根据 file_id 去重）
+        """
+        if not file_id:
+            raise ValueError("file_id cannot be empty")
 
-        self.data["file_id"] = uuid
-        self.data["path"] = path
-        self.data["name"] = name
-        self.data["size"] = size
-        self.data["source"] = source
-        self.data["ip"] = ip
-        self.data["port"] = port
+        now = time.time()
+        # 查找是否已存在该 file_id
+        for item in self.data:
+            if item["file_id"] == file_id:
+                item.update({
+                    "path": path,
+                    "name": name,
+                    "size": size,
+                    "source": source,
+                    "ip": ip,
+                    "port": port,
+                    "updated_at": now
+                })
+                self._save()
+                return
+
+        # 不存在则追加
+        self.data.append({
+            "file_id": file_id,
+            "path": path,
+            "name": name,
+            "size": size,
+            "source": source,
+            "ip": ip,
+            "port": port,
+            "updated_at": now
+        })
         self._save()
+
+    def get_all_files(self):
+        """返回所有文件记录的副本（按更新时间倒序）"""
+        return sorted(self.data, key=lambda x: x.get("updated_at", 0), reverse=True)
+
+    def get_file_by_id(self, file_id):
+        """根据 file_id 查找单条记录，未找到返回 None"""
+        for item in self.data:
+            if item["file_id"] == file_id:
+                return item.copy()
+        return None
 
     def get_latest(self):
         """
-        返回文件信息字典，如果没有有效文件则返回 None
-
-        返回格式:
-        {
-            "file_id": str,  # 必须存在且非空
-            "path": str or None,  # 本地路径，None 表示远程文件
-            "name": str,
-            "size": int,
-            "source": str,
-            "ip": str,
-            "port": int or None
-        }
+        返回最新更新的一条记录（兼容旧版单文件调用）
+        如果没有记录返回 None
         """
-        # 检查是否有有效的文件记录（file_id 存在且非空）
-        if self.data.get("file_id"):
-            return self.data.copy()  # 返回副本，避免外部修改
-        return None
+        if not self.data:
+            return None
+        # 按 updated_at 倒序取第一条
+        latest = max(self.data, key=lambda x: x.get("updated_at", 0))
+        return latest.copy()
+
+    def remove_file(self, file_id):
+        """根据 file_id 删除记录"""
+        before = len(self.data)
+        self.data = [item for item in self.data if item["file_id"] != file_id]
+        if len(self.data) != before:
+            self._save()
+            return True
+        return False
 
     def clear(self):
-        """清空文件记录"""
-        self.data = self._empty_data()
+        """清空所有记录"""
+        self.data = []
         self._save()
 
-    def is_remote_file(self):
-        """判断当前文件是否为远程文件"""
-        if not self.data.get("file_id"):
+    def is_remote_file(self, file_id=None):
+        """
+        判断指定文件是否为远程文件。
+        若未传 file_id，则判断最新一条记录。
+        """
+        if file_id:
+            item = self.get_file_by_id(file_id)
+        else:
+            item = self.get_latest()
+        if not item:
             return False
-        return not self.data.get("path") or not os.path.isfile(self.data["path"])
+        return not item.get("path") or not os.path.isfile(item["path"])

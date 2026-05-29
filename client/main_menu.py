@@ -113,40 +113,48 @@ class SyncClient:
 
     def _push_latest_file(self, file_paths):
         """
-        推送最新的复制文件
+        推送最新的文件
         """
         if not file_paths:
+            logging.warning("没有文件需要推送")
             return
-        path = file_paths[0]
-        if not os.path.isfile(path):
-            return
-        name = os.path.basename(path)
-        size = os.path.getsize(path)
-        file_id = str(uuid.uuid4())
-        try:
+        file_list = []
+        for path in file_paths:
+            if not os.path.isfile(path):
+                logging.warning(f"文件不存在，跳过: {path}")
+                continue
+
+            name = os.path.basename(path)
+            size = os.path.getsize(path)
+            file_id = str(uuid.uuid4())
             # 注册到 FileServer
-            if self.file_server:
-                self.file_server.register_file(
-                    file_id,
-                    path
-                )
+            if hasattr(self, 'file_server') and self.file_server:
+                self.file_server.register_file(file_id, path)
+            file_list.append({
+                    "file_id": file_id,
+                    "path": path,
+                    "name": name,
+                    "size": size
+                })
+        try:
             resp = requests.post(
                 f"{self.server_url}/file_sync",
                 headers={"key": self.key},
                 json={
-                    "file_id": file_id,
-                    "path": path,
-                    "name": name,
-                    "size": size,
-                    "source": self.local_name,
-                    "port": self.file_server.port
+                    "file_list": file_list,
+                    "source": getattr(self, 'local_name', 'unknown'),
+                    "port": getattr(self.file_server, 'port', None)
                 },
-                timeout=5
+                timeout=10
             )
+
             if resp.status_code == 200:
                 logging.info(f"文件路径已同步: {name} ({size} bytes)")
+            else:
+                logging.error(f"同步失败: {name}, 状态码: {resp.status_code}, 内容: {resp.text}")
+
         except Exception as e:
-            logging.error(f"同步文件路径失败: {e}")
+            logging.error(f"同步文件路径失败: {name}, 错误: {e}")
 
     def _pull_loop(self):
         while self.running:
