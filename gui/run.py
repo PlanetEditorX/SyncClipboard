@@ -2,8 +2,12 @@ import logging
 import multiprocessing
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
-from gui.tray import TrayManager
 from common.tools import BASE_DIR
+from gui.tray_manager import TrayManager
+
+def main():
+    """启动托盘程序"""
+    TrayManager().run()
 
 if __name__ == "__main__":
     # PyInstaller 打包后需要调用 freeze_support
@@ -28,5 +32,4 @@ if __name__ == "__main__":
         logger.info("托盘管理程序启动")
 
         # 启动托盘（会阻塞在这里）
-        tray = TrayManager()
-        tray.run()
+        main()
