@@ -127,15 +127,19 @@ def notify_clients(_type):
         else:
             latest_global = latest.copy()
     else:
-        latest  = latest_file.get_latest()
+        latest  = latest_file.get_all_files()
     for client in clients:
         source = client["local_name"]
         client_ip = client['ip']
         local_name = client['local_name']
 
         # 核心判断：如果最新内容不是该客户端自己推送的，才需要通知它
-        if latest.get("source") == source or latest.get("source") == local_name or latest == None:
-            continue
+        if  _type == "text":
+            if latest.get("source") == source or latest.get("source") == local_name or latest == None:
+                continue
+        else:
+            if latest[0].get("source") == source or latest[0].get("source") == local_name or latest == None:
+                continue
 
         if _type == "text":
             # 检查该客户端是否已经标记过粘贴（防止重复推送）
@@ -185,12 +189,7 @@ def notify_clients(_type):
                 latest["source"]
             )
         else:
-            logging.info(
-                "客户端 %s 已获取文件发布通知: %s (来自 %s)",
-                client["local_name"],
-                latest["name"],
-                latest["source"]
-            )
+            logging.info("客户端 %s 已获取文件发布通知", client["local_name"])
         # 推送更新到客户端
         update_url = f"http://{client_ip}:{client['port']}/update/client_latest"
         try:
