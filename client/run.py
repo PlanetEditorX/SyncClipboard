@@ -5,6 +5,7 @@ import sys
 import time
 import signal
 import logging
+import socket
 import requests
 from pathlib import Path
 from common.utils import BASE_DIR, SAFE_POST
@@ -22,14 +23,24 @@ def load_config():
             "server_host": "127.0.0.1",
             "server_port": 8000,
             "key": "123456",
-            "local_name": "PC-01",
+            "local_name": socket.gethostname(),  # 默认使用电脑名称
             "file_server_port": 8899
         }
         with open(CONFIG_FILE, "w", encoding="utf-8") as f:
             json.dump(default_config, f, ensure_ascii=False, indent=2)
         return default_config
+
     with open(CONFIG_FILE, "r", encoding="utf-8") as f:
-        return json.load(f)
+        config = json.load(f)
+
+    # 如果 local_name 是默认值 "PC-01"，则替换为电脑名称
+    if config.get("local_name") == "PC-01":
+        config["local_name"] = socket.gethostname()
+        # 更新配置文件
+        with open(CONFIG_FILE, "w", encoding="utf-8") as f:
+            json.dump(config, f, ensure_ascii=False, indent=2)
+
+    return config
 
 def main():
     # ---------- 客户端独立日志配置 ----------
@@ -52,6 +63,8 @@ def main():
     logger.info("客户端进程启动")
 
     config = load_config()
+    logger.info(f"本机名称: {config['local_name']}")
+
     # 启动客户端专用文件服务器
     file_server = FileServer(
         port=config.get("file_server_port"),
