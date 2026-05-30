@@ -38,13 +38,14 @@ class FileWatcherHandler:
             logger.info("文件监控已停止")
 
     def _on_file_changed(self, changed_path):
-        """文件变化时的分发处理"""
-        client_latest = self.config.CLIENT_LATEST_FILE.resolve()
-        file_latest = self.config.FILE_LATEST_FILE.resolve()
+        # 统一为绝对路径 Path 对象
+        changed = Path(changed_path).resolve()
+        client_latest = Path(self.config.CLIENT_LATEST_FILE).resolve()
+        file_latest   = Path(self.config.FILE_LATEST_FILE).resolve()
 
-        if changed_path == client_latest:
+        if changed == client_latest:
             self.clipboard_handler.handle_client_latest()
             self.clipboard_handler.notify_server_if_running("text")
-        elif changed_path == file_latest:
+        elif changed == file_latest:
             self.clipboard_handler.handle_file_latest()
             self.clipboard_handler.notify_server_if_running("file")
