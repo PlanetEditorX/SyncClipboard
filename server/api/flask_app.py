@@ -8,8 +8,8 @@ import requests
 import threading
 import pyperclip
 from pathlib import Path
-from datetime import datetime
 from urllib.parse import unquote
+from datetime import datetime,timedelta
 from flask import Flask, request, jsonify, send_file
 
 # 统一使用 server 包路径的绝对导入
@@ -37,6 +37,7 @@ file_handler = None
 latest_file = None
 computer_name = socket.gethostname()
 clipboard_lock = threading.Lock()
+CLIENT_EXPIRE_HOURS = 168   # 客户端超过1周未出现就删除
 
 def init_services(config_manager=None):
     """由 run.py 在配置注入后调用，初始化依赖配置的服务"""
@@ -94,7 +95,25 @@ def load_clients_ip():
 
 def save_clients():
     with _lock:
-        with open(CLIENT_IP_FILE, "w") as f:
+        now = datetime.now()
+        expired = []
+        # 先清理过期客户端
+        for c in clients[:]:
+            try:
+                last = datetime.strptime(c["last_seen"], "%Y-%m-%d %H:%M:%S")
+            except (ValueError, KeyError):
+                # 时间格式错误或缺失字段，视为无效，直接移除
+                expired.append(c)
+                continue
+            if now - last > timedelta(hours=CLIENT_EXPIRE_HOURS):
+                expired.append(c)
+
+        for c in expired:
+            clients.remove(c)
+            logging.info(f"移除过期客户端: {c.get('local_name', '未知')} ({c.get('ip')})")
+
+        # 写入文件
+        with open(CLIENT_IP_FILE, "w", encoding="utf-8") as f:
             json.dump(clients, f, indent=2, ensure_ascii=False)
 
 def add_or_update_client(ip, port, local_name):
@@ -579,6 +598,7 @@ def register():
     # 可在此验证密钥，与 server_config 中的 key 比对
     if key != app.config.get('key'):
         return jsonify({"status": "error", "msg": "invalid key"}), 403
+    # 加载客户端列表
     load_clients_ip()
     is_new = add_or_update_client(ip, port, local_name)
     msg = f"客户端 {local_name}({ip}) 已连接。"
