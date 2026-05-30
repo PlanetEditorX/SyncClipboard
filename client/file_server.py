@@ -84,12 +84,11 @@ class FileServer:
                         # 更新到文件
                         if self.tracker.is_duplicate(latest["id"]):
                             return jsonify({"status": "duplicate", "message": "重复内容"}), 200
-                        # 更新记录（同时注册 ID、更新客户端最新和全局最新）
-                        self.tracker.update(latest)
-
                         # 更新剪贴板
                         with self.clipboard_lock:
                             pyperclip.copy(latest["content"])
+                        # 更新记录（同时注册 ID、更新客户端最新和全局最新）
+                        self.tracker.update(latest)
                         self.last_remote_id = latest["id"]
                         self._last_remote_content = latest["content"]
                         self.last_text = latest["content"]
