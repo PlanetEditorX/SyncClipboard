@@ -114,6 +114,20 @@ class FileServer:
                 "status": "ok",
             })
 
+        @self.app.route("/clear/file_latest", methods=["GET"])
+        def clear_file_latest():
+            key = get_api_key()
+            if key != self.KEY:
+                return jsonify({"status": "error", "message": "密钥错误"}), 403
+            client_ip = request.remote_addr
+            logger.info(f"清空文件列表 - 请求来自: {client_ip}")
+            with open(FILE_LATEST_FILE, "w", encoding="utf-8") as f:
+                json.dump([], f, ensure_ascii=False, indent=2)
+            logger.info("file_latest文件已清空")
+            return jsonify({
+                "status": "ok",
+            })
+
         @self.app.route("/check/<file_id>", methods=["GET"])
         def check_files(file_id):
             client_ip = request.remote_addr

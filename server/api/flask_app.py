@@ -136,6 +136,24 @@ def notify_clients(_type):
         # 推送的客户端是服务器跳过
         if source == LOCAL_NAME:
             continue
+        if _type == "clear":
+            # 同步清理最新文件信息
+            try:
+                resp = requests.get(
+                    f"http://{client_ip}:{client['port']}/clear/file_latest",
+                    headers={
+                        "key": KEY
+                    },
+                    timeout=5
+                )
+                if resp.status_code == 200:
+                    logging.info(f"最新文件清理通知客户端{client["local_name"]}成功...")
+                else:
+                    logging.warning(f"最新文件清理通知客户端{client["local_name"]}失败: {resp.status_code} {resp.text}")
+            except Exception as e:
+                logging.error(f"连接客户端 {client["local_name"]} 失败: {e}")
+            continue
+
         #  推送的文件来源是要通知的客户端跳过
         if  _type == "text":
             if latest.get("source") == source or latest == None:
@@ -143,7 +161,6 @@ def notify_clients(_type):
         else:
             if latest[0].get("source") == source or latest == None:
                 continue
-
         if _type == "text":
             # 检查该客户端是否已经标记过粘贴（防止重复推送）
             client_last = tracker.data.get("clients", {}).get(source)
@@ -434,6 +451,7 @@ def file_sync():
 def clear_latest():
     """清理最新文件"""
     latest_file.clear()
+    notify_clients("clear")
     return jsonify({"status": "ok"}), 200
 
 @app.route('/request_file', methods=['POST'])
