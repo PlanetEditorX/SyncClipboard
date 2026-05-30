@@ -132,14 +132,13 @@ def notify_clients(_type):
     for client in clients:
         source = client["local_name"]
         client_ip = client['ip']
-        local_name = app.config.get("local_name")
 
         # 推送的客户端是服务器跳过
-        if source == local_name:
+        if source == LOCAL_NAME:
             continue
         #  推送的文件来源是要通知的客户端跳过
         if  _type == "text":
-            if latest.get("source") == source or latest.get("source") == local_name or latest == None:
+            if latest.get("source") == source or latest == None:
                 continue
         else:
             if latest[0].get("source") == source or latest == None:
@@ -229,10 +228,10 @@ def text_sync():
         return jsonify({"status": "error", "message": "密钥错误"}), 403
 
     source = data.get("source", "")
-    if source == LOCAL_NAME:
+    content = data.get("content", "")
+    if source == LOCAL_NAME and content == tracker.get_latest_global_content():
         return jsonify({"status": "ignored", "message": "忽略自身来源"}), 200
 
-    content = data.get("content", "")
     if not content:
         return jsonify({"status": "error", "message": "内容为空"}), 400
 

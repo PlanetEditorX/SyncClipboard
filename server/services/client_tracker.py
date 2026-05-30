@@ -3,7 +3,7 @@ import json
 import os
 from datetime import datetime
 from pathlib import Path
-from common.utils import BASE_DIR
+from common.utils import BASE_DIR, safe_get
 import threading
 
 CLIENT_LATEST_FILE = BASE_DIR / "latest" / "client_latest.json"
@@ -74,11 +74,16 @@ class ClientTracker:
             self._save()
 
     def get_global_latest(self):
+        """返回最新的文字内容对象"""
         with self.lock:
             # 重新加载最新数据，防止覆盖其他进程已添加的 id
             self.data = self._load()
             latest = self.data.get("latest_global")
             return latest.copy() if latest else None
+
+    def get_latest_global_content(self):
+        """返回最新的文字内容"""
+        return safe_get(self._save, "latest_global", "content")
 
     def mark_pasted(self, client_name: str, item: dict):
         """标记客户端已粘贴某内容，更新对应客户端条目和全局最新状态"""

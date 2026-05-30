@@ -229,3 +229,15 @@ def parse_filename_from_cd(content_disposition: Optional[str]) -> Optional[str]:
     if match:
         return match.group(1).strip('"')
     return None
+
+def safe_get(data, *keys, default=None):
+    """安全获取嵌套字典的值
+    示例:
+        content = safe_get(self.data, "latest_global", "content")
+    """
+    for key in keys:
+        if isinstance(data, dict):
+            data = data.get(key, default)
+        else:
+            return default
+    return data
