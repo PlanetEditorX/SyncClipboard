@@ -123,7 +123,8 @@ class SyncClient:
         self.file_server.clear_files()
         for path in file_paths:
             if not os.path.isfile(path):
-                logging.warning(f"文件不存在，跳过: {path}")
+                sanitized = path.encode('utf-8', 'surrogatepass').decode('utf-8', 'replace')
+                logging.warning(f"文件不存在，跳过: {sanitized}")
                 continue
 
             name = os.path.basename(path)
