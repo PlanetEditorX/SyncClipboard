@@ -72,7 +72,7 @@ def main():
     logger.propagate = False   # 防止传播到 root logger
 
     handler = RotatingFileHandler(
-        LOG_FILE, maxBytes=1*1024*1024, backupCount=1, encoding='utf-8'
+        LOG_FILE, maxBytes=128*1024, backupCount=1, encoding='utf-8'
     )
     handler.setFormatter(logging.Formatter('%(asctime)s [%(levelname)s] %(message)s'))
     logger.addHandler(handler)

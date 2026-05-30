@@ -30,7 +30,7 @@ def main():
     root_logger.handlers.clear()
 
     handler = RotatingFileHandler(
-        LOG_FILE, maxBytes=1*1024*1024, backupCount=1, encoding='utf-8'
+        LOG_FILE, maxBytes=128*1024, backupCount=1, encoding='utf-8'
     )
 
     formatter = CleanFormatter(

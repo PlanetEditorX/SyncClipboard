@@ -20,7 +20,7 @@ if __name__ == "__main__":
         LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
 
         handler = RotatingFileHandler(
-            LOG_FILE, maxBytes=1*1024*1024, backupCount=1, encoding='utf-8'
+            LOG_FILE, maxBytes=128*1024, backupCount=1, encoding='utf-8'
         )
         handler.setFormatter(logging.Formatter('%(asctime)s [%(levelname)s] %(message)s'))
 
