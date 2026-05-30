@@ -47,6 +47,8 @@ class LatestFileTracker:
         return data
 
     def _save(self):
+        # 按文件名升序排列
+        self.data.sort(key=lambda x: x.get("name", ""))
         with open(STATE_FILE, "w", encoding="utf-8") as f:
             json.dump(self.data, f, indent=2, ensure_ascii=False)
 
