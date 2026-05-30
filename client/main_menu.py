@@ -119,6 +119,8 @@ class SyncClient:
             logging.warning("没有文件需要推送")
             return
         file_list = []
+        # 推送前先清空之前的共享
+        self.file_server.clear_files()
         for path in file_paths:
             if not os.path.isfile(path):
                 logging.warning(f"文件不存在，跳过: {path}")
