@@ -4,8 +4,8 @@ import logging
 from pathlib import Path
 from common.utils import BASE_DIR
 
-LATEST_FILE = BASE_DIR / "latest" / "file_latest.json"
-LATEST_FILE.parent.mkdir(parents=True, exist_ok=True)
+FILE_LATEST_FILE = BASE_DIR / "latest" / "file_latest.json"
+FILE_LATEST_FILE.parent.mkdir(parents=True, exist_ok=True)
 
 class LatestFileManager:
     def __init__(self, save_dir):
@@ -15,8 +15,8 @@ class LatestFileManager:
         self.data = self._load()
 
     def _load(self):
-        if os.path.exists(LATEST_FILE):
-            with open(LATEST_FILE, "r", encoding="utf-8") as f:
+        if os.path.exists(FILE_LATEST_FILE):
+            with open(FILE_LATEST_FILE, "r", encoding="utf-8") as f:
                 return json.load(f)
         return {
             "file_name": None,
@@ -27,7 +27,7 @@ class LatestFileManager:
         }
 
     def _save(self):
-        with open(LATEST_FILE, "w", encoding="utf-8") as f:
+        with open(FILE_LATEST_FILE, "w", encoding="utf-8") as f:
             json.dump(self.data, f, ensure_ascii=False, indent=2)
 
     def update_meta(self, file_name, file_size, source):

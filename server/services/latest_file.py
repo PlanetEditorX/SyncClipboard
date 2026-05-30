@@ -4,8 +4,8 @@ import time
 from pathlib import Path
 from common.utils import BASE_DIR
 
-STATE_FILE = BASE_DIR / "latest" / "file_latest.json"
-STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
+FILE_LATEST_FILE = BASE_DIR / "latest" / "file_latest.json"
+FILE_LATEST_FILE.parent.mkdir(parents=True, exist_ok=True)
 
 class LatestFileTracker:
     def __init__(self):
@@ -13,10 +13,10 @@ class LatestFileTracker:
 
     def _load(self):
         """从磁盘加载文件列表，兼容旧版单对象格式"""
-        if not os.path.exists(STATE_FILE):
+        if not os.path.exists(FILE_LATEST_FILE):
             return []
 
-        with open(STATE_FILE, "r", encoding="utf-8") as f:
+        with open(FILE_LATEST_FILE, "r", encoding="utf-8") as f:
             data = json.load(f)
 
         # 兼容旧版：如果存的是单个字典，转成列表
@@ -47,9 +47,7 @@ class LatestFileTracker:
         return data
 
     def _save(self):
-        # 按文件名升序排列
-        self.data.sort(key=lambda x: x.get("name", ""))
-        with open(STATE_FILE, "w", encoding="utf-8") as f:
+        with open(FILE_LATEST_FILE, "w", encoding="utf-8") as f:
             json.dump(self.data, f, indent=2, ensure_ascii=False)
 
     def upsert_file(self, file_id, path, name, size, source, ip, port):

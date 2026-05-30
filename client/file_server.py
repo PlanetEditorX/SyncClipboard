@@ -10,8 +10,8 @@ from common.utils import BASE_DIR
 from server.services.client_tracker import ClientTracker
 from flask import Flask, jsonify, send_file, after_this_request, request
 
-FILES_LATEST_FILE = BASE_DIR / "latest" / "file_latest.json"
-FILES_LATEST_FILE.parent.mkdir(parents=True, exist_ok=True)
+FILE_LATEST_FILE = BASE_DIR / "latest" / "file_latest.json"
+FILE_LATEST_FILE.parent.mkdir(parents=True, exist_ok=True)
 
 logger = logging.getLogger("client")
 
@@ -20,10 +20,10 @@ def get_api_key():
 
 def get_current_file():
     """读取 files_latest.json，如果文件不存在或无效则返回 None"""
-    if not FILES_LATEST_FILE.exists():
+    if not FILE_LATEST_FILE.exists():
         return []
     try:
-        with open(FILES_LATEST_FILE, "r", encoding="utf-8") as f:
+        with open(FILE_LATEST_FILE, "r", encoding="utf-8") as f:
             data = json.load(f)
         return data
     except (json.JSONDecodeError, AttributeError):
@@ -106,7 +106,7 @@ class FileServer:
                 else:
                     # 只有当 file_id 不一致时才写入
                     file_latest = latest
-                    with open(FILES_LATEST_FILE, "w", encoding="utf-8") as f:
+                    with open(FILE_LATEST_FILE, "w", encoding="utf-8") as f:
                         json.dump(file_latest, f, ensure_ascii=False, indent=2)
                     logger.info("file_latest文件已更新")
             return jsonify({
