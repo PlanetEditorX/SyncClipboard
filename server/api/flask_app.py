@@ -128,12 +128,15 @@ def notify_clients(_type):
             latest_global = latest.copy()
     else:
         latest  = latest_file.get_all_files()
+
     for client in clients:
         source = client["local_name"]
         client_ip = client['ip']
-        local_name = client['local_name']
+        local_name = app.config.local_name
 
-        # 核心判断：如果最新内容不是该客户端自己推送的，才需要通知它
+        #  判断要推送的文件来源是否是要通知的客户端或服务器，是则不推送
+        if source == local_name:
+            continue
         if  _type == "text":
             if latest.get("source") == source or latest.get("source") == local_name or latest == None:
                 continue

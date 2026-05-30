@@ -20,7 +20,7 @@ class ConfigManager:
         self.server_host = None
         self.server_port = None
         self.key = None
-        self.local_name = None
+        self.local_name = socket.gethostname() # 直接使用电脑名称
         self.file_server_port = None
         self.last_dir = str(Path.home() / "Downloads")
         self.server_running = False
@@ -53,7 +53,7 @@ class ConfigManager:
             }, f)
 
     def load_client_config(self):
-        """加载客户端配置（自动创建默认配置并处理电脑名称）"""
+        """加载客户端配置"""
         config_file = ConfigManager.CLIENT_CONFIG
 
         # 1. 如果配置文件不存在，创建默认配置
@@ -63,7 +63,7 @@ class ConfigManager:
                 "server_host": "127.0.0.1",
                 "server_port": 8000,
                 "key": "123456",
-                "local_name": socket.gethostname(),  # 直接使用电脑名称
+                "local_name": self.local_name,
                 "file_server_port": 8899,
                 "last_dir": str(Path.home() / "Downloads")
             }
@@ -86,9 +86,8 @@ class ConfigManager:
         # 3. 处理电脑名称：如果是默认值 "PC-01"，则替换为真实电脑名称
         need_save = False
         if config.get("local_name") == "PC-01":
-            real_hostname = socket.gethostname()
-            logger.info(f"检测到默认电脑名称 'PC-01'，正在替换为真实电脑名称: {real_hostname}")
-            config["local_name"] = real_hostname
+            logger.info(f"检测到默认电脑名称 'PC-01'，正在替换为真实电脑名称: {self.local_name}")
+            config["local_name"] = self.local_name
             need_save = True
 
         # 4. 检查并补充缺失的字段（兼容旧版本配置文件）
@@ -96,7 +95,7 @@ class ConfigManager:
             "server_host": "127.0.0.1",
             "server_port": 8000,
             "key": "",
-            "local_name": socket.gethostname(),
+            "local_name": self.local_name,
             "file_server_port": 8899,
             "last_dir": str(Path.home() / "Downloads")
         }
@@ -155,7 +154,7 @@ class ConfigManager:
                 "key": "123456",
                 "save_path": "D:\\Downloads",
                 "port": 8000,
-                "local_name": "Server"
+                "local_name": self.local_name
             }
             try:
                 with open(config_file, 'w', encoding='utf-8') as f:
@@ -172,14 +171,19 @@ class ConfigManager:
         except Exception as e:
             logger.error(f"读取服务器配置文件失败: {e}")
             return False
-
-        # 3. 检查并补充缺失的字段
+        # 3. 设置默认名字
         need_save = False
+        if config.get("local_name") == "Server":
+            logger.info(f"检测到默认服务器名称 'Server'，正在替换为真实电脑名称: {self.local_name}")
+            config["local_name"] = self.local_name
+            need_save = True
+
+        # 4. 检查并补充缺失的字段
         default_fields = {
             "key": "123456",
             "save_path": "D:\\Downloads",
             "port": 8000,
-            "local_name": "Server"
+            "local_name": self.local_name
         }
 
         for field, default_value in default_fields.items():
@@ -188,7 +192,7 @@ class ConfigManager:
                 config[field] = default_value
                 need_save = True
 
-        # 4. 如果有修改，保存配置文件
+        # 5. 如果有修改，保存配置文件
         if need_save:
             try:
                 with open(config_file, 'w', encoding='utf-8') as f:

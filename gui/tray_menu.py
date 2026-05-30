@@ -1,6 +1,6 @@
 import os
-from common.utils import BASE_DIR, post_to_main_thread_no_wait
 from pystray import MenuItem, Menu
+from common.utils import BASE_DIR, post_to_main_thread_no_wait
 
 class TrayMenu:
     """托盘菜单构建器"""

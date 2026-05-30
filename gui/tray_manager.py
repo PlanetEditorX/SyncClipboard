@@ -1,5 +1,6 @@
 import logging
 import pystray
+import tkinter as tk
 from PIL import Image
 from pathlib import Path
 from common.utils import BASE_DIR
@@ -9,12 +10,9 @@ from gui.config_manager import ConfigManager
 from gui.service_manager import ServiceManager
 from gui.clipboard_handler import ClipboardHandler
 from gui.file_watcher_handler import FileWatcherHandler
+from common.utils import set_tk_root, process_ui_queue, post_to_main_thread_no_wait
 
 logger = logging.getLogger("gui")
-
-import tkinter as tk
-from common.utils import set_tk_root, process_ui_queue
-from common.utils import post_to_main_thread_no_wait
 
 root = tk.Tk()
 root.withdraw()          # 如果不需要显示主窗口

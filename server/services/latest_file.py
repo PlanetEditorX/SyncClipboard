@@ -87,8 +87,8 @@ class LatestFileTracker:
         self._save()
 
     def get_all_files(self):
-        """返回所有文件记录的副本（按更新时间倒序）"""
-        return sorted(self.data, key=lambda x: x.get("updated_at", 0), reverse=True)
+        """返回所有文件记录的副本）"""
+        return self.data.copy()
 
     def get_file_by_id(self, file_id):
         """根据 file_id 查找单条记录，未找到返回 None"""
