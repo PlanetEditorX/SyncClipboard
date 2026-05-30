@@ -201,14 +201,29 @@ class FileHandler:
             if own_dialog:
                 progress_dialog.close()
 
+    def _clear_latest_file(self, host, port):
+        """
+        通知服务器清理latest_file
+        """
+        try:
+            clear_url = f"http://{host}:{port}/latest/clear"
+            resp = requests.get(clear_url, timeout=3)
+            if resp.status_code == 200:
+                logger.info(f"成功通知中心服务器清理 latest_file")
+            else:
+                logger.warning(f"通知中心服务器返回非200: {resp.status_code}")
+        except Exception as e:
+            logger.error(f"通知中心服务器清理失败: {e}")
+
     def fetch_file_with_progress(self, suggested_filename="downloaded_file"):
         """
         点击通知后下载所有待拉取文件
         （兼容旧版单文件流 / 单文件下载链接 / 新版文件列表）
         """
         logger.info("开始拉取服务器文件...")
-
-        url = f"http://{self.config.server_host}:{self.config.server_port}/request_file"
+        server_host = self.config.server_host
+        server_port = self.config.server_port
+        url = f"http://{server_host}:{server_port}/request_file"
         try:
             resp = requests.post(
                 url,
@@ -227,7 +242,7 @@ class FileHandler:
             return
 
         content_type = resp.headers.get("Content-Type", "")
-        # 1. 处理旧版直接文件流（保留兼容）
+        # 1. 处理直接文件流
         if "application/octet-stream" in content_type or "attachment" in content_type:
             filename = parse_filename_from_cd(
                 resp.headers.get("Content-Disposition", "")
@@ -243,7 +258,7 @@ class FileHandler:
             show_message("错误", "服务器响应格式异常")
             return
 
-        # 2.1 单文件下载链接（旧版兼容）
+        # 2.1 单文件下载链接
         if data.get("status") == "download" and data.get("type") == "file":
             download_url = data.get("download_url")
             name = data.get("name", suggested_filename)
@@ -285,6 +300,7 @@ class FileHandler:
                 progress_dialog.close()
 
             show_message("下载完成", f"已处理 {total} 个文件\n保存至：{save_dir}")
+            self._clear_latest_file(server_host, server_port)
             return
 
         # 其他情况

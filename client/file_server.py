@@ -146,23 +146,11 @@ class FileServer:
 
             logger.info("文件下载请求: %s -> %s", file_id, path)
 
-            # 注册一个后置回调：文件发送完成后执行清理和通知
+            # 注册一个后置回调：文件发送完成后取消共享
             @after_this_request
             def after_download(response):
-                # 1. 取消本机共享
+                # 取消本机共享
                 self.unregister_file(file_id)
-
-                # 2. 通知中心服务器清理 latest_file
-                try:
-                    clear_url = f"http://{self.center_host}:{self.center_port}/latest/clear"
-                    resp = requests.get(clear_url, timeout=3)
-                    if resp.status_code == 200:
-                        logger.info(f"成功通知中心服务器清理 latest_file (file_id={file_id})")
-                    else:
-                        logger.warning(f"通知中心服务器返回非200: {resp.status_code}")
-                except Exception as e:
-                    logger.error(f"通知中心服务器清理失败: {e}")
-
                 return response
 
             return send_file(path, as_attachment=True)
