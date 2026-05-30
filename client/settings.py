@@ -5,8 +5,8 @@ from pathlib import Path
 from common.utils import BASE_DIR
 from tkinter import simpledialog, messagebox
 
-CONFIG_FILE = BASE_DIR / "config" / "client_config.json"
-CONFIG_FILE.parent.mkdir(parents=True, exist_ok=True)
+CLIENT_CONFIG_FILE = BASE_DIR / "config" / "client_config.json"
+CLIENT_CONFIG_FILE.parent.mkdir(parents=True, exist_ok=True)
 
 def load_client_config():
     with open(CLIENT_CONFIG_FILE, "r", encoding="utf-8") as f:
