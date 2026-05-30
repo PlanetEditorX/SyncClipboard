@@ -282,14 +282,15 @@ def sync():
     is_new = (not client_last) or (client_last.get("content") != content)
 
     if is_new and content and source != LOCAL_NAME:
+        # 手机推送后直接更新剪贴板
+        with clipboard_lock:
+            pyperclip.copy(content)
         # 手机有新内容 → 强制更新为自己，并设为全局最新
         item = build_text_item(text=content, source=source, pasted=False)
         if not tracker.is_duplicate(item["id"]):
             tracker.update(item, force_latest=True)
         latest_global = tracker.get_global_latest()
-        # 手机推送后直接更新剪贴板
-        with clipboard_lock:
-            pyperclip.copy(content)
+
     else:
         # 内容没变 → 纯拉取操作
         latest = tracker.get_global_latest()
