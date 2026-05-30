@@ -6,6 +6,7 @@ import threading
 import pyperclip
 import requests
 from threading import Thread
+from urllib.parse import unquote
 from common.utils import BASE_DIR
 from server.services.client_tracker import ClientTracker
 from flask import Flask, jsonify, send_file, after_this_request, request
@@ -135,7 +136,8 @@ class FileServer:
             #     debugpy.breakpoint()
 
             client_ip = request.remote_addr
-            logger.info(f"获取文件下载 - 请求来自: {client_ip}")
+            source = request.headers.get("source", "未知设备")
+            logger.info(f"获取文件下载 - 请求来自: {unquote(request.headers.get("source", ""))}({client_ip})")
 
             path = self.shared_files.get(file_id)
             if not path:
