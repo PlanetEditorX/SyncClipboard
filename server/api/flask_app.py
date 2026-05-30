@@ -6,6 +6,7 @@ import socket
 import logging
 import requests
 import threading
+import pyperclip
 from pathlib import Path
 from datetime import datetime
 from urllib.parse import unquote
@@ -35,6 +36,7 @@ tracker = None
 file_handler = None
 latest_file = None
 computer_name = socket.gethostname()
+clipboard_lock = threading.Lock()
 
 def init_services(config_manager=None):
     """由 run.py 在配置注入后调用，初始化依赖配置的服务"""
@@ -136,8 +138,8 @@ def notify_clients(_type):
         # 推送的客户端是服务器跳过
         if source == LOCAL_NAME:
             continue
+        # 同步清理最新文件信息
         if _type == "clear":
-            # 同步清理最新文件信息
             try:
                 resp = requests.get(
                     f"http://{client_ip}:{client['port']}/clear/file_latest",
@@ -284,7 +286,10 @@ def sync():
         item = build_text_item(text=content, source=source, pasted=False)
         if not tracker.is_duplicate(item["id"]):
             tracker.update(item, force_latest=True)
-        latest_global = tracker.get_global_latest()   # 必然就是这个 item
+        latest_global = tracker.get_global_latest()
+        # 手机推送后直接更新剪贴板
+        with clipboard_lock:
+            pyperclip.copy(content)
     else:
         # 内容没变 → 纯拉取操作
         latest = tracker.get_global_latest()
