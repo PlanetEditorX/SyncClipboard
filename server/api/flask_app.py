@@ -213,7 +213,7 @@ def notify_clients(_type):
         else:
             logging.info("客户端 %s 已获取文件发布通知", client["local_name"])
         # 推送更新到客户端
-        update_url = f"http://{client_ip}:{client['port']}/update/client_latest"
+        update_url = f"http://{client_ip}:{client['port']}/update/current_latest"
         try:
             resp = requests.post(
                 update_url,

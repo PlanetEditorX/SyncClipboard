@@ -68,7 +68,7 @@ class FileServer:
                 "files": self.shared_files
             })
 
-        @self.app.route("/update/client_latest", methods=["POST"])
+        @self.app.route("/update/current_latest", methods=["POST"])
         def update_client_latest():
             data = request.get_json()
             if not data:
