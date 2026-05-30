@@ -1,5 +1,6 @@
 import logging
 import pystray
+import threading
 import tkinter as tk
 from PIL import Image
 from pathlib import Path
@@ -45,7 +46,10 @@ class TrayManager:
             self.icon.icon = Image.open(icon_path)
 
     def on_left_click(self, icon):
-        post_to_main_thread_no_wait(self.file_handler.fetch_file_with_progress)
+        threading.Thread(
+            target=self.file_handler.fetch_file_with_progress,
+            daemon=True
+        ).start()
 
     def quit_app(self, icon):
         """退出程序"""

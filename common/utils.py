@@ -57,29 +57,13 @@ def process_ui_queue():
         root.after(50, process_ui_queue)
 
 def post_to_main_thread(func, *args, **kwargs):
-    """同步：必须主线程调用，或者调用 root.after 等待结果"""
-    root = get_tk_root()
     if threading.current_thread() is threading.main_thread():
         return func(*args, **kwargs)
-    else:
-        # 使用队列 + Event 实现同步等待
-        event = threading.Event()
-        result_container = []
-
-        def wrapper():
-            try:
-                result_container.append(func(*args, **kwargs))
-            except Exception as e:
-                result_container.append(e)
-            finally:
-                event.set()
-
-        root.after(0, wrapper)
-        event.wait()
-        result = result_container[0]
-        if isinstance(result, Exception):
-            raise result
-        return result
+    result_event = _ResultEvent()
+    _ui_queue.put(
+        (func, args, kwargs, result_event)
+    )
+    return result_event.wait()
 
 def post_to_main_thread_no_wait(func, *args, **kwargs):
     """异步：直接 after(0) 投递，不等待"""

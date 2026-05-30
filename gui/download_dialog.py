@@ -1,6 +1,7 @@
 import tkinter as tk
 from tkinter import ttk
 import logging
+from common.utils import post_to_main_thread
 
 _GLOBAL_TK_ROOT = None
 logger = logging.getLogger("gui")
@@ -66,35 +67,42 @@ class DownloadProgressDialog:
         self.cancelled = False
         self._running = True   # 控件初始化完毕即标记为运行中
 
-    # ---------- 以下方法全部改为线程安全 ----------
     def reset(self, filename, total_size=0):
-        """切换到下一个文件：更新标题和标签，重置进度（线程安全）"""
         def _update():
             if not self.window.winfo_exists():
                 return
             self.label.config(text=f"正在下载：{filename}")
             self.progress_var.set(0)
             self.detail_label.config(text="准备下载...")
-            # 注意：不要在 after 回调里直接 update()，由主循环自动刷新
-        self.window.after(0, _update)
+            self.window.update_idletasks()
+
+        from common.utils import post_to_main_thread_no_wait
+        post_to_main_thread_no_wait(_update)
 
     def update_progress(self, percentage, downloaded_mb, total_mb):
-        """更新进度（线程安全）"""
+        """更新进度（线程安全，异步，不阻塞下载线程）"""
         def _update():
             if not self.window.winfo_exists():
                 return
             self.progress_var.set(percentage)
             if total_mb > 0:
                 self.detail_label.config(
-                    text=f"下载进度：{percentage}%  ({downloaded_mb:.1f} MB / {total_mb:.1f} MB)"
+                    text=f"下载进度：{percentage}% ({downloaded_mb:.1f} MB / {total_mb:.1f} MB)"
                 )
             else:
-                self.detail_label.config(text=f"已下载：{downloaded_mb:.1f} MB")
-        self.window.after(0, _update)
+                self.detail_label.config(
+                    text=f"已下载：{downloaded_mb:.1f} MB"
+                )
+            # 强制刷新
+            self.window.update_idletasks()
+
+        # 异步投递，不等待
+        from common.utils import post_to_main_thread_no_wait
+        post_to_main_thread_no_wait(_update)
 
     def cancel(self):
-        """取消下载（线程安全）"""
-        self.cancelled = True
+        """取消下载"""
+        self.cancel_event = threading.Event()
         self._running = False
         def _destroy():
             try:
@@ -102,10 +110,10 @@ class DownloadProgressDialog:
                     self.window.destroy()
             except:
                 pass
-        self.window.after(0, _destroy)
+        post_to_main_thread(_destroy)
 
     def close(self):
-        """关闭对话框（线程安全）"""
+        """关闭对话框"""
         self._running = False
         def _destroy():
             try:
@@ -113,7 +121,7 @@ class DownloadProgressDialog:
                     self.window.destroy()
             except:
                 pass
-        self.window.after(0, _destroy)
+        post_to_main_thread(_destroy)
 
     def is_cancelled(self):
         return self.cancelled
