@@ -19,7 +19,7 @@ logger = logging.getLogger("client")
 def get_api_key():
     return request.headers.get("key", "")
 
-def get_current_file():
+def get_files_latest_file():
     """读取 files_latest.json，如果文件不存在或无效则返回 None"""
     if not FILE_LATEST_FILE.exists():
         return []
@@ -101,7 +101,7 @@ class FileServer:
                 logger.info(f"更新文件列表 - 请求来自: {client_ip}")
                 latest = data.get("latest_global")
                 # 获取本地已存储的文件
-                file_latest = get_current_file()
+                file_latest = get_files_latest_file()
                 if latest == file_latest:
                     logger.info(f"文件未变化，跳过写入")
                 else:
