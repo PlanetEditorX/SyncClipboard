@@ -84,7 +84,7 @@ class DownloadProgressDialog:
         def _update():
             if not self.window.winfo_exists():
                 return
-            self.progress_var.set(percentage)
+            self.progress_bar["value"] = percentage
             if total_mb > 0:
                 self.detail_label.config(
                     text=f"下载进度：{percentage}% ({downloaded_mb:.1f} MB / {total_mb:.1f} MB)"
