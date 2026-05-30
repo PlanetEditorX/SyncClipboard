@@ -57,23 +57,41 @@ def process_ui_queue():
         root.after(50, process_ui_queue)
 
 def post_to_main_thread(func, *args, **kwargs):
-    """
-    将函数调度到主线程执行，并同步返回结果。
-    调用线程会被阻塞直到函数执行完成。
-    """
+    """同步：必须主线程调用，或者调用 root.after 等待结果"""
+    root = get_tk_root()
     if threading.current_thread() is threading.main_thread():
         return func(*args, **kwargs)
+    else:
+        # 使用队列 + Event 实现同步等待
+        event = threading.Event()
+        result_container = []
 
-    result_event = _ResultEvent()
-    _ui_queue.put((func, args, kwargs, result_event))
-    return result_event.wait()
+        def wrapper():
+            try:
+                result_container.append(func(*args, **kwargs))
+            except Exception as e:
+                result_container.append(e)
+            finally:
+                event.set()
+
+        root.after(0, wrapper)
+        event.wait()
+        result = result_container[0]
+        if isinstance(result, Exception):
+            raise result
+        return result
 
 def post_to_main_thread_no_wait(func, *args, **kwargs):
-    """将函数调度到主线程执行，不等待，不阻塞调用线程"""
+    """异步：直接 after(0) 投递，不等待"""
+    root = get_tk_root()
+    if root is None:
+        # 降级处理：无法投递时记录错误或直接执行（风险）
+        func(*args, **kwargs)
+        return
     if threading.current_thread() is threading.main_thread():
         func(*args, **kwargs)
     else:
-        _ui_queue.put((func, args, kwargs, None))  # result_event=None 表示不等待
+        root.after(0, func, *args, **kwargs)
 
 class _ResultEvent:
     """简单的线程同步结果容器"""

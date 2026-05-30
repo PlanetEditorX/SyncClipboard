@@ -1,5 +1,5 @@
 import os
-from common.utils import BASE_DIR
+from common.utils import BASE_DIR, post_to_main_thread_no_wait
 from pystray import MenuItem, Menu
 
 class TrayMenu:
@@ -9,7 +9,13 @@ class TrayMenu:
 
     def create(self):
         """构建菜单"""
-        get_file_item = MenuItem('获取文件', self.manager.file_handler.fetch_file_with_progress, default=True)
+        # 包装函数：切换到主线程执行下载
+        def on_fetch_file():
+            # 如果已经在主线程就直接执行，否则投递
+            post_to_main_thread_no_wait(
+                self.manager.file_handler.fetch_file_with_progress
+            )
+        get_file_item = MenuItem('获取文件', on_fetch_file, default=True)
 
         return Menu(
             get_file_item,
