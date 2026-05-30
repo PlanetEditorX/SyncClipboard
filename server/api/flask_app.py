@@ -278,7 +278,9 @@ def text_sync():
     # 去重：用 tracker 的 is_duplicate 方法
     if tracker.is_duplicate(item["id"]):
         return jsonify({"status": "duplicate", "message": "重复内容"}), 200
-
+    # 更新本地剪贴板
+    with clipboard_lock:
+        pyperclip.copy(content)
     # 更新记录（同时注册 ID、更新客户端最新和全局最新）
     tracker.update(item)
 
