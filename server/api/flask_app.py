@@ -132,16 +132,17 @@ def notify_clients(_type):
     for client in clients:
         source = client["local_name"]
         client_ip = client['ip']
-        local_name = app.config.local_name
+        local_name = app.config.get("local_name")
 
-        #  判断要推送的文件来源是否是要通知的客户端或服务器，是则不推送
+        # 推送的客户端是服务器跳过
         if source == local_name:
             continue
+        #  推送的文件来源是要通知的客户端跳过
         if  _type == "text":
             if latest.get("source") == source or latest.get("source") == local_name or latest == None:
                 continue
         else:
-            if latest[0].get("source") == source or latest[0].get("source") == local_name or latest == None:
+            if latest[0].get("source") == source or latest == None:
                 continue
 
         if _type == "text":
