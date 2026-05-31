@@ -1,7 +1,7 @@
 import tkinter as tk
 from tkinter import ttk
 import logging
-from common.utils import post_to_main_thread, get_tk_root
+from common.utils import post_to_main_thread, get_tk_root, post_to_main_thread_no_wait
 
 logger = logging.getLogger("gui")
 
@@ -75,7 +75,6 @@ class DownloadProgressDialog:
             self.detail_label.config(text="准备下载...")
             self.window.update_idletasks()
 
-        from common.utils import post_to_main_thread_no_wait
         post_to_main_thread_no_wait(_update)
 
     def update_progress(self, percentage, downloaded_mb, total_mb):
@@ -83,7 +82,7 @@ class DownloadProgressDialog:
         def _update():
             if not self.window.winfo_exists():
                 return
-            self.progress_bar["value"] = percentage
+            self.progress_var.set(percentage)
             if total_mb > 0:
                 self.detail_label.config(
                     text=f"下载进度：{percentage}% ({downloaded_mb:.1f} MB / {total_mb:.1f} MB)"
@@ -96,7 +95,6 @@ class DownloadProgressDialog:
             self.window.update_idletasks()
 
         # 异步投递，不等待
-        from common.utils import post_to_main_thread_no_wait
         post_to_main_thread_no_wait(_update)
 
     def cancel(self):
