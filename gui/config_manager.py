@@ -14,7 +14,7 @@ class ConfigManager:
     CLIENT_CONFIG = BASE_DIR / "config" / "client_config.json"
     SERVER_CONFIG = BASE_DIR / "config" / "server_config.json"
     STATE_FILE = BASE_DIR / "config" / "gui_state.json"
-    CLIENT_LATEST_FILE = BASE_DIR / "latest" / "client_latest.json"
+    TEXT_LATEST_FILE = BASE_DIR / "latest" / "text_latest.json"
     FILE_LATEST_FILE = BASE_DIR / "latest" / "file_latest.json"
     def __init__(self):
         self.server_host = None
@@ -30,7 +30,7 @@ class ConfigManager:
 
         # 确保必要的目录存在
         ConfigManager.CLIENT_CONFIG.parent.mkdir(parents=True, exist_ok=True)
-        ConfigManager.CLIENT_LATEST_FILE.parent.mkdir(parents=True, exist_ok=True)
+        ConfigManager.TEXT_LATEST_FILE.parent.mkdir(parents=True, exist_ok=True)
 
     def load_state(self):
         """加载服务运行状态"""

@@ -18,7 +18,7 @@ class FileWatcherHandler:
             return
 
         files_to_watch = [
-            self.config.CLIENT_LATEST_FILE,
+            self.config.TEXT_LATEST_FILE,
             self.config.FILE_LATEST_FILE
         ]
 
@@ -40,7 +40,7 @@ class FileWatcherHandler:
     def _on_file_changed(self, changed_path):
         # 统一为绝对路径 Path 对象
         changed = Path(changed_path).resolve()
-        client_latest = Path(self.config.CLIENT_LATEST_FILE).resolve()
+        client_latest = Path(self.config.TEXT_LATEST_FILE).resolve()
         file_latest   = Path(self.config.FILE_LATEST_FILE).resolve()
 
         if changed == client_latest:

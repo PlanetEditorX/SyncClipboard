@@ -18,10 +18,10 @@ class ClipboardHandler:
     def handle_client_latest(self):
         """处理文本剪贴板更新"""
         try:
-            if not self.config.CLIENT_LATEST_FILE.exists():
+            if not self.config.TEXT_LATEST_FILE.exists():
                 return
 
-            with open(self.config.CLIENT_LATEST_FILE, 'r', encoding='utf-8') as f:
+            with open(self.config.TEXT_LATEST_FILE, 'r', encoding='utf-8') as f:
                 data = json.load(f)
 
             latest = data.get('latest_global')

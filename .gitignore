@@ -3,7 +3,7 @@ syncclipboard.log
 *.pyc
 .venv
 client.log
-client_latest.json
+text_latest.json
 file_latest.json
 # 配置文件（包含敏感信息）
 config/*.json

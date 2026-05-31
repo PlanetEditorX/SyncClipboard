@@ -6,8 +6,8 @@ from pathlib import Path
 from common.utils import BASE_DIR, safe_get
 import threading
 
-CLIENT_LATEST_FILE = BASE_DIR / "latest" / "client_latest.json"
-CLIENT_LATEST_FILE.parent.mkdir(parents=True, exist_ok=True)
+TEXT_LATEST_FILE = BASE_DIR / "latest" / "text_latest.json"
+TEXT_LATEST_FILE.parent.mkdir(parents=True, exist_ok=True)
 
 class ClientTracker:
     def __init__(self):
@@ -20,9 +20,9 @@ class ClientTracker:
             "clients": {},
             "global_ids": []
         }
-        if os.path.exists(CLIENT_LATEST_FILE):
+        if os.path.exists(TEXT_LATEST_FILE):
             try:
-                with open(CLIENT_LATEST_FILE, "r", encoding="utf-8") as f:
+                with open(TEXT_LATEST_FILE, "r", encoding="utf-8") as f:
                     data = json.load(f)
                 # 确保所有必需的键都存在
                 for key in default:
@@ -34,7 +34,7 @@ class ClientTracker:
         return default
 
     def _save(self):
-        with open(CLIENT_LATEST_FILE, "w", encoding="utf-8") as f:
+        with open(TEXT_LATEST_FILE, "w", encoding="utf-8") as f:
             json.dump(self.data, f, ensure_ascii=False, indent=2)
 
     def is_duplicate(self, item_id: str) -> bool:
