@@ -5,7 +5,7 @@ import threading
 import tkinter as tk
 from tkinter import filedialog
 from gui.download_dialog import DownloadProgressDialog
-from common.utils import post_to_main_thread, show_message, copy_files_to_clipboard, parse_filename_from_cd
+from common.utils import post_to_main_thread, show_message, copy_files_to_clipboard, parse_filename_from_cd, get_tk_root
 
 logger = logging.getLogger("gui")
 
