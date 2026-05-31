@@ -307,7 +307,6 @@ def sync():
         if not tracker.is_duplicate(item["id"]):
             tracker.update(item, force_latest=True)
         latest_global = tracker.get_global_latest()
-
     else:
         # 内容没变 → 纯拉取操作
         latest = tracker.get_global_latest()
@@ -316,12 +315,22 @@ def sync():
             # 新内容
             if latest.get("content") != content:
                 latest_global = latest.copy()
-                latest_global["pasted"] = False
+                # 获取当前时间
+                now_time_str = datetime.now().isoformat()
+                # 转换为 datetime 对象
+                now_time = datetime.fromisoformat(now_time_str)
+                latest_time = datetime.fromisoformat(latest_global["timestamp"])
+                # 计算时间差（返回 timedelta 对象）
+                diff = now_time - latest_time
+                # 判断是否超过 10 分钟（600 秒）
+                if diff < timedelta(minutes=10):
+                    # 拉取时未超过 10 分钟才标记为未使用，超过10分钟默认已使用了
+                    latest_global["pasted"] = False
                 pasted_item = {
                     "id": latest["id"],
                     "type": latest.get("type", "text"),
                     "content": latest["content"],
-                    "timestamp": datetime.now().isoformat(),
+                    "timestamp": now_time_str,
                     "source": latest["source"],   # 保留原始来源
                     "pasted": True
                 }
