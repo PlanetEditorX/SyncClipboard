@@ -22,7 +22,7 @@ class CleanFormatter(logging.Formatter):
 
 def main():
     # ---------- 服务器独立日志配置 ----------
-    LOG_FILE = BASE_DIR / "log" / "syncclipboard.log"
+    LOG_FILE = BASE_DIR / "log" / "server.log"
     LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
 
     # 获取 root logger，并清除从父进程（gui）继承的 handler

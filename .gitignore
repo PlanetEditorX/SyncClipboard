@@ -1,5 +1,5 @@
 clipboard_cache.json
-syncclipboard.log
+server.log
 *.pyc
 .venv
 client.log
