@@ -27,6 +27,13 @@ if hasattr(ctk, 'CTk'):
     root = ctk.CTk()
 else:
     root = ctk.Tk()
+try:
+    root.update_idletasks()
+    screen_w = root.winfo_screenwidth()
+    screen_h = root.winfo_screenheight()
+    root.geometry(f"+{screen_w//2}+{screen_h//2}")
+except Exception:
+    pass
 root.withdraw()          # 如果不需要显示主窗口
 set_tk_root(root)        # 注册为全局根
 

@@ -36,7 +36,8 @@ class DownloadProgressDialog:
         self.window.withdraw()
         if hasattr(self.window, 'transient'):
             try:
-                self.window.transient(master)
+                if getattr(master, 'state', lambda: '')() != 'withdrawn':
+                    self.window.transient(master)
             except Exception:
                 pass
 
@@ -121,6 +122,27 @@ class DownloadProgressDialog:
             self.window.deiconify()
             self.window.lift()
             self.window.focus_force()
+            self.window.after(50, self._center_window)
+        except Exception:
+            pass
+
+    def _center_window(self):
+        try:
+            self.window.update_idletasks()
+            width = self.window.winfo_width()
+            height = self.window.winfo_height()
+            if width <= 1 or height <= 1:
+                width = self.window.winfo_reqwidth()
+                height = self.window.winfo_reqheight()
+                if width <= 1 or height <= 1:
+                    self.window.after(50, self._center_window)
+                    return
+
+            screen_w = self.window.winfo_screenwidth()
+            screen_h = self.window.winfo_screenheight()
+            x = max((screen_w - width) // 2, 0)
+            y = max((screen_h - height) // 2, 0)
+            self.window.geometry(f"+{x}+{y}")
         except Exception:
             pass
 

@@ -43,15 +43,31 @@ class FileHandler:
         event.wait()
         return result[0]
 
+    def _get_dialog_parent(self):
+        root = get_tk_root()
+        if root is None:
+            return None
+        try:
+            if getattr(root, 'state', lambda: '')() == 'withdrawn':
+                root.update_idletasks()
+                screen_w = root.winfo_screenwidth()
+                screen_h = root.winfo_screenheight()
+                root.geometry(f"+{screen_w//2}+{screen_h//2}")
+        except Exception:
+            pass
+        return root
+
     def _ask_save_path(self, filename):
         """弹出保存对话框（线程安全）"""
         def _ask():
+            parent = self._get_dialog_parent()
             file_path = filedialog.asksaveasfilename(
                 title="保存文件",
                 initialdir=self.config.last_dir,
                 initialfile=filename,
                 defaultextension="",
-                filetypes=[("所有文件", "*.*")]
+                filetypes=[("所有文件", "*.*")],
+                parent=parent
             )
             if file_path:
                 self.config.last_dir = os.path.dirname(file_path)
@@ -62,9 +78,11 @@ class FileHandler:
     def _ask_save_directory(self):
         """弹出目录选择对话框（线程安全）"""
         def _ask():
+            parent = self._get_dialog_parent()
             dir_path = filedialog.askdirectory(
                 title="选择保存文件夹",
-                initialdir=self.config.last_dir
+                initialdir=self.config.last_dir,
+                parent=parent
             )
             if dir_path:
                 self.config.last_dir = dir_path
