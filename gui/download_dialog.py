@@ -10,6 +10,8 @@ try:
 except ImportError:
     ctk = None
 
+import ctypes
+
 logger = logging.getLogger("gui")
 
 
@@ -138,6 +140,39 @@ class DownloadProgressDialog:
                     self.window.after(50, self._center_window)
                     return
 
+            # Try to get the monitor work area for the window (multi-monitor aware)
+            try:
+                user32 = ctypes.windll.user32
+                MONITOR_DEFAULTTONEAREST = 2
+                hwnd = self.window.winfo_id()
+                hmon = user32.MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST)
+
+                class RECT(ctypes.Structure):
+                    _fields_ = [("left", ctypes.c_long), ("top", ctypes.c_long),
+                                ("right", ctypes.c_long), ("bottom", ctypes.c_long)]
+
+                class MONITORINFO(ctypes.Structure):
+                    _fields_ = [("cbSize", ctypes.c_ulong), ("rcMonitor", RECT),
+                                ("rcWork", RECT), ("dwFlags", ctypes.c_ulong)]
+
+                mi = MONITORINFO()
+                mi.cbSize = ctypes.sizeof(MONITORINFO)
+                if user32.GetMonitorInfoW(hmon, ctypes.byref(mi)):
+                    left = mi.rcWork.left
+                    top = mi.rcWork.top
+                    right = mi.rcWork.right
+                    bottom = mi.rcWork.bottom
+                    screen_w = right - left
+                    screen_h = bottom - top
+                    x = left + max((screen_w - width) // 2, 0)
+                    y = top + max((screen_h - height) // 2, 0)
+                    self.window.geometry(f"+{x}+{y}")
+                    return
+            except Exception:
+                # Fall back to default behavior if any Windows API call fails
+                pass
+
+            # Fallback: use tkinter reported screen size
             screen_w = self.window.winfo_screenwidth()
             screen_h = self.window.winfo_screenheight()
             x = max((screen_w - width) // 2, 0)
