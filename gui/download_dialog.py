@@ -1,7 +1,14 @@
-import tkinter as tk
-from tkinter import ttk
 import logging
-from common.utils import post_to_main_thread, get_tk_root, post_to_main_thread_no_wait
+import threading
+import tkinter as tk
+from pathlib import Path
+from tkinter import ttk
+from common.utils import post_to_main_thread, get_tk_root, post_to_main_thread_no_wait, BASE_DIR
+
+try:
+    import customtkinter as ctk
+except ImportError:
+    ctk = None
 
 logger = logging.getLogger("gui")
 
@@ -13,66 +20,123 @@ class DownloadProgressDialog:
         if master is None:
             master = get_tk_root()
             if master is None:
-                # 理论上托盘程序启动时已经调用 set_tk_root()，不会为 None
-                # 但如果单独运行这个对话框（调试等情况），可以降级创建一个临时根窗口
                 logger.warning("No Tk root registered. Creating a temporary root.")
-                master = tk.Tk()
+                if ctk is not None and hasattr(ctk, 'CTk'):
+                    master = ctk.CTk()
+                else:
+                    master = tk.Tk()
                 master.withdraw()
         self.master = master
-        self.window = tk.Toplevel(master)
+
+        if ctk is not None and hasattr(ctk, 'CTkToplevel'):
+            self.window = ctk.CTkToplevel(master)
+        else:
+            self.window = tk.Toplevel(master)
+
+        self.window.withdraw()
+        if hasattr(self.window, 'transient'):
+            try:
+                self.window.transient(master)
+            except Exception:
+                pass
+
         self.window.title(title)
-        self.window.geometry("450x200")
         self.window.resizable(False, False)
+        try:
+            icon_path = BASE_DIR / "gui" / "icon" / "icon-active.png"
+            if icon_path.exists():
+                self.window.iconphoto(False, tk.PhotoImage(file=str(icon_path)))
+        except Exception:
+            pass
 
-        # 居中显示
-        self.window.update_idletasks()
-        width = self.window.winfo_width()
-        height = self.window.winfo_height()
-        x = (self.window.winfo_screenwidth() // 2) - (width // 2)
-        y = (self.window.winfo_screenheight() // 2) - (height // 2)
-        self.window.geometry(f'{width}x{height}+{x}+{y}')
+        if ctk is not None and hasattr(self.window, 'configure'):
+            try:
+                self.window.configure(fg_color="#f7f7f7")
+            except Exception:
+                pass
+        else:
+            try:
+                self.window.configure(bg="#f7f7f7")
+            except Exception:
+                pass
 
-        style = ttk.Style()
-        style.theme_use('clam')
-        style.configure("TProgressbar", thickness=20)
+        if ctk is not None and hasattr(ctk, 'CTkFrame'):
+            self.container = ctk.CTkFrame(self.window, fg_color="#f7f7f7")
+        else:
+            self.container = tk.Frame(self.window, bg="#f7f7f7")
+        self.container.grid(row=0, column=0, sticky='nsew')
+        self.container.grid_columnconfigure(0, weight=1)
+        # make container expand to fill the toplevel
+        try:
+            self.window.grid_rowconfigure(0, weight=1)
+        except Exception:
+            pass
 
-        self.label = tk.Label(self.window, text="正在下载文件...", font=("微软雅黑", 11, "bold"))
-        self.label.pack(pady=(15, 10))
-
-        progress_frame = tk.Frame(self.window)
-        progress_frame.pack(fill=tk.X, padx=30, pady=5)
+        if ctk is not None and hasattr(ctk, 'CTkLabel'):
+            self.label = ctk.CTkLabel(self.container, text="正在下载文件...", font=("微软雅黑", 15, "bold"), anchor='w')
+        else:
+            self.label = tk.Label(self.container, text="正在下载文件...", font=("微软雅黑", 15, "bold"), bg="#f7f7f7", anchor='w')
+        self.label.grid(row=0, column=0, padx=20, pady=(20, 10), sticky='ew')
 
         self.progress_var = tk.DoubleVar()
-        self.progress_bar = ttk.Progressbar(
-            progress_frame, variable=self.progress_var, maximum=100,
-            length=350, mode='determinate', style="TProgressbar"
-        )
-        self.progress_bar.pack(fill=tk.X)
+        if ctk is not None and hasattr(ctk, 'CTkProgressBar'):
+            self.progress_bar = ctk.CTkProgressBar(self.container, mode='determinate')
+            self._use_ctk_progress = True
+        else:
+            style = ttk.Style()
+            style.theme_use('clam')
+            style.configure("TProgressbar", thickness=20)
+            self.progress_bar = ttk.Progressbar(
+                self.container, variable=self.progress_var, maximum=100,
+                mode='determinate', style="TProgressbar"
+            )
+            self._use_ctk_progress = False
+        self.progress_bar.grid(row=1, column=0, padx=20, pady=5, sticky='ew')
 
-        self.detail_label = tk.Label(self.window, text="准备下载...", font=("微软雅黑", 9))
-        self.detail_label.pack(pady=10)
+        if ctk is not None and hasattr(ctk, 'CTkLabel'):
+            self.detail_label = ctk.CTkLabel(self.container, text="准备下载...", font=("微软雅黑", 11), anchor='w')
+        else:
+            self.detail_label = tk.Label(self.container, text="准备下载...", font=("微软雅黑", 11), bg="#f7f7f7", anchor='w')
+        self.detail_label.grid(row=2, column=0, padx=20, pady=(5, 15), sticky='ew')
 
-        button_frame = tk.Frame(self.window)
-        button_frame.pack(pady=(5, 15))
-
-        self.cancel_button = tk.Button(
-            button_frame, text="取消下载", command=self.cancel,
-            font=("微软雅黑", 10), width=12, height=1,
-            bg="#f0f0f0", relief=tk.RAISED, cursor="hand2"
-        )
-        self.cancel_button.pack()
+        if ctk is not None and hasattr(ctk, 'CTkButton'):
+            self.cancel_button = ctk.CTkButton(
+                self.container, text="取消下载", command=self.cancel,
+                width=120, height=32, corner_radius=8
+            )
+        else:
+            self.cancel_button = tk.Button(
+                self.container, text="取消下载", command=self.cancel,
+                font=("微软雅黑", 10), width=12, height=1,
+                bg="#f0f0f0", relief=tk.RAISED, cursor="hand2"
+            )
+        self.cancel_button.grid(row=3, column=0, padx=20, pady=(0, 20), sticky='e')
 
         self.window.protocol("WM_DELETE_WINDOW", self.cancel)
         self.cancelled = False
         self._running = True   # 控件初始化完毕即标记为运行中
 
+        # let the window size itself based on content; ensure it's visible
+        try:
+            self.window.deiconify()
+            self.window.lift()
+            self.window.focus_force()
+        except Exception:
+            pass
+
+    def _set_progress_value(self, percentage):
+        if getattr(self, '_use_ctk_progress', False):
+            self.progress_bar.set(percentage / 100.0)
+        else:
+            self.progress_var.set(percentage)
+
     def reset(self, filename, total_size=0):
         def _update():
             if not self.window.winfo_exists():
                 return
-            self.label.config(text=f"正在下载：{filename}")
-            self.progress_var.set(0)
-            self.detail_label.config(text="准备下载...")
+            self.label.configure(text=f"正在下载：{filename}")
+            self._set_progress_value(0)
+            self.detail_label.configure(text="准备下载...")
             self.window.update_idletasks()
 
         post_to_main_thread_no_wait(_update)
@@ -82,13 +146,13 @@ class DownloadProgressDialog:
         def _update():
             if not self.window.winfo_exists():
                 return
-            self.progress_var.set(percentage)
+            self._set_progress_value(percentage)
             if total_mb > 0:
-                self.detail_label.config(
+                self.detail_label.configure(
                     text=f"下载进度：{percentage}% ({downloaded_mb:.1f} MB / {total_mb:.1f} MB)"
                 )
             else:
-                self.detail_label.config(
+                self.detail_label.configure(
                     text=f"已下载：{downloaded_mb:.1f} MB"
                 )
             # 强制刷新
@@ -99,7 +163,7 @@ class DownloadProgressDialog:
 
     def cancel(self):
         """取消下载"""
-        self.cancel_event = threading.Event()
+        self.cancelled = True
         self._running = False
         def _destroy():
             try:

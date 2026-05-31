@@ -1,7 +1,8 @@
 import json
 import logging
+import threading
 from datetime import datetime, timedelta
-from common.utils import SAFE_POST, post_to_main_thread_no_wait
+from common.utils import SAFE_POST
 from common.notification import show_notification, show_notification_with_click
 
 logger = logging.getLogger("gui")
@@ -85,9 +86,10 @@ class ClipboardHandler:
                             msg += f"\n文件：{name}"
             if name_list and msg:
                 def download_callback():
-                    post_to_main_thread_no_wait(
-                        self.tray_manager.file_handler.fetch_file_with_progress
-                    )
+                    threading.Thread(
+                        target=self.tray_manager.file_handler.fetch_file_with_progress,
+                        daemon=True
+                    ).start()
 
                 show_notification_with_click(
                     "检测到文件发布, 点击保存。",

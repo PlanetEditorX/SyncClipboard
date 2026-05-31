@@ -1,9 +1,8 @@
 import logging
 import pystray
 import threading
-import tkinter as tk
-from PIL import Image
 from pathlib import Path
+from PIL import Image
 from common.utils import BASE_DIR
 from gui.tray_menu import TrayMenu
 from gui.file_handler import FileHandler
@@ -13,9 +12,21 @@ from gui.clipboard_handler import ClipboardHandler
 from gui.file_watcher_handler import FileWatcherHandler
 from common.utils import set_tk_root, process_ui_queue, post_to_main_thread_no_wait
 
+try:
+    import customtkinter as ctk
+except ImportError:
+    import tkinter as ctk
+    ctk.set_appearance_mode = lambda mode: None
+    ctk.set_default_color_theme = lambda theme: None
+
 logger = logging.getLogger("gui")
 
-root = tk.Tk()
+if hasattr(ctk, 'CTk'):
+    ctk.set_appearance_mode("System")
+    ctk.set_default_color_theme("blue")
+    root = ctk.CTk()
+else:
+    root = ctk.Tk()
 root.withdraw()          # 如果不需要显示主窗口
 set_tk_root(root)        # 注册为全局根
 

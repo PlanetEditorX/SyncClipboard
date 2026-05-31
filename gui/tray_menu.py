@@ -1,6 +1,7 @@
 import os
+import threading
 from pystray import MenuItem, Menu
-from common.utils import BASE_DIR, post_to_main_thread_no_wait
+from common.utils import BASE_DIR
 
 class TrayMenu:
     """托盘菜单构建器"""
@@ -11,10 +12,10 @@ class TrayMenu:
         """构建菜单"""
         # 包装函数：切换到主线程执行下载
         def on_fetch_file():
-            # 如果已经在主线程就直接执行，否则投递
-            post_to_main_thread_no_wait(
-                self.manager.file_handler.fetch_file_with_progress
-            )
+            threading.Thread(
+                target=self.manager.file_handler.fetch_file_with_progress,
+                daemon=True
+            ).start()
         get_file_item = MenuItem('获取文件', on_fetch_file, default=True)
 
         return Menu(

@@ -14,6 +14,14 @@ class FileHandler:
     def __init__(self, config_manager):
         self.config = config_manager
 
+    def _run_in_worker_thread(self, func, *args, **kwargs):
+        """如果当前在主线程，则将阻塞操作移到后台线程执行。"""
+        if threading.current_thread() is threading.main_thread():
+            thread = threading.Thread(target=func, args=args, kwargs=kwargs, daemon=True)
+            thread.start()
+            return thread
+        return func(*args, **kwargs)
+
     def _run_in_main_thread(self, func, *args, **kwargs):
         """
         在主线程执行 func 并同步返回结果。
@@ -72,7 +80,7 @@ class FileHandler:
             response.close()
             return
 
-        progress = DownloadProgressDialog("下载进度")
+        progress = post_to_main_thread(DownloadProgressDialog, "下载进度")
 
         try:
             total_size = int(response.headers.get('content-length', 0))
@@ -146,7 +154,7 @@ class FileHandler:
         # 决定进度对话框：外部传入则复用，否则自己创建
         own_dialog = False
         if progress_dialog is None:
-            progress_dialog = DownloadProgressDialog("下载进度")
+            progress_dialog = post_to_main_thread(DownloadProgressDialog, "下载进度")
             own_dialog = True
 
         # 准备下载
@@ -220,6 +228,12 @@ class FileHandler:
         点击通知后下载所有待拉取文件
         （兼容旧版单文件流 / 单文件下载链接 / 新版文件列表）
         """
+        if threading.current_thread() is threading.main_thread():
+            threading.Thread(target=self.fetch_file_with_progress,
+                             args=(suggested_filename,),
+                             daemon=True).start()
+            return
+
         logger.info("开始拉取服务器文件...")
         server_host = self.config.server_host
         server_port = self.config.server_port

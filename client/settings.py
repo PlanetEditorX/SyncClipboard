@@ -5,6 +5,11 @@ from pathlib import Path
 from common.utils import BASE_DIR, get_tk_root
 from tkinter import simpledialog, messagebox
 
+try:
+    import customtkinter as ctk
+except ImportError:
+    ctk = None
+
 CLIENT_CONFIG_FILE = BASE_DIR / "config" / "client_config.json"
 CLIENT_CONFIG_FILE.parent.mkdir(parents=True, exist_ok=True)
 
@@ -20,7 +25,10 @@ def save_client_config(cfg):
 def open_client_settings():
     root = get_tk_root()
     if root is None:
-        temp_root = tk.Tk()
+        if ctk is not None and hasattr(ctk, 'CTk'):
+            temp_root = ctk.CTk()
+        else:
+            temp_root = tk.Tk()
         temp_root.withdraw()
         master = temp_root
     else:
