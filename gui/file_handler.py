@@ -292,9 +292,11 @@ class FileHandler:
 
             # 在主线程创建进度条
             progress_dialog = post_to_main_thread(DownloadProgressDialog, "下载进度")
+            all_completed = True
             try:
                 for idx, file in enumerate(files, 1):
                     if progress_dialog.is_cancelled():
+                        all_completed = False
                         break
                     name = file.get("name", f"file_{idx}")
                     total = len(files)
@@ -307,12 +309,15 @@ class FileHandler:
                                                     save_path=save_dir,
                                                     progress_dialog=progress_dialog)
                     if not success:
-                        # 下载失败或取消，可根据需求决定是否继续剩余文件
                         if progress_dialog.is_cancelled():
-                            break
+                            all_completed = False
+                        else:
+                            all_completed = False
+                        break
             finally:
                 progress_dialog.close()
 
-            show_message("下载完成", f"已处理 {total} 个文件\n保存至：{save_dir}")
-            self._clear_latest_file(server_host, server_port)
+            if all_completed and not progress_dialog.is_cancelled():
+                show_message("下载完成", f"已处理 {total} 个文件\n保存至：{save_dir}")
+                self._clear_latest_file(server_host, server_port)
             return
