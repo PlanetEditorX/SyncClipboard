@@ -302,6 +302,3 @@ class FileHandler:
             show_message("下载完成", f"已处理 {total} 个文件\n保存至：{save_dir}")
             self._clear_latest_file(server_host, server_port)
             return
-
-        # 其他情况
-        show_message("错误", "服务器返回了未知类型的响应")
