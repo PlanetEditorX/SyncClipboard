@@ -1,24 +1,23 @@
 import tkinter as tk
 from tkinter import ttk
 import logging
-from common.utils import post_to_main_thread
+from common.utils import post_to_main_thread, get_tk_root
 
-_GLOBAL_TK_ROOT = None
 logger = logging.getLogger("gui")
-
-def _get_global_root():
-    global _GLOBAL_TK_ROOT
-    if _GLOBAL_TK_ROOT is None:
-        _GLOBAL_TK_ROOT = tk.Tk()
-        _GLOBAL_TK_ROOT.withdraw()
-    return _GLOBAL_TK_ROOT
 
 
 class DownloadProgressDialog:
     """下载进度对话框（支持复用，线程安全）"""
     def __init__(self, title="下载进度", master=None):
+        # 如果调用者没有提供 master，则使用已注册的全局根窗口
         if master is None:
-            master = _get_global_root()
+            master = get_tk_root()
+            if master is None:
+                # 理论上托盘程序启动时已经调用 set_tk_root()，不会为 None
+                # 但如果单独运行这个对话框（调试等情况），可以降级创建一个临时根窗口
+                logger.warning("No Tk root registered. Creating a temporary root.")
+                master = tk.Tk()
+                master.withdraw()
         self.master = master
         self.window = tk.Toplevel(master)
         self.window.title(title)

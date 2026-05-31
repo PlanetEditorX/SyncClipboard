@@ -2,7 +2,7 @@
 import json
 import tkinter as tk
 from pathlib import Path
-from common.utils import BASE_DIR
+from common.utils import BASE_DIR, get_tk_root
 from tkinter import simpledialog, messagebox
 
 CLIENT_CONFIG_FILE = BASE_DIR / "config" / "client_config.json"
@@ -18,16 +18,21 @@ def save_client_config(cfg):
     messagebox.showinfo("保存", "配置已保存")
 
 def open_client_settings():
+    root = get_tk_root()
+    if root is None:
+        temp_root = tk.Tk()
+        temp_root.withdraw()
+        master = temp_root
+    else:
+        master = root
     cfg = load_client_config()
-    root = tk.Tk()
-    root.withdraw()
+    # 使用 simpledialog 并传入 parent
+    host = simpledialog.askstring("设置", "服务器地址", parent=master, initialvalue=cfg.get("server_host", ""))
+    port = simpledialog.askinteger("设置", "服务器端口", parent=master, initialvalue=cfg.get("server_port", 8000))
+    key = simpledialog.askstring("设置", "密钥", parent=master, initialvalue=cfg.get("key", ""))
+    local_name = simpledialog.askstring("设置", "本机名称", parent=master, initialvalue=cfg.get("local_name", "PC-02"))
 
-    host = simpledialog.askstring("设置", "服务器地址", initialvalue=cfg.get("server_host", ""))
-    port = simpledialog.askinteger("设置", "服务器端口", initialvalue=cfg.get("server_port", 8000))
-    key = simpledialog.askstring("设置", "密钥", initialvalue=cfg.get("key", ""))
-    local_name = simpledialog.askstring("设置", "本机名称", initialvalue=cfg.get("local_name", "PC-02"))
-
-    if all([host, port, key, local_name]):
+    if host and port and key and local_name:
         cfg.update({
             "server_host": host,
             "server_port": port,
