@@ -11,20 +11,10 @@ import pyperclip
 import win32clipboard
 from pathlib import Path
 from datetime import datetime
-from logging.handlers import RotatingFileHandler
 from common.utils import BASE_DIR, SAFE_POST
 from server.services.client_tracker import ClientTracker
 
-# ---------- 日志配置 ----------
-LOG_FILE = BASE_DIR / "log" / "client.log"
-LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
-
-handler = RotatingFileHandler(LOG_FILE, maxBytes=128*1024, backupCount=1, encoding='utf-8')
-handler.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(message)s"))
-
-logger = logging.getLogger()
-logger.setLevel(logging.INFO)
-logger.addHandler(handler)
+logger = logging.getLogger("client")
 
 class SyncClient:
     """剪贴板同步客户端：推送本地变化 + 拉取远程最新（纯后台版本）"""
@@ -55,7 +45,7 @@ class SyncClient:
     def start(self):
         self.running = True
         self.last_text = self.safe_paste()
-        logging.info("客户端剪贴板监听启动")
+        logger.info("客户端剪贴板监听启动")
 
         # 推送线程
         self.push_thread = threading.Thread(target=self._push_loop, daemon=True)
@@ -88,13 +78,13 @@ class SyncClient:
                         self.push_text(text)
                     self.last_text = text
             except Exception as e:
-                logging.error(f"监听异常: {e}")
+                logger.error(f"监听异常: {e}")
             time.sleep(0.5)
 
     def push_text(self, text):
         try:
             latest_global = self.tracker.get_global_latest()
-            if latest_global == None or latest_global["content"] != text:
+            if latest_global is None or latest_global["content"] != text:
                 resp = SAFE_POST(
                     f"{self.server_url}/text_sync",
                     json={
@@ -105,9 +95,9 @@ class SyncClient:
                     timeout=30
                 )
                 if resp.status_code == 200:
-                    logging.info(f"推送成功: {text[:50]}...")
+                    logger.info(f"推送成功: {text[:50]}...")
                 else:
-                    logging.warning(f"推送失败: {resp.status_code} {resp.text}")
+                    logger.warning(f"推送失败: {resp.status_code} {resp.text}")
         except Exception:
             logger.exception("连接服务端失败")
 
@@ -116,15 +106,18 @@ class SyncClient:
         推送最新的文件
         """
         if not file_paths:
-            logging.warning("没有文件需要推送")
+            logger.warning("没有文件需要推送")
             return
+
         file_list = []
         # 推送前先清空之前的共享
-        self.file_server.clear_files()
+        if hasattr(self, 'file_server') and self.file_server:
+            self.file_server.clear_files()
+
         for path in file_paths:
             if not os.path.isfile(path):
                 sanitized = path.encode('utf-8', 'surrogatepass').decode('utf-8', 'replace')
-                logging.warning(f"文件不存在，跳过: {sanitized}")
+                logger.warning(f"文件不存在，跳过: {sanitized}")
                 continue
 
             name = os.path.basename(path)
@@ -134,11 +127,12 @@ class SyncClient:
             if hasattr(self, 'file_server') and self.file_server:
                 self.file_server.register_file(file_id, path)
             file_list.append({
-                    "file_id": file_id,
-                    "path": path,
-                    "name": name,
-                    "size": size
-                })
+                "file_id": file_id,
+                "path": path,
+                "name": name,
+                "size": size
+            })
+
         try:
             resp = requests.post(
                 f"{self.server_url}/file_sync",
@@ -152,12 +146,11 @@ class SyncClient:
             )
 
             if resp.status_code == 200:
-                logging.info(f"文件路径已同步: {name} ({size} bytes)")
+                logger.info(f"文件路径已同步: {name} ({size} bytes)")
             else:
-                logging.error(f"同步失败: {name}, 状态码: {resp.status_code}, 内容: {resp.text}")
-
+                logger.error(f"同步失败: {name}, 状态码: {resp.status_code}, 内容: {resp.text}")
         except Exception as e:
-            logging.error(f"同步文件路径失败: {name}, 错误: {e}")
+            logger.error(f"同步文件路径失败: {name}, 错误: {e}")
 
     def _pull_loop(self):
         while self.running:
@@ -179,15 +172,16 @@ class SyncClient:
                             self.last_remote_id = latest["id"]
                             self._last_remote_content = latest["content"]
                             self.last_text = latest["content"]
-                            logging.info(f"拉取并更新剪贴板: {latest['content'][:50]} (来自 {latest['source']})")
+                            logger.info(f"拉取并更新剪贴板: {latest['content'][:50]} (来自 {latest['source']})")
             except Exception as e:
-                logging.error(f"拉取失败: {e} 等待10秒后重试")
+                logger.error(f"拉取失败: {e} 等待10秒后重试")
                 time.sleep(7)
             time.sleep(3)
 
     def stop(self):
         self.running = False
-        logging.info("客户端已停止")
+        logger.info("客户端已停止")
+
 
 def get_clipboard_files():
     """

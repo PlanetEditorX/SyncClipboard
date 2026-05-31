@@ -64,19 +64,17 @@ def main():
     LOG_FILE = BASE_DIR / "log" / "client.log"
     LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
 
-    # 使用独立的 logger，不与 gui 共用
-    logger = logging.getLogger("client")
-    logger.setLevel(logging.INFO)
-    # 清除从父进程继承的 handler，避免日志写入 gui.log
-    logger.handlers.clear()
-    logger.propagate = False   # 防止传播到 root logger
+    root_logger = logging.getLogger()
+    root_logger.setLevel(logging.INFO)
+    root_logger.handlers.clear()
 
     handler = RotatingFileHandler(
         LOG_FILE, maxBytes=128*1024, backupCount=1, encoding='utf-8'
     )
     handler.setFormatter(logging.Formatter('%(asctime)s [%(levelname)s] %(message)s'))
-    logger.addHandler(handler)
+    root_logger.addHandler(handler)
 
+    logger = logging.getLogger("client")
     logger.info("客户端进程启动")
 
     # ---------- 使用 ConfigManager 加载配置 ----------
