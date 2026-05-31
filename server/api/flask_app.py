@@ -17,7 +17,7 @@ from server.core.item_builder import build_text_item
 from server.core.cache_manager import CacheManager
 from server.core.clipboard_manager import get_clipboard_text, set_clipboard_text, generate_id
 from server.services.file_handler import FileHandler
-from server.services.client_tracker import ClientTracker
+from server.services.text_tracker import ClientTracker
 from server.services.file_sync import LatestFileManager
 from server.services.latest_file import LatestFileTracker
 from common.utils import BASE_DIR
@@ -42,7 +42,7 @@ CLIENT_EXPIRE_HOURS = 168   # 客户端超过1周未出现就删除
 def init_services(config_manager=None):
     """由 run.py 在配置注入后调用，初始化依赖配置的服务"""
     global tracker, file_handler, latest_file, KEY, LOCAL_NAME, SAVE_PATH, PORT
-    from server.services.client_tracker import ClientTracker
+    from server.services.text_tracker import ClientTracker
     from server.services.file_handler import FileHandler
     from server.services.latest_file import LatestFileTracker
 

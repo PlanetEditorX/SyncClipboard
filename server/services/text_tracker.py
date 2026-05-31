@@ -1,4 +1,4 @@
-# server/client_tracker.py
+# server/text_tracker.py
 import json
 import os
 from datetime import datetime

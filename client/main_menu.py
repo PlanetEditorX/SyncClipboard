@@ -12,7 +12,7 @@ import win32clipboard
 from pathlib import Path
 from datetime import datetime
 from common.utils import BASE_DIR, SAFE_POST
-from server.services.client_tracker import ClientTracker
+from server.services.text_tracker import ClientTracker
 
 logger = logging.getLogger("client")
 
