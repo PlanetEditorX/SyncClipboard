@@ -69,7 +69,6 @@ class DownloadProgressDialog:
             self.container = tk.Frame(self.window, bg="#f7f7f7")
         self.container.grid(row=0, column=0, sticky='nsew')
         self.container.grid_columnconfigure(0, weight=1)
-        # make container expand to fill the toplevel
         try:
             self.window.grid_rowconfigure(0, weight=1)
         except Exception:
@@ -119,14 +118,20 @@ class DownloadProgressDialog:
         self.cancelled = False
         self._running = True   # 控件初始化完毕即标记为运行中
 
-        # let the window size itself based on content; ensure it's visible
         try:
+            self.window.attributes("-alpha", 0)
             self.window.deiconify()
-            self.window.lift()
-            self.window.focus_force()
-            self.window.after(50, self._center_window)
+            self.window.after(100, self._show_centered)
         except Exception:
             pass
+
+    def _show_centered(self):
+        self._center_window()
+
+        self.window.attributes("-alpha", 1)
+
+        self.window.lift()
+        self.window.focus_force()
 
     def _center_window(self):
         try:
@@ -139,18 +144,14 @@ class DownloadProgressDialog:
                 if width <= 1 or height <= 1:
                     self.window.after(50, self._center_window)
                     return
-
-            # Try to get the monitor work area for the window (multi-monitor aware)
             try:
                 user32 = ctypes.windll.user32
                 MONITOR_DEFAULTTONEAREST = 2
                 hwnd = self.window.winfo_id()
                 hmon = user32.MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST)
-
                 class RECT(ctypes.Structure):
                     _fields_ = [("left", ctypes.c_long), ("top", ctypes.c_long),
                                 ("right", ctypes.c_long), ("bottom", ctypes.c_long)]
-
                 class MONITORINFO(ctypes.Structure):
                     _fields_ = [("cbSize", ctypes.c_ulong), ("rcMonitor", RECT),
                                 ("rcWork", RECT), ("dwFlags", ctypes.c_ulong)]
@@ -169,10 +170,7 @@ class DownloadProgressDialog:
                     self.window.geometry(f"+{x}+{y}")
                     return
             except Exception:
-                # Fall back to default behavior if any Windows API call fails
                 pass
-
-            # Fallback: use tkinter reported screen size
             screen_w = self.window.winfo_screenwidth()
             screen_h = self.window.winfo_screenheight()
             x = max((screen_w - width) // 2, 0)
