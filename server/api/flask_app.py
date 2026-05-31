@@ -19,7 +19,7 @@ from server.core.clipboard_manager import get_clipboard_text, set_clipboard_text
 from server.services.file_handler import FileHandler
 from server.services.text_tracker import ClientTracker
 from server.services.file_sync import LatestFileManager
-from server.services.latest_file import LatestFileTracker
+from server.services.file_latest import FileLatestTracker
 from common.utils import BASE_DIR
 from common.notification import show_notification, show_notification_with_click
 
@@ -42,10 +42,6 @@ CLIENT_EXPIRE_HOURS = 168   # 客户端超过1周未出现就删除
 def init_services(config_manager=None):
     """由 run.py 在配置注入后调用，初始化依赖配置的服务"""
     global tracker, file_handler, latest_file, KEY, LOCAL_NAME, SAVE_PATH, PORT
-    from server.services.text_tracker import ClientTracker
-    from server.services.file_handler import FileHandler
-    from server.services.latest_file import LatestFileTracker
-
     # 如果传入了 config_manager，使用它来设置 app.config
     if config_manager:
         # 确保 app.config 中有必要的配置
@@ -63,7 +59,7 @@ def init_services(config_manager=None):
     # 初始化各个服务
     tracker = ClientTracker()
     file_handler = FileHandler(app.config.get('save_path', 'D:\\Downloads'))
-    latest_file = LatestFileTracker()
+    latest_file = FileLatestTracker()
 
     KEY = app.config.get("key", "")
     LOCAL_NAME = app.config.get("local_name", "Server")

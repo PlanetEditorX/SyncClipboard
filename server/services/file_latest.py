@@ -7,7 +7,7 @@ from common.utils import BASE_DIR
 FILE_LATEST_FILE = BASE_DIR / "latest" / "file_latest.json"
 FILE_LATEST_FILE.parent.mkdir(parents=True, exist_ok=True)
 
-class LatestFileTracker:
+class FileLatestTracker:
     def __init__(self):
         self.data = self._load()   # 现在 data 是一个 list
 
