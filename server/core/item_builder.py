@@ -2,7 +2,13 @@
 import os
 import hashlib
 from datetime import datetime
-from .clipboard_manager import generate_stable_id
+
+def generate_stable_id(item):
+    """
+    新的稳定 ID，忽略 timestamp，同一内容+来源只生成一个 ID
+    """
+    s = f'{item["type"]}|{item.get("content","")}|{item.get("path","")}|{item["source"]}'
+    return hashlib.md5(s.encode('utf-8')).hexdigest()
 
 def build_text_item(text, source, pasted=False, timestamp=None):
     """

@@ -14,8 +14,6 @@ from flask import Flask, request, jsonify, send_file
 
 # 统一使用 server 包路径的绝对导入
 from server.core.item_builder import build_text_item
-from server.core.cache_manager import CacheManager
-from server.core.clipboard_manager import get_clipboard_text, set_clipboard_text, generate_id
 from server.services.file_handler import FileHandler
 from server.services.text_tracker import ClientTracker
 from server.services.file_sync import LatestFileManager
