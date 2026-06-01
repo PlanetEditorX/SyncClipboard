@@ -324,6 +324,8 @@ def sync():
                 if diff < timedelta(minutes=10):
                     # 拉取时未超过 10 分钟才标记为未使用，超过10分钟默认已使用了
                     latest_global["pasted"] = False
+                else:
+                    latest_global["pasted"] = True
                 pasted_item = {
                     "id": latest["id"],
                     "type": latest.get("type", "text"),
