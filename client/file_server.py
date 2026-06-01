@@ -8,7 +8,7 @@ import requests
 from threading import Thread
 from urllib.parse import unquote
 from common.utils import BASE_DIR
-from server.services.text_tracker import ClientTracker
+from server.core.text_tracker import ClientTracker
 from flask import Flask, jsonify, send_file, after_this_request, request
 
 FILE_LATEST_FILE = BASE_DIR / "latest" / "file_latest.json"

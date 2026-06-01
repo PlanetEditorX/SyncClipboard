@@ -14,10 +14,10 @@ from flask import Flask, request, jsonify, send_file
 
 # 统一使用 server 包路径的绝对导入
 from server.core.item_builder import build_text_item
-from server.services.file_handler import FileHandler
-from server.services.text_tracker import ClientTracker
-from server.services.file_sync import LatestFileManager
-from server.services.file_latest import FileLatestTracker
+from server.core.file_handler import FileHandler
+from server.core.text_tracker import ClientTracker
+from server.core.file_sync import LatestFileManager
+from server.core.file_latest import FileLatestTracker
 from common.utils import BASE_DIR
 from common.notification import show_notification, show_notification_with_click
 
