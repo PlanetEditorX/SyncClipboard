@@ -291,7 +291,7 @@ def sync():
 
     source = data.get("source", "")
     content = data.get("content", "")
-
+    latest_global = { "pasted": False }
     # 获取该客户端当前记录
     client_last = tracker.data.get("clients", {}).get(source)
 
@@ -335,10 +335,6 @@ def sync():
                     "pasted": True
                 }
                 tracker.mark_pasted(source, pasted_item)
-            else:
-                latest_global = {
-                    "pasted": False
-                }
 
     return jsonify({"status": "ok", "latest_global": latest_global})
 
