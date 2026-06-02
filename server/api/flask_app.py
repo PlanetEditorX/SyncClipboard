@@ -162,11 +162,11 @@ def notify_clients(_type):
                     timeout=5
                 )
                 if resp.status_code == 200:
-                    logging.info(f"最新文件清理通知客户端{client["local_name"]}成功...")
+                    logging.info(f"最新文件清理通知客户端{client['local_name']}成功...")
                 else:
-                    logging.warning(f"最新文件清理通知客户端{client["local_name"]}失败: {resp.status_code} {resp.text}")
+                    logging.warning(f"最新文件清理通知客户端{client['local_name']}失败: {resp.status_code} {resp.text}")
             except Exception as e:
-                logging.error(f"连接客户端 {client["local_name"]} 失败: {e}")
+                logging.error(f"连接客户端 {client['local_name']} 失败: {e}")
             continue
 
         #  推送的文件来源是要通知的客户端跳过
@@ -243,7 +243,7 @@ def notify_clients(_type):
                     content_preview = str(latest["content"])[:50]
                     logging.info(f"文字推送成功: {content_preview}...")
                 else:
-                    logging.info(f"文件发布推送成功: {latest["name"]}...")
+                    logging.info(f"文件发布推送成功: {latest['name']}...")
             else:
                 logging.warning(f"推送失败: {resp.status_code} {resp.text}")
         except Exception as e:
