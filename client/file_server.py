@@ -38,9 +38,7 @@ class FileServer:
         self.shared_files = {}
         self.app = Flask(__name__)
         # 关闭 Flask 默认访问日志
-        logging.getLogger("werkzeug").setLevel(
-            logging.ERROR
-        )
+        logging.getLogger("werkzeug").setLevel(logging.ERROR)
         self._register_routes()
         # 全局锁，避免同时读写剪贴板
         self.clipboard_lock = threading.Lock()
@@ -50,6 +48,10 @@ class FileServer:
         self.KEY = str(key)
         self.local_name = local_name
         self.tracker = ClientTracker()
+        # 添加运行状态和服务器引用
+        self.running = False
+        self._server_thread = None
+        self._flask_server = None
 
     def _register_routes(self):
         @self.app.route("/ping", methods=["GET"])
@@ -141,13 +143,9 @@ class FileServer:
 
         @self.app.route("/file/<file_id>", methods=["GET"])
         def download_file(file_id):
-            # 调试断点（仅在 DEBUG_MODE=1 时生效）
-            # if os.getenv("DEBUG_MODE") == "1":
-            #     debugpy.breakpoint()
-
             client_ip = request.remote_addr
             source = request.headers.get("source", "未知设备")
-            logger.info(f"获取文件下载 - 请求来自: {unquote(request.headers.get("source", ""))}({client_ip})")
+            logger.info(f"获取文件下载 - 请求来自: {unquote(request.headers.get('source', ''))}({client_ip})")
 
             path = self.shared_files.get(file_id)
             if not path:
@@ -178,11 +176,7 @@ class FileServer:
             本地文件路径
         """
         self.shared_files[file_id] = path
-        logger.info(
-            "注册共享文件: %s -> %s",
-            file_id,
-            path
-        )
+        logger.info("注册共享文件: %s -> %s", file_id, path)
 
     def unregister_file(self, file_id):
         """
@@ -190,20 +184,14 @@ class FileServer:
         """
         if file_id in self.shared_files:
             path = self.shared_files.pop(file_id)
-            logger.info(
-                "取消共享文件: %s -> %s",
-                file_id,
-                path
-            )
+            logger.info("取消共享文件: %s -> %s", file_id, path)
 
     def clear_files(self):
         """
         清空共享列表
         """
         self.shared_files.clear()
-        logger.info(
-            "共享文件列表已清空"
-        )
+        logger.info("共享文件列表已清空")
 
     def get_file_path(self, file_id):
         """
@@ -212,19 +200,49 @@ class FileServer:
         return self.shared_files.get(file_id)
 
     def start(self):
+        """启动文件服务器"""
+        if self.running:
+            logger.warning("文件服务器已在运行中")
+            return
+
+        self.running = True
+
         def run():
-            logger.info(
-                "文件服务启动: 0.0.0.0:%s",
-                self.port
-            )
-            self.app.run(
-                host="0.0.0.0",
-                port=self.port,
-                debug=False,
-                use_reloader=False,
-                threaded=True
-            )
-        Thread(
-            target=run,
-            daemon=True
-        ).start()
+            logger.info("文件服务启动: 0.0.0.0:%s", self.port)
+            try:
+                # 使用 Werkzeug 服务器（Flask 内置）
+                from werkzeug.serving import make_server
+                self._flask_server = make_server('0.0.0.0', self.port, self.app, threaded=True)
+                self._flask_server.serve_forever()
+            except Exception as e:
+                if self.running:  # 只在非主动停止时记录错误
+                    logger.error(f"文件服务器异常: {e}")
+
+        self._server_thread = Thread(target=run, daemon=True)
+        self._server_thread.start()
+        logger.info("文件服务器线程已启动")
+
+    def stop(self):
+        """停止文件服务器"""
+        if not self.running:
+            logger.warning("文件服务器未在运行")
+            return
+
+        logger.info("正在停止文件服务器...")
+        self.running = False
+
+        # 关闭 Werkzeug 服务器
+        if self._flask_server:
+            try:
+                self._flask_server.shutdown()
+                logger.info("Flask 服务器已关闭")
+            except Exception as e:
+                logger.error(f"关闭 Flask 服务器时出错: {e}")
+
+        # 等待线程结束
+        if self._server_thread and self._server_thread.is_alive():
+            self._server_thread.join(timeout=5)
+            if self._server_thread.is_alive():
+                logger.warning("文件服务器线程未能在5秒内停止")
+
+        logger.info("文件服务器已停止")

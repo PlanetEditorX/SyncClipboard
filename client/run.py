@@ -1,5 +1,6 @@
 # client/run.py
 import sys
+import os
 import time
 import signal
 import logging
@@ -13,6 +14,21 @@ from logging.handlers import RotatingFileHandler
 # 导入 ConfigManager
 sys.path.insert(0, str(BASE_DIR))
 from gui.config_manager import ConfigManager
+
+# ========== PyInstaller 多进程兼容修复 ==========
+def fix_multiprocessing():
+    """修复 PyInstaller 打包后多进程标准流为 None 的问题"""
+    if getattr(sys, 'frozen', False):
+        # 只在打包后的环境中修复
+        if sys.stderr is None:
+            sys.stderr = open(os.devnull, 'w')
+        if sys.stdout is None:
+            sys.stdout = open(os.devnull, 'w')
+        if sys.stdin is None:
+            sys.stdin = open(os.devnull, 'r')
+
+# 在导入其他模块前调用
+fix_multiprocessing()
 
 def register_to_server(server_host, server_port, file_server_port, local_name, key, logger):
     """
@@ -60,6 +76,10 @@ def register_to_server(server_host, server_port, file_server_port, local_name, k
 
 
 def main():
+    # ========== 多进程支持（必须调用） ==========
+    import multiprocessing
+    multiprocessing.freeze_support()
+
     # ---------- 客户端独立日志配置 ----------
     LOG_FILE = BASE_DIR / "log" / "client.log"
     LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
@@ -116,12 +136,24 @@ def main():
     # ---------- 使用重试机制注册到服务器 ----------
     if not register_to_server(server_host, server_port, file_server_port, local_name, key, logger):
         logger.critical("无法注册到服务器，客户端退出")
-        file_server.stop()
+        # 安全地停止 file_server
+        try:
+            file_server.stop()
+        except AttributeError:
+            logger.warning("FileServer 没有 stop 方法，尝试直接终止")
+            # 如果有 running 属性，设置为 False
+            if hasattr(file_server, 'running'):
+                file_server.running = False
+        except Exception as e:
+            logger.error(f"停止 file_server 时出错: {e}")
         sys.exit(1)
 
     def graceful_exit(signum, frame):
         logger.info("正在关闭客户端...")
-        client.stop()
+        try:
+            client.stop()
+        except Exception as e:
+            logger.error(f"停止客户端时出错: {e}")
         sys.exit(0)
 
     signal.signal(signal.SIGINT, graceful_exit)
