@@ -52,6 +52,17 @@ class ConfigManager:
                 'client_running': self.client_running
             }, f)
 
+    def get_default_server_host(self):
+        """默认服务器地址"""
+        try:
+            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            s.connect(("8.8.8.8", 80))
+            ip = s.getsockname()[0]
+            s.close()
+            return ip
+        except Exception:
+            return "127.0.0.1"
+
     def load_client_config(self):
         """加载客户端配置"""
         config_file = ConfigManager.CLIENT_CONFIG
@@ -60,7 +71,7 @@ class ConfigManager:
         if not config_file.exists():
             logger.info("客户端配置文件不存在，正在创建默认配置...")
             default_config = {
-                "server_host": "127.0.0.1",
+                "server_host": self.get_default_server_host(),
                 "server_port": 8000,
                 "key": "123456",
                 "local_name": self.local_name,
@@ -88,6 +99,11 @@ class ConfigManager:
         if config.get("local_name") == "PC-01":
             logger.info(f"检测到默认电脑名称 'PC-01'，正在替换为真实电脑名称: {self.local_name}")
             config["local_name"] = self.local_name
+            need_save = True
+
+        if config.get("server_host") == "127.0.0.1":
+            logger.info(f"检测到默认服务器地址 '127.0.0.1'，正在替换为真实服务器地址")
+            config["server_host"] = self.get_default_server_host()
             need_save = True
 
         # 4. 检查并补充缺失的字段（兼容旧版本配置文件）
