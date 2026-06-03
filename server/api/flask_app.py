@@ -301,10 +301,12 @@ def sync():
         with clipboard_lock:
             pyperclip.copy(content)
         # 手机有新内容 → 强制更新为自己，并设为全局最新
-        item = build_text_item(text=content, source=source, pasted=False)
+        item = build_text_item(text=content, source=source, pasted=True)
         if not tracker.is_duplicate(item["id"]):
             tracker.update(item, force_latest=True)
-        latest_global = tracker.get_global_latest()
+        # latest_global = tracker.get_global_latest()
+        latest_global =  { "pasted": True }
+    # 获取该客户端当前记录
     else:
         # 内容没变 → 纯拉取操作
         latest = tracker.get_global_latest()
