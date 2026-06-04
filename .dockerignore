@@ -1,0 +1,16 @@
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.swp
+.venv/
+.env
+.git/
+.gitignore
+release/
+log/
+latest/
+config/example/
+*.zip
+*.tar.gz
+.DS_Store
