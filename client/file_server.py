@@ -32,7 +32,7 @@ def get_files_latest_file():
         return None
 
 class FileServer:
-    def __init__(self, port=8899, center_host="127.0.0.1", center_port=8000, local_name="PC-01", key="123456", save_path="./uploads"):
+    def __init__(self, port=8899, center_host="127.0.0.1", center_port=8000, local_name="PC-01", key="123456", last_dir="./uploads"):
         self.port = port
         self.center_host = center_host
         self.center_port = center_port
@@ -48,7 +48,7 @@ class FileServer:
         self.last_text = ""
         self.KEY = str(key)
         self.local_name = local_name
-        self.save_path = save_path
+        self.last_dir = last_dir
         self.tracker = ClientTracker()
         # 添加运行状态和服务器引用
         self.running = False
@@ -132,15 +132,15 @@ class FileServer:
                 return jsonify({"status": "error", "message": "未收到文件"}), 400
 
             # 保存到文件
-            save_file_path = os.path.join(self.save_path, filename)
+            save_file_path = os.path.join(self.last_dir, filename)
             with open(save_file_path, 'wb') as f:
                 f.write(file_data)
 
             logging.info(f"手机上传文件已保存: {save_file_path}")
             source = unquote(request.headers.get("source", ""))
-            msg = f"来源：{source}\n文件：{filename}\n保存：{self.save_path}"
+            msg = f"来源：{source}\n文件：{filename}\n保存：{save_file_path}"
             show_notification("手机文件已保存", msg)
-            return jsonify({"status": "ok", "message": "文件上传成功","path": self.save_path}), 200
+            return jsonify({"status": "ok", "message": "文件上传成功","path": save_file_path}), 200
 
         @self.app.route("/clear/file_latest", methods=["GET"])
         def clear_file_latest():
