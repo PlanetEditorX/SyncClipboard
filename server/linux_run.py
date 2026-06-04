@@ -131,14 +131,20 @@ def main():
 
     logging.info('Linux 服务初始化完成')
 
-    # 支持通过环境变量覆盖配置文件路径
-    server_conf_env = os.environ.get('SERVER_CONFIG_FILE') or os.environ.get('SERVER_CONFIG')
+    # 支持通过环境变量覆盖配置文件路径或配置目录
+    server_conf_env = (
+        os.environ.get('SERVER_CONFIG_FILE')
+        or os.environ.get('SERVER_CONFIG')
+        or os.environ.get('CONFIG_FILE')
+        or os.environ.get('CONFIG_DIR')
+    )
     if server_conf_env:
         scp = Path(server_conf_env)
         if not scp.is_absolute():
-            LinuxConfigManager.SERVER_CONFIG = BASE_DIR / scp
-        else:
-            LinuxConfigManager.SERVER_CONFIG = scp
+            scp = BASE_DIR / scp
+        if scp.is_dir() or not scp.suffix:
+            scp = scp / 'server_config.json'
+        LinuxConfigManager.SERVER_CONFIG = scp
 
     config_manager = LinuxConfigManager()
     if not config_manager.load_server_config():

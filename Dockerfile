@@ -16,12 +16,13 @@ COPY . /app
 # 创建运行时目录
 RUN mkdir -p /app/config /app/latest /app/log
 
-# 挂载点（便于宿主挂载配置与日志文件）
-VOLUME ["/app/config", "/app/log"]
+# 挂载点（便于宿主挂载配置、日志和 latest 数据目录）
+VOLUME ["/app/config", "/app/log", "/app/latest"]
 
 # 默认环境变量（可在运行时覆盖）
-ENV SERVER_CONFIG_FILE=/app/config/server_config.json
-ENV LOG_FILE=/app/log/server_linux.log
+ENV CONFIG_DIR=/app/config
+ENV LOG_DIR=/app/log
+ENV LATEST_DIR=/app/latest
 ENV PORT=8000
 
 EXPOSE 8000
