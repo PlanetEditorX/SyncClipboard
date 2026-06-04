@@ -34,7 +34,8 @@ class LinuxConfigManager:
         self.server_port = 8000
         self.key = '123456'
         self.local_name = socket.gethostname()
-        self.save_path = default_save_path()
+        self.last_dir = default_save_path()
+        self.save_path = self.last_dir
 
     def load_server_config(self):
         config_file = LinuxConfigManager.SERVER_CONFIG
@@ -70,7 +71,7 @@ class LinuxConfigManager:
 
         default_fields = {
             'key': self.key,
-            'save_path': self.save_path,
+            'last_dir': self.last_dir,
             'port': self.server_port,
             'local_name': self.local_name
         }
@@ -79,6 +80,8 @@ class LinuxConfigManager:
                 logging.warning(f"服务器配置文件缺少字段 '{field}'，使用默认值: {default_value}")
                 config[field] = default_value
                 need_save = True
+        if 'save_path' not in config:
+            config['save_path'] = config.get('last_dir', self.last_dir)
 
         if need_save:
             try:
@@ -90,10 +93,11 @@ class LinuxConfigManager:
 
         self.server_port = config.get('port', self.server_port)
         self.key = config.get('key', self.key)
-        self.save_path = config.get('save_path', self.save_path)
+        self.last_dir = config.get('last_dir', config.get('save_path', self.last_dir))
+        self.save_path = self.last_dir
         self.local_name = config.get('local_name', self.local_name)
         logging.info(
-            f"读取服务器配置 | 端口={self.server_port} | 保存路径={self.save_path} | 服务器名称={self.local_name}"
+            f"读取服务器配置 | 端口={self.server_port} | 保存路径={self.last_dir} | 服务器名称={self.local_name}"
         )
         return True
 

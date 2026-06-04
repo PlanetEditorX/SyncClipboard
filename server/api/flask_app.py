@@ -52,8 +52,10 @@ def init_services(config_manager=None):
         if not app.config.get('local_name'):
             app.config['local_name'] = config_manager.server_local_name
         if not app.config.get('last_dir'):
-            default_save = str(config_manager.last_dir) if config_manager.last_dir else get_default_save_dir()
+            default_save = str(config_manager.last_dir) if getattr(config_manager, 'last_dir', None) else get_default_save_dir()
             app.config['last_dir'] = default_save
+        if not app.config.get('save_path'):
+            app.config['save_path'] = app.config['last_dir']
         if not app.config.get('port'):
             app.config['port'] = config_manager.server_port
         if app.config.get('clipboard_enabled') is None:
@@ -69,7 +71,7 @@ def init_services(config_manager=None):
 
     KEY = app.config.get("key", "")
     LOCAL_NAME = app.config.get("local_name", "Server")
-    SAVE_PATH = app.config.get("save_path", get_default_save_dir())
+    SAVE_PATH = app.config.get("save_path", app.config.get('last_dir', get_default_save_dir()))
     PORT = app.config.get("port", 8000)
     global CLIPBOARD_ENABLED
     CLIPBOARD_ENABLED = app.config.get("clipboard_enabled", True)
