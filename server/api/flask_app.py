@@ -433,6 +433,31 @@ def get_latest():
 
     return jsonify({"status": "ok", "latest_global": latest_global}), 200
 
+@app.route('/clients/online', methods=['GET'])
+def get_online_clients():
+    """获取在线客户端列表"""
+    key = get_api_key()
+    if key != KEY:
+        return jsonify({"status": "error", "message": "密钥错误"}), 403
+
+    load_clients_ip()
+    online_clients = []
+    for client in clients:
+        ip = client.get('ip')
+        port = client.get('port', 8899)
+        if not ip:
+            continue
+
+        ping_url = f"http://{ip}:{port}/ping"
+        try:
+            resp = requests.get(ping_url, timeout=3)
+            if resp.status_code == 200:
+                online_clients.append(f"{client.get('local_name', '未知')} ({ip})")
+        except Exception:
+            continue
+
+    return jsonify({"status": "ok", "online_clients": online_clients}), 200
+
 @app.route('/mark_pasted', methods=['POST'])
 def mark_pasted():
     data = request.get_json()
