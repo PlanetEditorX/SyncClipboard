@@ -39,7 +39,6 @@ jobs:
           push: true
           tags: |
             ${{ secrets.DOCKERHUB_USERNAME }}/syncclipboard-server:latest
-            ${{ secrets.DOCKERHUB_USERNAME }}/syncclipboard-server:${{ github.sha }}
             ${{ secrets.DOCKERHUB_USERNAME }}/syncclipboard-server:${{ github.ref_name }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
