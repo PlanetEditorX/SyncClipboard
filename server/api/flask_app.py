@@ -22,7 +22,7 @@ from server.core.text_tracker import ClientTracker
 from server.core.file_sync import LatestFileManager
 from server.core.file_latest import FileLatestTracker
 from common.utils import BASE_DIR
-from common.notification import show_notification, show_notification_with_click
+from common.notification import show_notification
 
 # ---------- 日志：不再配置 handler，交给 run.py 统一处理 ----------
 logger = logging.getLogger(__name__)   # 使用模块级 logger，会自动继承根 logger 的 handler
@@ -442,6 +442,7 @@ def get_online_clients():
 
     load_clients_ip()
     online_clients = []
+    upload_url = {}
     for client in clients:
         ip = client.get('ip')
         port = client.get('port', 8899)
@@ -452,11 +453,13 @@ def get_online_clients():
         try:
             resp = requests.get(ping_url, timeout=3)
             if resp.status_code == 200:
-                online_clients.append(f"{client.get('local_name', '未知')} ({ip})")
+                item = f"{client.get('local_name', '未知')} ({ip})"
+                online_clients.append(item)
+                upload_url[item] = f"http://{ip}:{port}/upload_file"
         except Exception:
             continue
 
-    return jsonify({"status": "ok", "online_clients": online_clients}), 200
+    return jsonify({"status": "ok", "online_clients": online_clients, "upload_url": upload_url}), 200
 
 @app.route('/mark_pasted', methods=['POST'])
 def mark_pasted():

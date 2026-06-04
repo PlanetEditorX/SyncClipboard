@@ -10,6 +10,7 @@ from urllib.parse import unquote
 from common.utils import BASE_DIR
 from server.core.text_tracker import ClientTracker
 from flask import Flask, jsonify, send_file, after_this_request, request
+from common.notification import show_notification
 
 FILE_LATEST_FILE = BASE_DIR / "latest" / "file_latest.json"
 FILE_LATEST_FILE.parent.mkdir(parents=True, exist_ok=True)
@@ -31,7 +32,7 @@ def get_files_latest_file():
         return None
 
 class FileServer:
-    def __init__(self, port=8899, center_host="127.0.0.1", center_port=8000, local_name="PC-01", key="123456"):
+    def __init__(self, port=8899, center_host="127.0.0.1", center_port=8000, local_name="PC-01", key="123456", save_path="./uploads"):
         self.port = port
         self.center_host = center_host
         self.center_port = center_port
@@ -47,6 +48,7 @@ class FileServer:
         self.last_text = ""
         self.KEY = str(key)
         self.local_name = local_name
+        self.save_path = save_path
         self.tracker = ClientTracker()
         # 添加运行状态和服务器引用
         self.running = False
@@ -111,6 +113,34 @@ class FileServer:
             return jsonify({
                 "status": "ok",
             })
+
+        @self.app.route('/upload_file', methods=['PUT'])
+        def upload_file():
+            """动上传文件到电脑"""
+            key = get_api_key()
+            if key != self.KEY:
+                return jsonify({"status": "error", "message": "密钥错误"}), 403
+
+            # 从 URL 参数获取文件名，例如 ?filename=my%20file.txt
+            encoded_filename = request.args.get('filename', 'uploaded_file')
+            filename = unquote(encoded_filename)  # 解码 %20 为空格
+
+            # 读取原始二进制数据
+            file_data = request.get_data()
+
+            if not file_data:
+                return jsonify({"status": "error", "message": "未收到文件"}), 400
+
+            # 保存到文件
+            save_file_path = os.path.join(self.save_path, filename)
+            with open(save_file_path, 'wb') as f:
+                f.write(file_data)
+
+            logging.info(f"手机上传文件已保存: {save_file_path}")
+            source = unquote(request.headers.get("source", ""))
+            msg = f"来源：{source}\n文件：{filename}\n保存：{self.save_path}"
+            show_notification("手机文件已保存", msg)
+            return jsonify({"status": "ok", "message": "文件上传成功","path": self.save_path}), 200
 
         @self.app.route("/clear/file_latest", methods=["GET"])
         def clear_file_latest():
