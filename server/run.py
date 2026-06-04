@@ -57,7 +57,8 @@ def main():
         "port": config_manager.server_port,
         "key": config_manager.key,
         "save_path": config_manager.save_path,
-        "local_name": config_manager.local_name
+        "local_name": config_manager.local_name,
+        "clipboard_enabled": True
     })
 
     # 初始化服务（传递配置）

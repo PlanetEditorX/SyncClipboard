@@ -9,24 +9,28 @@ import struct
 import logging
 import requests
 import threading
-import tkinter as tk
 from pathlib import Path
-from tkinter import messagebox
 from urllib.parse import unquote
 from typing import Optional, List
+import queue
 
 # 创建模块级日志记录器
 logger = logging.getLogger(__name__)
 
 # ---------- 全局 Tk 根窗口支持 ----------
-import queue
-import threading
-import tkinter as tk
-from tkinter import messagebox
-
 _tk_root = None
 _tk_lock = threading.Lock()
 _ui_queue = queue.Queue()
+
+def _get_tkinter_components():
+    try:
+        import tkinter as tk
+        from tkinter import messagebox
+        return tk, messagebox
+    except Exception as e:
+        logger.warning(f"Tkinter 初始化失败: {e}")
+        return None, None
+
 
 def set_tk_root(root):
     """在主线程启动时调用，注册全局根窗口"""
@@ -101,6 +105,10 @@ class _ResultEvent:
 
 def show_message(title, message):
     """线程安全的消息框"""
+    _, messagebox = _get_tkinter_components()
+    if messagebox is None:
+        logger.info(f"[消息] {title}: {message}")
+        return
     post_to_main_thread(messagebox.showinfo, title, message)
 
 def get_base_dir() -> Path:

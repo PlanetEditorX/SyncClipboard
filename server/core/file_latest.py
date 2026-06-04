@@ -87,11 +87,13 @@ class FileLatestTracker:
         self._save()
 
     def get_all_files(self):
-        """返回所有文件记录的副本）"""
+        """返回所有文件记录的副本"""
+        self.data = self._load()
         return self.data.copy()
 
     def get_file_by_id(self, file_id):
         """根据 file_id 查找单条记录，未找到返回 None"""
+        self.data = self._load()
         for item in self.data:
             if item["file_id"] == file_id:
                 return item.copy()
@@ -102,6 +104,7 @@ class FileLatestTracker:
         返回最新更新的一条记录（兼容旧版单文件调用）
         如果没有记录返回 None
         """
+        self.data = self._load()
         if not self.data:
             return None
         # 按 updated_at 倒序取第一条

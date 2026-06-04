@@ -6,11 +6,14 @@ import socket
 import logging
 import requests
 import threading
-import pyperclip
 from pathlib import Path
 from urllib.parse import unquote
-from datetime import datetime,timedelta
+from datetime import datetime, timedelta
 from flask import Flask, request, jsonify, send_file
+
+
+def get_default_save_dir():
+    return str(Path.home() / "Downloads")
 
 # 统一使用 server 包路径的绝对导入
 from server.core.item_builder import build_text_item
@@ -35,6 +38,7 @@ file_handler = None
 latest_file = None
 computer_name = socket.gethostname()
 clipboard_lock = threading.Lock()
+CLIPBOARD_ENABLED = True
 CLIENT_EXPIRE_HOURS = 168   # 客户端超过1周未出现就删除
 
 def init_services(config_manager=None):
@@ -48,26 +52,49 @@ def init_services(config_manager=None):
         if not app.config.get('local_name'):
             app.config['local_name'] = config_manager.server_local_name
         if not app.config.get('save_path'):
-            app.config['save_path'] = str(config_manager.save_path) if config_manager.save_path else "D:\\Downloads"
+            default_save = str(config_manager.save_path) if config_manager.save_path else get_default_save_dir()
+            app.config['save_path'] = default_save
         if not app.config.get('port'):
             app.config['port'] = config_manager.server_port
+        if app.config.get('clipboard_enabled') is None:
+            app.config['clipboard_enabled'] = True
 
         logger.info(f"使用 ConfigManager 配置 | 保存路径: {app.config['save_path']}")
 
     # 初始化各个服务
     tracker = ClientTracker()
-    file_handler = FileHandler(app.config.get('save_path', 'D:\\Downloads'))
+    file_handler = FileHandler(app.config.get('save_path', get_default_save_dir()))
     latest_file = FileLatestTracker()
+    load_clients_ip()
 
     KEY = app.config.get("key", "")
     LOCAL_NAME = app.config.get("local_name", "Server")
-    SAVE_PATH = app.config.get("save_path", "D:\\Downloads")
+    SAVE_PATH = app.config.get("save_path", get_default_save_dir())
     PORT = app.config.get("port", 8000)
+    global CLIPBOARD_ENABLED
+    CLIPBOARD_ENABLED = app.config.get("clipboard_enabled", True)
 
     logger.info(f"API组件初始化完成 | 服务名称: {LOCAL_NAME} | 端口: {PORT}")
 
 def get_api_key():
     return request.headers.get("key", "")
+
+
+def copy_text_to_clipboard(text):
+    if not CLIPBOARD_ENABLED:
+        return
+    try:
+        import pyperclip
+    except ImportError as e:
+        logging.warning(f"pyperclip 导入失败，跳过剪贴板写入: {e}")
+        return
+
+    with clipboard_lock:
+        try:
+            pyperclip.copy(text)
+        except Exception as e:
+            logging.warning(f"剪贴板写入失败，跳过: {e}")
+
 
 # ------------------- 客户端列表 -------------------
 clients = []  # 内存中的客户端列表
@@ -79,12 +106,21 @@ def load_clients_ip():
     if not CLIENT_IP_FILE.exists():
         with open(CLIENT_IP_FILE, "w", encoding="utf-8") as f:
             json.dump([], f)
+        clients = []
+        return
 
     try:
         with open(CLIENT_IP_FILE, "r", encoding="utf-8") as f:
-            clients = json.load(f)
-    except (json.JSONDecodeError, FileNotFoundError):
-        # 文件内容损坏或意外被删时，也初始化为空列表
+            loaded = json.load(f)
+        if isinstance(loaded, list):
+            clients = loaded
+        else:
+            logging.warning("客户端 IP 文件格式错误，已重置为列表")
+            clients = []
+            with open(CLIENT_IP_FILE, "w", encoding="utf-8") as f:
+                json.dump(clients, f, indent=2, ensure_ascii=False)
+    except (json.JSONDecodeError, FileNotFoundError) as e:
+        logging.warning(f"加载客户端 IP 文件失败，已重置为列表: {e}")
         clients = []
 
 def save_clients():
@@ -139,10 +175,13 @@ def notify_clients(_type):
         latest = tracker.get_global_latest()
         if latest is None:
             return  # 如果没有最新内容，直接退出
-        else:
-            latest_global = latest.copy()
+        latest_global = latest.copy()
     else:
-        latest  = latest_file.get_all_files()
+        latest = latest_file.get_all_files()
+        if not latest:
+            return  # 如果没有文件记录，直接退出
+        latest_global = latest.copy()
+        latest_file_item = latest[0]
 
     for client in clients:
         source = client["local_name"]
@@ -170,11 +209,11 @@ def notify_clients(_type):
             continue
 
         #  推送的文件来源是要通知的客户端跳过
-        if  _type == "text":
-            if latest.get("source") == source or latest == None:
+        if _type == "text":
+            if latest is None or latest.get("source") == source:
                 continue
         else:
-            if latest[0].get("source") == source or latest == None:
+            if not latest or latest_file_item.get("source") == source:
                 continue
         if _type == "text":
             # 检查该客户端是否已经标记过粘贴（防止重复推送）
@@ -272,11 +311,12 @@ def text_sync():
     # 去重：用 tracker 的 is_duplicate 方法
     if tracker.is_duplicate(item["id"]):
         return jsonify({"status": "duplicate", "message": "重复内容"}), 200
-    # 更新本地剪贴板
-    with clipboard_lock:
-        pyperclip.copy(content)
     # 更新记录（同时注册 ID、更新客户端最新和全局最新）
     tracker.update(item)
+    # 在需要时写入剪贴板（仅 Windows 服务器或启用了剪贴板功能时）
+    copy_text_to_clipboard(content)
+    load_clients_ip()
+    notify_clients("text")
 
     logging.info("同步文本: %s", content[:50])
     return jsonify({"status": "ok", "message": "文字同步成功"}), 200
@@ -297,13 +337,13 @@ def sync():
     is_new = (not client_last) or (client_last.get("content") != content)
 
     if is_new and content and source != LOCAL_NAME:
-        # 手机推送后直接更新剪贴板
-        with clipboard_lock:
-            pyperclip.copy(content)
         # 手机有新内容 → 强制更新为自己，并设为全局最新
         item = build_text_item(text=content, source=source, pasted=True)
+        copy_text_to_clipboard(content)
         if not tracker.is_duplicate(item["id"]):
             tracker.update(item, force_latest=True)
+            load_clients_ip()
+            notify_clients("text")
         # latest_global = tracker.get_global_latest()
         latest_global =  { "pasted": True }
     # 获取该客户端当前记录
@@ -469,6 +509,10 @@ def file_sync():
         except Exception as e:
             logging.error(f"记录文件失败: {name}, 错误: {e}")
             errors.append(f"{name}: {str(e)}")
+
+    if success_count > 0:
+        load_clients_ip()
+        notify_clients("file")
 
     return jsonify({
         "status": "ok",
