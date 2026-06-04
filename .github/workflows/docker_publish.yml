@@ -38,7 +38,6 @@ jobs:
           file: Dockerfile
           push: true
           tags: |
-            # 标签格式: docker.io/<用户名>/<镜像名>:<标签>
             ${{ secrets.DOCKERHUB_USERNAME }}/syncclipboard-server:latest
             ${{ secrets.DOCKERHUB_USERNAME }}/syncclipboard-server:${{ github.sha }}
             ${{ secrets.DOCKERHUB_USERNAME }}/syncclipboard-server:${{ github.ref_name }}
