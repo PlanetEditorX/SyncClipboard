@@ -1,6 +1,7 @@
 import json
 import sys
 import re
+import os
 import logging
 import socket
 from pathlib import Path
@@ -98,7 +99,17 @@ class LinuxConfigManager:
 
 
 def main():
-    LOG_FILE = BASE_DIR / 'log' / 'server_linux.log'
+    # 支持通过环境变量指定日志文件或日志目录
+    log_file_env = os.environ.get('LOG_FILE') or os.environ.get('LOG_DIR')
+    if log_file_env:
+        p = Path(log_file_env)
+        if p.suffix:  # 看起来像文件
+            LOG_FILE = p if p.is_absolute() else BASE_DIR / p
+        else:
+            # 当作目录处理
+            LOG_FILE = (p if p.is_absolute() else BASE_DIR / p) / 'server_linux.log'
+    else:
+        LOG_FILE = BASE_DIR / 'log' / 'server_linux.log'
     LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
 
     root_logger = logging.getLogger()
@@ -120,6 +131,15 @@ def main():
 
     logging.info('Linux 服务初始化完成')
 
+    # 支持通过环境变量覆盖配置文件路径
+    server_conf_env = os.environ.get('SERVER_CONFIG_FILE') or os.environ.get('SERVER_CONFIG')
+    if server_conf_env:
+        scp = Path(server_conf_env)
+        if not scp.is_absolute():
+            LinuxConfigManager.SERVER_CONFIG = BASE_DIR / scp
+        else:
+            LinuxConfigManager.SERVER_CONFIG = scp
+
     config_manager = LinuxConfigManager()
     if not config_manager.load_server_config():
         logging.critical('加载服务器配置文件失败，服务退出')
@@ -135,10 +155,13 @@ def main():
 
     init_services(config_manager)
 
-    logging.info(f"配置加载完成 | 端口: {config_manager.server_port} | 保存路径: {config_manager.save_path}")
+    # 支持通过环境变量覆盖运行端口
+    port_env = os.environ.get('PORT') or os.environ.get('SERVER_PORT')
+    run_port = int(port_env) if port_env else int(config_manager.server_port)
+    logging.info(f"配置加载完成 | 端口: {run_port} | 保存路径: {config_manager.save_path}")
     app.run(
         host='0.0.0.0',
-        port=config_manager.server_port,
+        port=run_port,
         debug=False
     )
 

@@ -16,6 +16,14 @@ COPY . /app
 # 创建运行时目录
 RUN mkdir -p /app/config /app/latest /app/log
 
+# 挂载点（便于宿主挂载配置与日志文件）
+VOLUME ["/app/config", "/app/log"]
+
+# 默认环境变量（可在运行时覆盖）
+ENV SERVER_CONFIG_FILE=/app/config/server_config.json
+ENV LOG_FILE=/app/log/server_linux.log
+ENV PORT=8000
+
 EXPOSE 8000
 
 CMD ["python", "server/linux_run.py"]
