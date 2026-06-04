@@ -51,19 +51,19 @@ def init_services(config_manager=None):
             app.config['key'] = config_manager.key
         if not app.config.get('local_name'):
             app.config['local_name'] = config_manager.server_local_name
-        if not app.config.get('save_path'):
-            default_save = str(config_manager.save_path) if config_manager.save_path else get_default_save_dir()
-            app.config['save_path'] = default_save
+        if not app.config.get('last_dir'):
+            default_save = str(config_manager.last_dir) if config_manager.last_dir else get_default_save_dir()
+            app.config['last_dir'] = default_save
         if not app.config.get('port'):
             app.config['port'] = config_manager.server_port
         if app.config.get('clipboard_enabled') is None:
             app.config['clipboard_enabled'] = True
 
-        logger.info(f"使用 ConfigManager 配置 | 保存路径: {app.config['save_path']}")
+        logger.info(f"使用 ConfigManager 配置 | 保存路径: {app.config['last_dir']} | 端口: {app.config['port']}")
 
     # 初始化各个服务
     tracker = ClientTracker()
-    file_handler = FileHandler(app.config.get('save_path', get_default_save_dir()))
+    file_handler = FileHandler(app.config.get('last_dir', get_default_save_dir()))
     latest_file = FileLatestTracker()
     load_clients_ip()
 

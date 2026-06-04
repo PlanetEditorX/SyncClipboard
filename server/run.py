@@ -56,7 +56,6 @@ def main():
     app.config.update({
         "port": config_manager.server_port,
         "key": config_manager.key,
-        "save_path": config_manager.save_path,
         "local_name": config_manager.local_name,
         "clipboard_enabled": True
     })
@@ -64,7 +63,7 @@ def main():
     # 初始化服务（传递配置）
     init_services(config_manager)
 
-    logging.info(f"配置加载完成 | 端口: {config_manager.server_port} | 保存路径: {config_manager.save_path}")
+    logging.info(f"配置加载完成 | 端口: {config_manager.server_port} | 保存路径: {config_manager.last_dir}")
 
     app.run(
         host="0.0.0.0",

@@ -109,7 +109,7 @@ def main():
     key = config_manager.key
     local_name = config_manager.local_name
     file_server_port = config_manager.file_server_port
-    save_path = config_manager.save_path
+    save_path = config_manager.last_dir
     logger.info(f"本机名称: {local_name}")
 
     # 启动客户端专用文件服务器

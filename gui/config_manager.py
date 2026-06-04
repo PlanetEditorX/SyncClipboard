@@ -25,7 +25,6 @@ class ConfigManager:
         self.last_dir = str(Path.home() / "Downloads")
         self.server_running = False
         self.client_running = False
-        self.save_path = "D:\\Downloads"
         self.server_local_name = "Server"
 
         # 确保必要的目录存在
@@ -168,7 +167,6 @@ class ConfigManager:
             logger.info("服务器配置文件不存在，正在创建默认配置...")
             default_config = {
                 "key": "123456",
-                "save_path": "D:\\Downloads",
                 "port": 8000,
                 "local_name": self.local_name
             }
@@ -197,7 +195,6 @@ class ConfigManager:
         # 4. 检查并补充缺失的字段
         default_fields = {
             "key": "123456",
-            "save_path": "D:\\Downloads",
             "port": 8000,
             "local_name": self.local_name
         }
@@ -220,10 +217,9 @@ class ConfigManager:
         # 5. 赋值给实例变量
         self.server_port = config.get("port")
         self.key = config.get("key", "")
-        self.save_path = config.get("save_path", "D:\\Downloads")
         self.local_name = config.get("local_name", "Server")
 
-        logger.info(f"读取服务器配置 | 端口={self.server_port} | 保存路径={self.save_path} | 服务器名称={self.local_name}")
+        logger.info(f"读取服务器配置 | 端口={self.server_port} | 保存路径={self.last_dir} | 服务器名称={self.local_name}")
         return True
 
     def save_server_config(self):
@@ -232,12 +228,11 @@ class ConfigManager:
             config = {
                 "port": self.server_port,
                 "key": self.key,
-                "save_path": getattr(self, 'save_path', "D:\\Downloads"),
                 "local_name": getattr(self, 'local_name', "Server")
             }
             with open(ConfigManager.SERVER_CONFIG, 'w', encoding='utf-8') as f:
                 json.dump(config, f, ensure_ascii=False, indent=4)
-            logger.info(f"服务器配置已保存 | 端口: {self.server_port} | 保存路径: {self.save_path}")
+            logger.info(f"服务器配置已保存 | 端口: {self.server_port} | 保存路径: {self.last_dir}")
         except Exception as e:
             logger.error(f"保存服务器配置失败: {e}")
 
