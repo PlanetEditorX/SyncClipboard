@@ -6,7 +6,7 @@ ENV PYTHONDONTWRITEBYTECODE=1
 
 WORKDIR /app
 
-COPY requirements-server.txt ./
+COPY Docker/requirements-server.txt ./
 RUN python -m pip install --upgrade pip && \
     pip install --no-cache-dir -r requirements-server.txt
 
