@@ -9,7 +9,14 @@ import threading
 TEXT_LATEST_FILE = BASE_DIR / "latest" / "text_latest.json"
 TEXT_LATEST_FILE.parent.mkdir(parents=True, exist_ok=True)
 
-class ClientTracker:
+class TextTracker:
+    """
+    文本追踪器，用于管理跨客户端的文本数据。
+    数据结构：
+    - latest_global: 全局最新的文本条目（完整字典）
+    - clients: 字典，键为客户端名称，值为该客户端的最新条目
+    - global_ids: 列表，按添加顺序存储最近 N 个条目的 ID
+    """
     def __init__(self):
         self.lock = threading.Lock()
         self.data = self._load()

@@ -12,7 +12,7 @@ import win32clipboard
 from pathlib import Path
 from datetime import datetime
 from common.utils import BASE_DIR, SAFE_POST
-from server.core.text_tracker import ClientTracker
+from server.core.text_tracker import TextTracker
 
 logger = logging.getLogger("client")
 
@@ -32,7 +32,7 @@ class SyncClient:
         self.file_server = file_server
         # 全局锁，避免同时读写剪贴板
         self.clipboard_lock = threading.Lock()
-        self.tracker = ClientTracker()
+        self.tracker = TextTracker()
 
     def safe_paste(self, retries=5):
         for _ in range(retries):

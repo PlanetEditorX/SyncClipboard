@@ -18,7 +18,7 @@ def get_default_save_dir():
 # 统一使用 server 包路径的绝对导入
 from server.core.item_builder import build_text_item
 from server.core.file_handler import FileHandler
-from server.core.text_tracker import ClientTracker
+from server.core.text_tracker import TextTracker
 from server.core.file_sync import LatestFileManager
 from server.core.file_latest import FileLatestTracker
 from common.utils import BASE_DIR
@@ -64,7 +64,7 @@ def init_services(config_manager=None):
         logger.info(f"使用 ConfigManager 配置 | 保存路径: {app.config['last_dir']} | 端口: {app.config['port']}")
 
     # 初始化各个服务
-    tracker = ClientTracker()
+    tracker = TextTracker()
     file_handler = FileHandler(app.config.get('last_dir', get_default_save_dir()))
     latest_file = FileLatestTracker()
     load_clients_ip()

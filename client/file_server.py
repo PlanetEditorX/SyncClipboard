@@ -8,9 +8,9 @@ import requests
 from threading import Thread
 from urllib.parse import unquote
 from common.utils import BASE_DIR
-from server.core.text_tracker import ClientTracker
-from flask import Flask, jsonify, send_file, after_this_request, request
 from common.notification import show_notification
+from server.core.text_tracker import TextTracker
+from flask import Flask, jsonify, send_file, after_this_request, request
 
 FILE_LATEST_FILE = BASE_DIR / "latest" / "file_latest.json"
 FILE_LATEST_FILE.parent.mkdir(parents=True, exist_ok=True)
@@ -21,7 +21,7 @@ def get_api_key():
     return request.headers.get("key", "")
 
 def get_files_latest_file():
-    """读取 files_latest.json，如果文件不存在或无效则返回 None"""
+    """读取最新文件数据，如果文件不存在或无效则返回 None"""
     if not FILE_LATEST_FILE.exists():
         return []
     try:
@@ -32,6 +32,7 @@ def get_files_latest_file():
         return None
 
 class FileServer:
+    """客户端网络服务"""
     def __init__(self, port=8899, center_host="127.0.0.1", center_port=8000, local_name="PC-01", key="123456", last_dir="./uploads"):
         self.port = port
         self.center_host = center_host
@@ -49,7 +50,7 @@ class FileServer:
         self.KEY = str(key)
         self.local_name = local_name
         self.last_dir = last_dir
-        self.tracker = ClientTracker()
+        self.tracker = TextTracker()
         # 添加运行状态和服务器引用
         self.running = False
         self._server_thread = None
