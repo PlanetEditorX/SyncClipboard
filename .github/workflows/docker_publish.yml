@@ -1,4 +1,4 @@
-name: Build and Publish Docker Image to Docker Hub
+name: Build Docker
 
 on:
   push:
@@ -41,7 +41,7 @@ jobs:
         uses: docker/build-push-action@v6
         with:
           context: docker-context/
-          file: docker-context/Docker/Dockerfile
+          file: docker-context/docker/Dockerfile
           push: true
           tags: |
             ${{ secrets.DOCKERHUB_USERNAME }}/syncclipboard-server:latest
