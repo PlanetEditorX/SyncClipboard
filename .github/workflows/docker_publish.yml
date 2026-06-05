@@ -31,11 +31,17 @@ jobs:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
+      - name: Prepare Docker build context
+        run: |
+          rm -rf Docker/context || true
+          mkdir -p Docker/context
+          rsync -a --delete --exclude '.git' --exclude '.venv' --exclude '.github' --exclude 'Docker/context' ./ Docker/
+
       - name: Build and push Docker image
         uses: docker/build-push-action@v6
         with:
-          context: .
-          file: Dockerfile
+          context: Docker/
+          file: Docker/Dockerfile
           push: true
           tags: |
             ${{ secrets.DOCKERHUB_USERNAME }}/syncclipboard-server:latest
