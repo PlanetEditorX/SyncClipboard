@@ -107,7 +107,7 @@ def main():
     log_file_env = os.environ.get('LOG_FILE') or os.environ.get('LOG_DIR')
     if log_file_env:
         p = Path(log_file_env)
-        if p.suffix:  # 看起来像文件
+        if p.suffix:
             LOG_FILE = p if p.is_absolute() else BASE_DIR / p
         else:
             # 当作目录处理
@@ -121,7 +121,7 @@ def main():
 
     handler = RotatingFileHandler(
         LOG_FILE,
-        maxBytes=128 * 1024,
+        maxBytes=1024 * 1024,
         backupCount=1,
         encoding='utf-8'
     )
