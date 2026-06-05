@@ -17,7 +17,7 @@ from server.core.text_tracker import TextTracker
 logger = logging.getLogger("client")
 
 class SyncClient:
-    """剪贴板同步客户端：推送本地变化 + 拉取远程最新（纯后台版本）"""
+    """剪贴板同步客户端：推送本地变化 + 拉取远程最新"""
     def __init__(self, config, file_server=None):
         self.server_url = f"http://{config['server_host']}:{config['server_port']}"
         self.key = config["key"]
