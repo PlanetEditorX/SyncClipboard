@@ -97,7 +97,7 @@ class LinuxConfigManager:
         self.save_path = self.last_dir
         self.local_name = config.get('local_name', self.local_name)
         logging.info(
-            f"读取服务器配置 | 端口={self.server_port} | 保存路径={self.last_dir} | 服务器名称={self.local_name}"
+            f"读取服务器配置 | 端口={self.server_port} | 服务器名称={self.local_name}"
         )
         return True
 
