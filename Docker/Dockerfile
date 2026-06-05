@@ -6,15 +6,15 @@ ENV PYTHONDONTWRITEBYTECODE=1
 
 WORKDIR /app
 
-COPY Docker/requirements-server.txt ./
+COPY docker/requirements-server.txt ./
 RUN python -m pip install --upgrade pip && \
     pip install --no-cache-dir -r requirements-server.txt
 
 # 复制项目源代码
 COPY . /app
 
-# 复制并添加入口脚本（位于 Docker/ 目录下，相对于构建上下文使用 `-f Docker/Dockerfile .`）
-COPY Docker/docker-entrypoint.sh /app/docker-entrypoint.sh
+# 复制并添加入口脚本（位于 docker/ 目录下，相对于构建上下文使用 `-f docker/Dockerfile .`）
+COPY docker/docker-entrypoint.sh /app/docker-entrypoint.sh
 
 # 创建运行时目录
 RUN mkdir -p /app/config /app/latest /app/log
