@@ -1,7 +1,7 @@
-# server/api/flask_app.py
 import os
 import sys
 import json
+import base64
 import socket
 import logging
 import requests
@@ -302,6 +302,10 @@ def text_sync():
 
     source = data.get("source", "")
     content = data.get("content", "")
+    encode = data.get("encode", "")
+    if encode == "base64":
+        content = base64.b64decode(content).decode('utf-8')
+
     if source == LOCAL_NAME and content == tracker.get_latest_global_content():
         return jsonify({"status": "ignored", "message": "忽略自身来源"}), 200
 
@@ -398,15 +402,12 @@ def get_latest():
         latest_global = latest.copy()
     # 如果提供了 source，且最新内容存在，且不是该客户端自己推送的，则自动标记粘贴
     if source and latest and latest.get("source") != source:
-
         client_last = tracker.data.get("clients", {}).get(source)
-
         already_pasted = (
             client_last
             and client_last.get("id") == latest["id"]
             and client_last.get("pasted") is True
         )
-
         # 首次
         if not already_pasted:
             latest_global = latest.copy()
@@ -430,7 +431,7 @@ def get_latest():
             )
         else:
             latest_global = {
-                "pasted": False
+                "pasted": True
             }
 
     return jsonify({"status": "ok", "latest_global": latest_global}), 200
@@ -668,8 +669,6 @@ def register():
     data = request.get_json(silent=True) or {}
     # IP 优先使用服务器看到的 remote_addr
     ip = request.remote_addr
-    # 如果客户端明确传了 ip，且与 remote_addr 不同，可根据需求选择
-
     port = data.get('file_server_port', 0)
     local_name = data.get('local_name', 'unknown')
     key = data.get('key')
