@@ -420,43 +420,7 @@ def sync():
 
     return jsonify({"status": "ok", "latest_global": latest_global})
 
-@app.route('/ios/sync', methods=['POST'])
-def iosSync():
-    data = request.get_json()
-    if not data or data.get("key") != KEY:
-        return jsonify({"status": "error", "message": "密钥错误"}), 403
-
-    source = data.get("source", "")
-    content = data.get("content", "")
-    os = data.get("os", "iOS")
-    latest_global = { "pasted": False }
-    # 获取该客户端当前记录
-    client_last = tracker.data.get("clients", {}).get(source)
-
-    # 判断内容是否发生了变化（首次连接也算变化）
-    is_new = (not client_last) or (client_last.get("content") != content)
-
-    if is_new and content and source != LOCAL_NAME:
-        # 手机有新内容 → 强制更新为自己，并设为全局最新
-        item = build_text_item(text=content, source=source, pasted=True)
-        copy_text_to_clipboard(content)
-        if not tracker.is_duplicate(item["id"]):
-            tracker.update(item, force_latest=True)
-            load_clients_ip()
-            notify_clients("text")
-        latest_global =  { "pasted": True }
-    # 获取该客户端当前记录
-    else:
-        # 内容没变 → 纯拉取操作
-        if source in IOS_NOTIFY:
-            pasted_item = IOS_NOTIFY.pop(source)
-            latest_global = pasted_item.copy()
-            pasted_item['pasted'] = True
-            tracker.mark_pasted(source, pasted_item)
-    return jsonify({"status": "ok", "latest_global": latest_global})
-
 @app.route('/latest', methods=['GET'])
-# 最新数据
 def get_latest():
     key = get_api_key()
     if key != KEY:
@@ -504,6 +468,62 @@ def get_latest():
             }
 
     return jsonify({"status": "ok", "latest_global": latest_global}), 200
+
+# ------------------- ios接口 -------------------
+@app.route('/ios/sync', methods=['POST'])
+def iosSync():
+    data = request.get_json()
+    if not data or data.get("key") != KEY:
+        return jsonify({"status": "error", "message": "密钥错误"}), 403
+
+    source = data.get("source", "")
+    content = data.get("content", "")
+    os = data.get("os", "iOS")
+    latest_global = { "pasted": True }
+    # 获取该客户端当前记录
+    client_last = tracker.data.get("clients", {}).get(source)
+
+    # 判断内容是否发生了变化（首次连接也算变化）
+    is_new = (not client_last) or (client_last.get("content") != content)
+
+    if is_new and content and source != LOCAL_NAME:
+        # 手机有新内容 → 强制更新为自己，并设为全局最新
+        item = build_text_item(text=content, source=source, pasted=True)
+        copy_text_to_clipboard(content)
+        if not tracker.is_duplicate(item["id"]):
+            tracker.update(item, force_latest=True)
+            load_clients_ip()
+            notify_clients("text")
+        latest_global =  item
+    # 获取该客户端当前记录
+    else:
+        # 内容没变 → 纯拉取操作
+        if source in IOS_NOTIFY:
+            pasted_item = IOS_NOTIFY.pop(source)
+            latest_global = pasted_item.copy()
+            pasted_item['pasted'] = True
+            tracker.mark_pasted(source, pasted_item)
+    return jsonify({"status": "ok", "latest_global": latest_global})
+
+@app.route('/ios/latest', methods=['GET'])
+def ios_get_latest():
+    key = get_api_key()
+    if key != KEY:
+        return jsonify({"status": "error", "message": "密钥错误"}), 403
+
+    # 获取请求客户端的名称（用于自动标记粘贴）
+    source = request.args.get("source", "")
+    latest_global = { "pasted": True}
+
+    if source in IOS_NOTIFY:
+        pasted_item = IOS_NOTIFY.pop(source)
+        latest_global = pasted_item.copy()
+        pasted_item['pasted'] = True
+        tracker.mark_pasted(source, pasted_item)
+
+    return jsonify({"status": "ok", "latest_global": latest_global}), 200
+
+# --------------------------------------------
 
 @app.route('/clients/online', methods=['GET'])
 def get_online_clients():
