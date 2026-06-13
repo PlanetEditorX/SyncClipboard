@@ -23,7 +23,7 @@ ICON_FILE = PROJECT_ROOT / "gui" / "icon" / "icon-active.png"
 # ---------- 清理 release 目录下所有旧文件（保留本脚本自身）----------
 print("[Clean] 清理 release 目录下所有旧文件（除 build.py）...")
 for item in RELEASE_DIR.iterdir():
-    if item.name == "build.py" or item.name == "bat" or item.name == "MacroDroid":
+    if item.name == "build.py" or item.name == "bat" or item.name == "macrodroid":
         continue
     if item.is_dir():
         shutil.rmtree(item, ignore_errors=True)
