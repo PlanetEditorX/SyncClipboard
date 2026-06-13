@@ -117,7 +117,7 @@ class FileServer:
 
         @self.app.route('/upload_file', methods=['PUT'])
         def upload_file():
-            """动上传文件到电脑"""
+            """上传文件到电脑"""
             key = get_api_key()
             if key != self.KEY:
                 return jsonify({"status": "error", "message": "密钥错误"}), 403

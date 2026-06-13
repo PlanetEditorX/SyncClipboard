@@ -522,7 +522,6 @@ def ios_get_latest():
         tracker.mark_pasted(source, pasted_item)
 
     return jsonify({"status": "ok", "latest_global": latest_global}), 200
-
 # --------------------------------------------
 
 @app.route('/clients/online', methods=['GET'])
