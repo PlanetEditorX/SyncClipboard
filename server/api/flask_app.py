@@ -1,4 +1,5 @@
 import os
+import re
 import sys
 import json
 import base64
@@ -664,6 +665,20 @@ def status():
         "message": "SyncClipboard Server Running"
     }), 200
 
+def get_os_type(ua):
+    ua_lower = ua.lower()
+    if re.search(r'macrodroid', ua_lower):
+        return 'Android'
+    if re.search(r'darwin', ua_lower):
+        # macOS 的 UA 也包含 Darwin，但通常还包含 'Mac OS X'
+        if re.search(r'mac os x|macintosh', ua_lower):
+            return 'macOS'
+        # 移动端 ShortcutRunner 这种往往是 iOS 上的 App 扩展
+        return 'iOS'
+    # 默认的'python-requests'识别为Windows客户端
+    if re.search(r'python', ua_lower):
+        return 'Windows'
+    return ua_lower
 # 客户端注册
 @app.route('/register', methods=['POST'])
 def register():
@@ -672,7 +687,7 @@ def register():
     ip = request.remote_addr
     port = data.get('file_server_port', 0)
     local_name = data.get('local_name', 'unknown')
-    os = data.get('os', 'unknown')
+    os = data.get('os', get_os_type(request.headers.get('User-Agent')))
     key = data.get('key')
 
     # 可在此验证密钥，与 server_config 中的 key 比对
