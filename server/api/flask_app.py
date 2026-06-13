@@ -41,6 +41,7 @@ computer_name = socket.gethostname()
 clipboard_lock = threading.Lock()
 CLIPBOARD_ENABLED = True
 CLIENT_EXPIRE_HOURS = 168   # 客户端超过1周未出现就删除
+IOS_NOTIFY = {} # ios的通知文件
 
 def init_services(config_manager=None):
     """由 run.py 在配置注入后调用，初始化依赖配置的服务"""
@@ -82,7 +83,6 @@ def init_services(config_manager=None):
 def get_api_key():
     return request.headers.get("key", "")
 
-
 def copy_text_to_clipboard(text):
     if not CLIPBOARD_ENABLED:
         return
@@ -97,7 +97,6 @@ def copy_text_to_clipboard(text):
             pyperclip.copy(text)
         except Exception as e:
             logging.warning(f"剪贴板写入失败，跳过: {e}")
-
 
 # ------------------- 客户端列表 -------------------
 clients = []  # 内存中的客户端列表
@@ -172,8 +171,91 @@ def add_or_update_client(ip, port, local_name, os):
     save_clients()
     return True
 
-# 通知客户端
+def check_online(ip, port, os, source):
+    """检测客户端是否在线"""
+    check_url = f"http://{ip}:{port}/ping"
+    # iOS默认在线
+    if os == "iOS":
+        return True
+    try:
+        resp = requests.get(check_url, timeout=5)
+        if resp.status_code != 200:
+            logging.warning(f"客户端 {source}({ip}) 状态异常: {resp.status_code}")
+            return False
+        logging.info(f"客户端 {source}({ip}) 在线，准备推送")
+        return True
+    except Exception:
+        logging.warning(f"客户端 {source}({ip}) 离线")
+        return False
+
+def push_notify(_type, latest, ip, port, os, source, latest_global):
+    global IOS_NOTIFY
+    if os == "iOS":
+        if _type == "text":
+            pasted_item = {
+                "id": latest["id"],
+                "type": latest.get("type", "text"),
+                "content": latest["content"],
+                "timestamp": datetime.now().isoformat(),
+                "source": latest["source"],
+                "pasted": False
+            }
+            IOS_NOTIFY[source] = pasted_item
+
+            logging.info(
+                "iOS客户端 %s 通知数据已准备: %s (来自 %s)",
+                source,
+                str(latest["content"])[:30],
+                latest["source"]
+            )
+
+    else:
+        if _type == "text":
+            # 标记为已粘贴
+            pasted_item = {
+                "id": latest["id"],
+                "type": latest.get("type", "text"),
+                "content": latest["content"],
+                "timestamp": datetime.now().isoformat(),
+                "source": latest["source"],
+                "pasted": True
+            }
+            tracker.mark_pasted(source, pasted_item)
+
+            logging.info(
+                "客户端 %s 已获取并标记粘贴: %s (来自 %s)",
+                source,
+                str(latest["content"])[:30], # 防止 content 不是字符串导致报错
+                latest["source"]
+            )
+        else:
+            logging.info("客户端 %s 已获取文件发布通知", client["local_name"])
+        # 推送更新到客户端
+        update_url = f"http://{ip}:{port}/update/current_latest"
+        try:
+            resp = requests.post(
+                update_url,
+                json={
+                    "key": KEY,
+                    "latest_global": latest_global,
+                    "server_source": LOCAL_NAME,
+                    "type": _type
+                },
+                timeout=5
+            )
+            if resp.status_code == 200:
+                if _type == "text":
+                    content_preview = str(latest["content"])[:50]
+                    logging.info(f"文字推送成功: {content_preview}...")
+                else:
+                    logging.info(f"文件发布推送成功: {latest['name']}...")
+            else:
+                logging.warning(f"推送失败: {resp.status_code} {resp.text}")
+        except Exception as e:
+            logging.error(f"连接客户端 {source} 失败: {e}")
+
 def notify_clients(_type):
+    """通知客户端"""
     if _type == "text":
         # 获取全局最新内容
         latest = tracker.get_global_latest()
@@ -236,61 +318,11 @@ def notify_clients(_type):
             continue
 
         # --- 第一步：检查客户端是否在线 ---
-        check_url = f"http://{client_ip}:{client['port']}/ping"
-        try:
-            resp = requests.get(check_url, timeout=5)
-            if resp.status_code != 200:
-                logging.warning(f"客户端 {source}({client_ip}) 状态异常: {resp.status_code}")
-                continue
-            logging.info(f"客户端 {source}({client_ip}) 在线，准备推送")
-        except Exception:
-            logging.warning(f"客户端 {source}({client_ip}) 离线")
+        if not check_online(client_ip, client['port'], client['os'], source):
             continue
 
         # --- 第二步：在线状态确认无误后，执行推送 ---
-        if _type == "text":
-            # 标记为已粘贴
-            pasted_item = {
-                "id": latest["id"],
-                "type": latest.get("type", "text"),
-                "content": latest["content"],
-                "timestamp": datetime.now().isoformat(),
-                "source": latest["source"],
-                "pasted": True
-            }
-            tracker.mark_pasted(source, pasted_item)
-
-            logging.info(
-                "客户端 %s 已获取并标记粘贴: %s (来自 %s)",
-                source,
-                str(latest["content"])[:30], # 防止 content 不是字符串导致报错
-                latest["source"]
-            )
-        else:
-            logging.info("客户端 %s 已获取文件发布通知", client["local_name"])
-        # 推送更新到客户端
-        update_url = f"http://{client_ip}:{client['port']}/update/current_latest"
-        try:
-            resp = requests.post(
-                update_url,
-                json={
-                    "key": KEY,
-                    "latest_global": latest_global,
-                    "server_source": LOCAL_NAME,
-                    "type": _type
-                },
-                timeout=5
-            )
-            if resp.status_code == 200:
-                if _type == "text":
-                    content_preview = str(latest["content"])[:50]
-                    logging.info(f"文字推送成功: {content_preview}...")
-                else:
-                    logging.info(f"文件发布推送成功: {latest['name']}...")
-            else:
-                logging.warning(f"推送失败: {resp.status_code} {resp.text}")
-        except Exception as e:
-            logging.error(f"连接客户端 {source} 失败: {e}")
+        push_notify(_type, latest, client_ip, client['port'], client['os'], source, latest_global)
 
 # ------------------- 文字同步接口 -------------------
 @app.route('/text_sync', methods=['POST'])
@@ -386,6 +418,41 @@ def sync():
                 }
                 tracker.mark_pasted(source, pasted_item)
 
+    return jsonify({"status": "ok", "latest_global": latest_global})
+
+@app.route('/ios/sync', methods=['POST'])
+def iosSync():
+    data = request.get_json()
+    if not data or data.get("key") != KEY:
+        return jsonify({"status": "error", "message": "密钥错误"}), 403
+
+    source = data.get("source", "")
+    content = data.get("content", "")
+    os = data.get("os", "iOS")
+    latest_global = { "pasted": False }
+    # 获取该客户端当前记录
+    client_last = tracker.data.get("clients", {}).get(source)
+
+    # 判断内容是否发生了变化（首次连接也算变化）
+    is_new = (not client_last) or (client_last.get("content") != content)
+
+    if is_new and content and source != LOCAL_NAME:
+        # 手机有新内容 → 强制更新为自己，并设为全局最新
+        item = build_text_item(text=content, source=source, pasted=True)
+        copy_text_to_clipboard(content)
+        if not tracker.is_duplicate(item["id"]):
+            tracker.update(item, force_latest=True)
+            load_clients_ip()
+            notify_clients("text")
+        latest_global =  { "pasted": True }
+    # 获取该客户端当前记录
+    else:
+        # 内容没变 → 纯拉取操作
+        if source in IOS_NOTIFY:
+            pasted_item = IOS_NOTIFY.pop(source)
+            latest_global = pasted_item.copy()
+            pasted_item['pasted'] = True
+            tracker.mark_pasted(source, pasted_item)
     return jsonify({"status": "ok", "latest_global": latest_global})
 
 @app.route('/latest', methods=['GET'])
