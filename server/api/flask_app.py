@@ -148,15 +148,15 @@ def save_clients():
         with open(CLIENT_IP_FILE, "w", encoding="utf-8") as f:
             json.dump(clients, f, indent=2, ensure_ascii=False)
 
-def add_or_update_client(ip, port, local_name):
+def add_or_update_client(ip, port, local_name, os):
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     # 查找是否已存在同 IP
     for c in clients:
         if c["ip"] == ip:
             c["last_seen"] = now
-            # 可更新端口和名称（如果变化）
             c["port"] = port
             c["local_name"] = local_name
+            c["os"] = os
             save_clients()
             return False  # 已存在，仅更新
     # 新客户端
@@ -164,6 +164,7 @@ def add_or_update_client(ip, port, local_name):
         "ip": ip,
         "port": port,
         "local_name": local_name,
+        "os": os,
         "first_seen": now,
         "last_seen": now
     })
@@ -671,6 +672,7 @@ def register():
     ip = request.remote_addr
     port = data.get('file_server_port', 0)
     local_name = data.get('local_name', 'unknown')
+    os = data.get('os', 'unknown')
     key = data.get('key')
 
     # 可在此验证密钥，与 server_config 中的 key 比对
@@ -678,7 +680,7 @@ def register():
         return jsonify({"status": "error", "msg": "invalid key"}), 403
     # 加载客户端列表
     load_clients_ip()
-    is_new = add_or_update_client(ip, port, local_name)
+    is_new = add_or_update_client(ip, port, local_name, os)
     msg = f"客户端 {local_name}({ip}) 已连接。"
     logging.info(msg)
     # 不是本地的客户端才显示注册

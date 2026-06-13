@@ -4,6 +4,7 @@ import time
 import signal                                      # 信号处理，用于捕获退出信号实现优雅退出
 import logging
 import requests
+import platform
 from pathlib import Path                           # 面向对象的文件路径处理
 from client.main_menu import SyncClient            # 客户端同步逻辑类
 from client.file_server import FileServer          # 客户端文件服务类
@@ -30,6 +31,25 @@ def fix_multiprocessing():
 # 在导入其他模块前调用修复函数，确保多进程环境正常
 fix_multiprocessing()
 
+def get_os_type():
+    os_name = platform.system()
+    if os_name == "Windows":
+        return "Windows"
+    elif os_name == "Darwin":
+        if platform.machine().startswith('iP'):
+            return "iOS"
+        else:
+            return "macOS"
+    elif os_name == "Linux":
+        if hasattr(platform, 'android_ver') or 'Android' in platform.platform():
+            return "Android"
+        else:
+            return "Linux"
+    elif os_name == "Java":
+        return "Java"
+    else:
+        return "Unknown"
+
 def register_to_server(server_host, server_port, file_server_port, local_name, key, logger):
     """
     注册到服务器，支持重试机制
@@ -44,6 +64,7 @@ def register_to_server(server_host, server_port, file_server_port, local_name, k
     payload = {
         "file_server_port": file_server_port,   # 本客户端文件服务监听的端口
         "local_name": local_name,               # 本机名称（标识）
+        "os": get_os_type(),                    # 设备类型
         "key": key                              # 共享密钥，用于认证
     }
     while True:
