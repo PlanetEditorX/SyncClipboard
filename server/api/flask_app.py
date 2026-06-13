@@ -229,7 +229,7 @@ def push_notify(_type, latest, ip, port, os, source, latest_global):
                 latest["source"]
             )
         else:
-            logging.info("客户端 %s 已获取文件发布通知", client["local_name"])
+            logging.info("客户端 %s 已获取文件发布通知", source)
         # 推送更新到客户端
         update_url = f"http://{ip}:{port}/update/current_latest"
         try:
