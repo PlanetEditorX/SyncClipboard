@@ -12,7 +12,7 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 from server.api.flask_app import app, init_services
-from common.utils import BASE_DIR
+from common.utils import BASE_DIR, get_default_server_host
 
 # ---------- 自定义格式化器：过滤 ANSI 转义序列 ----------
 class CleanFormatter(logging.Formatter):
@@ -29,6 +29,7 @@ class LinuxConfigManager:
     SERVER_CONFIG = BASE_DIR / 'config' / 'server_config.json'
 
     def __init__(self):
+        self.server_host = get_default_server_host()
         self.server_port = 8000
         self.key = '123456'
         self.local_name = socket.gethostname()
@@ -85,6 +86,7 @@ class LinuxConfigManager:
             except Exception as e:
                 logging.error(f"保存服务器配置文件失败: {e}")
 
+        self.server_host = config.get('host', self.server_host)
         self.server_port = config.get('port', self.server_port)
         self.key = config.get('key', self.key)
         self.save_path = config.get('save_path', config.get('save_path', self.save_path))
