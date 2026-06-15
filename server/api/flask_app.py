@@ -480,7 +480,7 @@ def iosSync():
     source = data.get("source", "")
     content = data.get("content", "")
     os = data.get("os", "iOS")
-    latest_global = { "pasted": True }
+    latest_global = { "pasted": True, "content": content }
     # 获取该客户端当前记录
     client_last = tracker.data.get("clients", {}).get(source)
 
