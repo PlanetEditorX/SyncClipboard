@@ -1,5 +1,6 @@
 {
 	"key": "123456",
+	"host": "",
 	"port": 8000,
 	"local_name": "Server"
 }
