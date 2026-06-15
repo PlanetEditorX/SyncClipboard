@@ -22,10 +22,8 @@ class CleanFormatter(logging.Formatter):
         record.msg = self.ansi_escape.sub('', str(record.msg))
         return super().format(record)
 
-
 def default_save_path():
     return str(Path.home() / 'Downloads')
-
 
 class LinuxConfigManager:
     SERVER_CONFIG = BASE_DIR / 'config' / 'server_config.json'
@@ -34,8 +32,7 @@ class LinuxConfigManager:
         self.server_port = 8000
         self.key = '123456'
         self.local_name = socket.gethostname()
-        self.last_dir = default_save_path()
-        self.save_path = self.last_dir
+        self.save_path = default_save_path()
 
     def load_server_config(self):
         config_file = LinuxConfigManager.SERVER_CONFIG
@@ -71,7 +68,7 @@ class LinuxConfigManager:
 
         default_fields = {
             'key': self.key,
-            'last_dir': self.last_dir,
+            'save_path': self.save_path,
             'port': self.server_port,
             'local_name': self.local_name
         }
@@ -80,9 +77,6 @@ class LinuxConfigManager:
                 logging.warning(f"服务器配置文件缺少字段 '{field}'，使用默认值: {default_value}")
                 config[field] = default_value
                 need_save = True
-        if 'save_path' not in config:
-            config['save_path'] = config.get('last_dir', self.last_dir)
-
         if need_save:
             try:
                 with open(config_file, 'w', encoding='utf-8') as f:
@@ -93,8 +87,7 @@ class LinuxConfigManager:
 
         self.server_port = config.get('port', self.server_port)
         self.key = config.get('key', self.key)
-        self.last_dir = config.get('last_dir', config.get('save_path', self.last_dir))
-        self.save_path = self.last_dir
+        self.save_path = config.get('save_path', config.get('save_path', self.save_path))
         self.local_name = config.get('local_name', self.local_name)
         logging.info(
             f"读取服务器配置 | 端口={self.server_port} | 服务器名称={self.local_name}"

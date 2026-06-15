@@ -53,27 +53,27 @@ def init_services(config_manager=None):
             app.config['key'] = config_manager.key
         if not app.config.get('local_name'):
             app.config['local_name'] = config_manager.server_local_name
-        if not app.config.get('last_dir'):
-            default_save = str(config_manager.last_dir) if getattr(config_manager, 'last_dir', None) else get_default_save_dir()
-            app.config['last_dir'] = default_save
         if not app.config.get('save_path'):
-            app.config['save_path'] = app.config['last_dir']
+            default_save = str(config_manager.save_path) if getattr(config_manager, 'save_path', None) else get_default_save_dir()
+            app.config['save_path'] = default_save
+        if not app.config.get('save_path'):
+            app.config['save_path'] = app.config['save_path']
         if not app.config.get('port'):
             app.config['port'] = config_manager.server_port
         if app.config.get('clipboard_enabled') is None:
             app.config['clipboard_enabled'] = True
 
-        logger.info(f"使用 ConfigManager 配置 | 保存路径: {app.config['last_dir']} | 端口: {app.config['port']}")
+        logger.info(f"使用 ConfigManager 配置 | 保存路径: {app.config['save_path']} | 端口: {app.config['port']}")
 
     # 初始化各个服务
     tracker = TextTracker()
-    file_handler = FileHandler(app.config.get('last_dir', get_default_save_dir()))
+    file_handler = FileHandler(app.config.get('save_path', get_default_save_dir()))
     latest_file = FileLatestTracker()
     load_clients_ip()
 
     KEY = app.config.get("key", "")
     LOCAL_NAME = app.config.get("local_name", "Server")
-    SAVE_PATH = app.config.get("save_path", app.config.get('last_dir', get_default_save_dir()))
+    SAVE_PATH = app.config.get("save_path", app.config.get('save_path', get_default_save_dir()))
     PORT = app.config.get("port", 8000)
     global CLIPBOARD_ENABLED
     CLIPBOARD_ENABLED = app.config.get("clipboard_enabled", True)

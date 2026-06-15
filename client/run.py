@@ -132,7 +132,7 @@ def main():
     key = config_manager.key                           # 共享密钥
     local_name = config_manager.local_name             # 本机名称
     file_server_port = config_manager.file_server_port # 本机文件服务端口
-    last_dir = config_manager.last_dir                 # 最近使用的目录（用于文件选择）
+    save_path = config_manager.save_path                 # 最近使用的目录（用于文件选择）
     logger.info(f"本机名称: {local_name}")
 
     # 启动客户端专用文件服务器
@@ -142,7 +142,7 @@ def main():
         center_port=server_port,
         local_name=local_name,
         key=key,
-        last_dir=last_dir
+        save_path=save_path
     )
 
     # 创建同步客户端实例

@@ -33,7 +33,7 @@ def get_files_latest_file():
 
 class FileServer:
     """客户端网络服务"""
-    def __init__(self, port=8899, center_host="127.0.0.1", center_port=8000, local_name="PC-01", key="123456", last_dir="./uploads"):
+    def __init__(self, port=8899, center_host="127.0.0.1", center_port=8000, local_name="PC-01", key="123456", save_path="./uploads"):
         self.port = port
         self.center_host = center_host
         self.center_port = center_port
@@ -49,7 +49,7 @@ class FileServer:
         self.last_text = ""
         self.KEY = str(key)
         self.local_name = local_name
-        self.last_dir = last_dir
+        self.save_path = save_path
         self.tracker = TextTracker()
         # 添加运行状态和服务器引用
         self.running = False
@@ -133,7 +133,7 @@ class FileServer:
                 return jsonify({"status": "error", "message": "未收到文件"}), 400
 
             # 保存到文件
-            save_file_path = os.path.join(self.last_dir, filename)
+            save_file_path = os.path.join(self.save_path, filename)
             with open(save_file_path, 'wb') as f:
                 f.write(file_data)
 

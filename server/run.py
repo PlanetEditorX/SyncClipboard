@@ -63,7 +63,7 @@ def main():
     # 初始化服务（传递配置）
     init_services(config_manager)
 
-    logging.info(f"配置加载完成 | 端口: {config_manager.server_port} | 保存路径: {config_manager.last_dir}")
+    logging.info(f"配置加载完成 | 端口: {config_manager.server_port} | 保存路径: {config_manager.save_path}")
 
     app.run(
         host="0.0.0.0",

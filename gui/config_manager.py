@@ -22,7 +22,7 @@ class ConfigManager:
         self.key = None
         self.local_name = socket.gethostname() # 直接使用电脑名称
         self.file_server_port = None
-        self.last_dir = str(Path.home() / "Downloads")
+        self.save_path = str(Path.home() / "Downloads")
         self.server_running = False
         self.client_running = False
         self.server_local_name = "Server"
@@ -75,7 +75,7 @@ class ConfigManager:
                 "key": "123456",
                 "local_name": self.local_name,
                 "file_server_port": 8899,
-                "last_dir": str(Path.home() / "Downloads")
+                "save_path": str(Path.home() / "Downloads")
             }
             try:
                 with open(config_file, 'w', encoding='utf-8') as f:
@@ -112,7 +112,7 @@ class ConfigManager:
             "key": "",
             "local_name": self.local_name,
             "file_server_port": 8899,
-            "last_dir": str(Path.home() / "Downloads")
+            "save_path": str(Path.home() / "Downloads")
         }
 
         for field, default_value in default_fields.items():
@@ -136,7 +136,7 @@ class ConfigManager:
         self.key = config.get("key", "")
         self.local_name = config.get("local_name")
         self.file_server_port = config.get("file_server_port")
-        self.last_dir = config.get("last_dir", str(Path.home() / "Downloads"))
+        self.save_path = config.get("save_path", str(Path.home() / "Downloads"))
 
         logger.info(f"读取客户端配置 | 服务器={self.server_host}:{self.server_port} | 客户端={self.local_name}")
         return True
@@ -150,7 +150,7 @@ class ConfigManager:
                 "key": self.key,
                 "local_name": self.local_name,
                 "file_server_port": self.file_server_port,
-                "last_dir": self.last_dir
+                "save_path": self.save_path
             }
             with open(ConfigManager.CLIENT_CONFIG, 'w', encoding='utf-8') as f:
                 json.dump(config, f, ensure_ascii=False, indent=4)
@@ -218,8 +218,9 @@ class ConfigManager:
         self.server_port = config.get("port")
         self.key = config.get("key", "")
         self.local_name = config.get("local_name", "Server")
+        self.save_path = config.get("save_path", str(Path.home() / "Downloads"))
 
-        logger.info(f"读取服务器配置 | 端口={self.server_port} | 保存路径={self.last_dir} | 服务器名称={self.local_name}")
+        logger.info(f"读取服务器配置 | 端口={self.server_port} | 保存路径={self.save_path} | 服务器名称={self.local_name}")
         return True
 
     def save_server_config(self):
@@ -232,7 +233,7 @@ class ConfigManager:
             }
             with open(ConfigManager.SERVER_CONFIG, 'w', encoding='utf-8') as f:
                 json.dump(config, f, ensure_ascii=False, indent=4)
-            logger.info(f"服务器配置已保存 | 端口: {self.server_port} | 保存路径: {self.last_dir}")
+            logger.info(f"服务器配置已保存 | 端口: {self.server_port} | 保存路径: {self.save_path}")
         except Exception as e:
             logger.error(f"保存服务器配置失败: {e}")
 

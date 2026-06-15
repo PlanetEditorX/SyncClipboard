@@ -63,14 +63,14 @@ class FileHandler:
             parent = self._get_dialog_parent()
             file_path = filedialog.asksaveasfilename(
                 title="保存文件",
-                initialdir=self.config.last_dir,
+                initialdir=self.config.save_path,
                 initialfile=filename,
                 defaultextension="",
                 filetypes=[("所有文件", "*.*")],
                 parent=parent
             )
             if file_path:
-                self.config.last_dir = os.path.dirname(file_path)
+                self.config.save_path = os.path.dirname(file_path)
                 self.config.save_client_config()
             return file_path
         return post_to_main_thread(_ask)
@@ -81,11 +81,11 @@ class FileHandler:
             parent = self._get_dialog_parent()
             dir_path = filedialog.askdirectory(
                 title="选择保存文件夹",
-                initialdir=self.config.last_dir,
+                initialdir=self.config.save_path,
                 parent=parent
             )
             if dir_path:
-                self.config.last_dir = dir_path
+                self.config.save_path = dir_path
                 self.config.save_client_config()
             return dir_path
         return post_to_main_thread(_ask)
