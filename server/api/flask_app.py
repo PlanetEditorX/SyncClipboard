@@ -8,10 +8,9 @@ import logging
 import requests
 import threading
 from pathlib import Path
-from urllib.parse import unquote
 from datetime import datetime, timedelta
-from flask import Flask, request, jsonify, send_file
-
+from urllib.parse import urlparse, parse_qs, unquote
+from flask import Flask, request, after_this_request, jsonify, send_file, send_from_directory, url_for
 
 def get_default_save_dir():
     return str(Path.home() / "Downloads")
@@ -22,7 +21,7 @@ from server.core.file_handler import FileHandler
 from server.core.text_tracker import TextTracker
 from server.core.file_sync import LatestFileManager
 from server.core.file_latest import FileLatestTracker
-from common.utils import BASE_DIR
+from common.utils import BASE_DIR, get_default_server_host
 from common.notification import show_notification
 
 # ---------- 日志：不再配置 handler，交给 run.py 统一处理 ----------
@@ -62,6 +61,8 @@ def init_services(config_manager=None):
             app.config['port'] = config_manager.server_port
         if app.config.get('clipboard_enabled') is None:
             app.config['clipboard_enabled'] = True
+        if app.config.get('host') is None:
+            app.config['host'] = config_manager.server_host or get_default_server_host()
 
         logger.info(f"使用 ConfigManager 配置 | 保存路径: {app.config['save_path']} | 端口: {app.config['port']}")
 
@@ -537,6 +538,8 @@ def get_online_clients():
     for client in clients:
         ip = client.get('ip')
         port = client.get('port', 8899)
+        server_host = app.config.get('host', '127.0.0.1')
+        server_port = app.config.get('port', '8000')
         if not ip:
             continue
 
@@ -546,7 +549,10 @@ def get_online_clients():
             if resp.status_code == 200:
                 item = f"{client.get('local_name', '未知')} ({ip})"
                 online_clients.append(item)
-                upload_url[item] = f"http://{ip}:{port}/upload_file"
+                if client.get('os', "Windows") == "Android":
+                    upload_url[item] = f"http://{server_host}:{server_port}/upload_file_to_download?redirect=http://{ip}:{port}/upload_file"
+                else:
+                    upload_url[item] = f"http://{ip}:{port}/upload_file"
         except Exception:
             continue
 
@@ -743,6 +749,123 @@ def upload_file():
     msg = f"来源：{source}\n文件：{filename}\n保存：{save_path}"
     show_notification("手机文件已保存", msg)
     return jsonify({"status": "ok", "message": "文件上传成功","path": save_path}), 200
+
+clear_files = []
+
+@app.route('/clear/<path:filename>')
+def clear_file(filename):
+    key = get_api_key()
+    if key != KEY:
+        return jsonify({"status": "error"}), 403
+    deleted = []
+    failed = []
+    for file in clear_files[:]:
+        if not os.path.exists(file):
+            continue
+        success = False
+        for retry in range(10):
+            try:
+                os.remove(file)
+                logging.info(
+                    f"文件已删除: {file} "
+                    f"(第{retry + 1}次尝试成功)"
+                )
+                deleted.append(file)
+                clear_files.remove(file)
+                success = True
+                break
+            except PermissionError as e:
+                logging.warning(
+                    f"文件被占用: {file} "
+                    f"(第{retry + 1}/10次)"
+                )
+                time.sleep(2)
+            except Exception as e:
+                logging.error(f"删除失败: {file}, {e}")
+                break
+        if not success:
+            failed.append(file)
+    return jsonify({
+        "status": "ok",
+        "deleted": len(deleted),
+        "failed": len(failed)
+    })
+
+@app.route('/download/<path:filename>')
+def download_file(filename):
+    """提供文件下载"""
+    key = get_api_key()
+    if key != KEY:
+        return jsonify({"status": "error", "message": "密钥错误"}), 403
+
+    filepath = os.path.join(SAVE_PATH, filename)
+
+    # 检查文件是否存在
+    if not os.path.exists(filepath):
+        logging.warning(f"文件不存在: {filepath}")
+        return "文件不存在或已被下载", 404
+    @after_this_request
+    def after_download(response):
+        clear_files.append(filepath)
+        return response
+    return send_file(filepath, as_attachment=True)
+
+@app.route('/upload_file_to_download', methods=['PUT'])
+def upload_file_to_download():
+    """手机主动上传文件到电脑，并通知客户端下载"""
+    key = get_api_key()
+    if key != KEY:
+        return jsonify({"status": "error", "message": "密钥错误"}), 403
+
+    # 从 URL 参数获取客户端的回调地址和文件名
+    redirect_url = request.args.get('redirect')
+    if not redirect_url:
+        return jsonify({"status": "error", "message": "缺少 redirect 参数"}), 400
+    target = request.headers.get("target", "")
+
+    # 解析 redirect_url 中的 filename 参数（作为保存的文件名）
+    parsed = urlparse(redirect_url)
+    query_params = parse_qs(parsed.query)
+    encoded_filename = query_params.get('filename', ['uploaded_file'])[0]
+    filename = unquote(encoded_filename)
+
+    # 读取文件数据并保存到本地
+    file_data = request.get_data()
+    if not file_data:
+        return jsonify({"status": "error", "message": "未收到文件"}), 400
+
+    save_path = os.path.join(SAVE_PATH, filename)
+    with open(save_path, 'wb') as f:
+        f.write(file_data)
+
+    logging.info(f"文件已保存: {save_path}")
+
+    # 生成文件的下载链接
+    download_url = url_for('download_file', filename=filename, _external=True)
+    clear_url = url_for('clear_file', filename=filename, _external=True)
+
+    # 通知客户端调用download_url下载
+    try:
+        resp = requests.post(redirect_url, json={"download_url": download_url,"clear_url": clear_url}, timeout=5)
+        if resp.status_code >= 400:
+            logging.warning(f"通知客户端{target}失败，HTTP {resp.status_code}: {resp.text}")
+        else:
+            logging.info(f"已通知客户端{target}: {redirect_url}，下载链接: {download_url}")
+    except Exception as e:
+        logging.error(f"通知客户端{target}时发生异常: {e}")
+        return jsonify({
+            "status": "partial_success",
+            "message": f"文件上传成功，但通知客户端{target}失败",
+            "path": save_path,
+            "download_url": download_url
+        }), 200
+
+    return jsonify({
+        "status": "ok",
+        "message": f"文件上传成功并已通知客户端{target}",
+        "path": save_path,
+        "download_url": download_url
+    }), 200
 
 @app.route('/status', methods=['GET'])
 def status():
