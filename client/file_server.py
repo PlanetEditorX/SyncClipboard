@@ -126,8 +126,10 @@ class FileServer:
             encoded_filename = request.args.get('filename', 'uploaded_file')
             filename = unquote(encoded_filename)  # 解码 %20 为空格
 
-            # 读取原始二进制数据
-            file_data = request.get_data()
+            try:
+                file_data = request.get_data(cache=False, as_text=False)
+            except Exception as e:
+                logger.error(f"读取原始二进制数据时出错: {e}")
 
             if not file_data:
                 return jsonify({"status": "error", "message": "未收到文件"}), 400
