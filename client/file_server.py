@@ -126,6 +126,7 @@ class FileServer:
             encoded_filename = request.args.get('filename', 'uploaded_file')
             filename = unquote(encoded_filename)  # 解码 %20 为空格
 
+            file_data = None
             try:
                 file_data = request.get_data(cache=False, as_text=False)
             except Exception as e:
