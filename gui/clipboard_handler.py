@@ -109,7 +109,7 @@ class ClipboardHandler:
                     json={"changed_type": changed_type},
                     timeout=60
                 )
-                if resp.status_code == 200:
+                if resp is not None and resp.status_code == 200:
                     logger.info("通知服务器成功")
                 else:
                     logger.warning(f"通知服务器失败: {resp.status_code}")
