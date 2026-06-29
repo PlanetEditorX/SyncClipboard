@@ -8,6 +8,8 @@ import logging
 import requests
 import threading
 import pyperclip
+import win32con
+import win32api
 import win32clipboard
 from pathlib import Path
 from datetime import datetime
@@ -59,7 +61,7 @@ class SyncClient:
         self.last_file_set = None
         while self.running:
             try:
-                files = get_clipboard_files()
+                files = self.get_clipboard_files()
                 if files:
                     current_set = frozenset(files)
                     if current_set != self.last_file_set:
@@ -182,29 +184,48 @@ class SyncClient:
         self.running = False
         logger.info("客户端已停止")
 
-
-def get_clipboard_files():
-    """
-    获取剪贴板中的文件路径列表。
-    如果剪贴板中包含从资源管理器复制的文件，则返回文件路径列表；
-    否则返回 None。
-    """
-    try:
-        # 打开剪贴板
-        win32clipboard.OpenClipboard()
-        if win32clipboard.IsClipboardFormatAvailable(
-                win32clipboard.CF_HDROP):
-            return list(
-                win32clipboard.GetClipboardData(
-                    win32clipboard.CF_HDROP
-                )
-            )
-        return None
-    except Exception:
-        return None
-    finally:
+    def get_clipboard_files(self):
+        """
+        获取剪贴板中的文件路径列表。
+        如果剪贴板中包含从资源管理器复制的文件，则返回文件路径列表（仅包含有效的、存在的路径）；
+        否则返回 None。
+        """
         try:
-            # 关闭剪贴板，释放系统资源
-            win32clipboard.CloseClipboard()
-        except:
-            pass
+            win32clipboard.OpenClipboard()
+            if not win32clipboard.IsClipboardFormatAvailable(win32con.CF_HDROP):
+                return None
+
+            hdrop = win32clipboard.GetClipboardData(win32con.CF_HDROP)
+
+            # ---- 情况1: 如果返回的是元组/列表（直接是文件路径列表） ----
+            if isinstance(hdrop, (list, tuple)):
+                # 过滤出存在的有效路径（避免乱码或无效内容）
+                valid_paths = [p for p in hdrop if isinstance(p, str) and os.path.exists(p)]
+                return valid_paths if valid_paths else None
+
+            # ---- 情况2: 返回的是 PyHANDLE 或整数句柄 ----
+            try:
+                hdrop_int = int(hdrop)   # 尝试转为整数句柄
+            except (TypeError, ValueError):
+                # 如果转换失败，说明类型不支持，直接返回 None
+                return None
+
+            file_count = win32api.DragQueryFile(hdrop_int, -1)
+            if file_count == 0:
+                return None
+
+            file_paths = []
+            for i in range(file_count):
+                path = win32api.DragQueryFile(hdrop_int, i)
+                if path and isinstance(path, str) and os.path.exists(path):
+                    file_paths.append(path)
+            return file_paths if file_paths else None
+
+        except Exception as e:
+            print(f"获取剪贴板文件失败: {e}", file=sys.stderr)
+            return None
+        finally:
+            try:
+                win32clipboard.CloseClipboard()
+            except:
+                pass
