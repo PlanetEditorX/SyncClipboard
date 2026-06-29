@@ -40,6 +40,7 @@ computer_name = socket.gethostname()
 clipboard_lock = threading.Lock()
 CLIPBOARD_ENABLED = True
 CLIENT_EXPIRE_HOURS = 168   # 客户端超过1周未出现就删除
+CLIENT_NOTIFY = {} # 客户端通知记录
 IOS_NOTIFY = {} # ios的通知文件
 
 def init_services(config_manager=None):
@@ -183,7 +184,7 @@ def check_online(ip, port, os, source):
         if resp.status_code != 200:
             logging.warning(f"客户端 {source}({ip}) 状态异常: {resp.status_code}")
             return False
-        logging.info(f"客户端 {source}({ip}) 在线，准备推送")
+        logging.info(f"客户端 {source}({ip}) 在线")
         return True
     except Exception:
         logging.warning(f"客户端 {source}({ip}) 离线")
@@ -209,7 +210,6 @@ def push_notify(_type, latest, ip, port, os, source, latest_global):
                 str(latest["content"])[:30],
                 latest["source"]
             )
-
     else:
         if _type == "text":
             # 标记为已粘贴
@@ -327,12 +327,22 @@ def notify_clients(_type):
         if already_pasted:
             continue
 
-        # --- 第一步：检查客户端是否在线 ---
-        if not check_online(client_ip, client['port'], client['os'], source):
-            continue
-
-        # --- 第二步：在线状态确认无误后，执行推送 ---
-        push_notify(_type, latest, client_ip, client['port'], client['os'], source, latest_global)
+        try:
+            new_client_notify = CLIENT_NOTIFY.get(client_ip, '')
+            if isinstance(latest, list) and latest:
+                file_id = latest[0].get('file_id') if isinstance(latest[0], dict) else str(latest[0])
+            elif isinstance(latest, dict):
+                file_id = latest.get('id')
+            if new_client_notify != file_id:
+                # 检查客户端是否在线 ---
+                if not check_online(client_ip, client['port'], client['os'], source):
+                    continue
+                # 执行推送
+                push_notify(_type, latest, client_ip, client['port'], client['os'], source, latest_global)
+                # 记录推送记录，避免二次推送
+                CLIENT_NOTIFY[client_ip] = file_id
+        except Exception as e:
+            logging.error(f"通知客户端 {client['local_name']} 失败: {e}")
 
 # ------------------- 文字同步接口 -------------------
 @app.route('/text_sync', methods=['POST'])
