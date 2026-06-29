@@ -719,7 +719,7 @@ def request_file():
         # 一次性清空所有记录（文件已交付给请求方）
         latest_file.clear()
 
-        if file_list:
+        if file_list and is_new:
             return jsonify({
                 "status": "ok",
                 "type": "file_list",
