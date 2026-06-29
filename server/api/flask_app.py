@@ -695,9 +695,16 @@ def request_file():
             name = info.get("name")
             size = info.get("size")
             src = info.get("source")
+            timestamp_str = info.get("updated_at")
+            is_new = True
+            if timestamp_str:
+                record_time = datetime.fromtimestamp(timestamp_str)  # 本地时间
+                if datetime.now() - record_time > timedelta(minutes=10):
+                    logger.info(f"文件记录已过期（超过10分钟），跳过: {timestamp_str}")
+                    is_new = False
 
             # 必须有 ip/port/file_id 才能构建下载地址
-            if file_id and ip and port:
+            if file_id and ip and port and is_new:
                 download_url = f"http://{ip}:{port}/file/{file_id}"
                 file_list.append({
                     "file_id": file_id,
