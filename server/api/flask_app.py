@@ -249,7 +249,16 @@ def push_notify(_type, latest, ip, port, os, source, latest_global):
                     content_preview = str(latest["content"])[:50]
                     logging.info(f"文字推送成功: {content_preview}...")
                 else:
-                    logging.info(f"文件发布推送成功: {latest['name']}...")
+                    try:
+                        if isinstance(latest, list) and latest:
+                            name = latest[0].get('name') if isinstance(latest[0], dict) else str(latest[0])
+                        elif isinstance(latest, dict):
+                            name = latest.get('name', '<unknown>')
+                        else:
+                            name = '<unknown>'
+                    except Exception:
+                        name = '<unknown>'
+                    logging.info(f"文件发布推送成功: {name}...")
             else:
                 logging.warning(f"推送失败: {resp.status_code} {resp.text}")
         except Exception as e:
