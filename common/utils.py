@@ -14,6 +14,7 @@ from pathlib import Path
 from urllib.parse import unquote
 from typing import Optional, List
 import queue
+from datetime import datetime, timedelta
 
 # 创建模块级日志记录器
 logger = logging.getLogger(__name__)
@@ -245,3 +246,27 @@ def get_default_server_host():
         return ip
     except Exception:
         return "127.0.0.1"
+
+def isExpired(timestamp):
+    """
+    判断是否过期
+    参数:
+        timestamp: 变量中的时间值
+    返回:
+        False: 小于10分钟
+        True: 大于10分钟
+    """
+    # 获取当前时间
+    now_time_str = datetime.now().isoformat()
+    # 转换为 datetime 对象
+    now_time = datetime.fromisoformat(now_time_str)
+    # latest_time = datetime.fromisoformat(latest_global["timestamp"])
+    latest_time = datetime.fromisoformat(timestamp)
+    # 计算时间差（返回 timedelta 对象）
+    diff = now_time - latest_time
+    # 判断是否超过 10 分钟（600 秒）
+    if diff < timedelta(minutes=10):
+        # 拉取时未超过 10 分钟才标记为未使用，超过10分钟默认已使用了
+        return False
+    else:
+        return True

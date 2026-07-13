@@ -21,7 +21,7 @@ from server.core.file_handler import FileHandler
 from server.core.text_tracker import TextTracker
 from server.core.file_sync import LatestFileManager
 from server.core.file_latest import FileLatestTracker
-from common.utils import BASE_DIR, get_default_server_host
+from common.utils import BASE_DIR, get_default_server_host, isExpired
 from common.notification import show_notification
 
 # ---------- 日志：不再配置 handler，交给 run.py 统一处理 ----------
@@ -337,8 +337,10 @@ def notify_clients(_type):
                 # 检查客户端是否在线 ---
                 if not check_online(client_ip, client['port'], client['os'], source):
                     continue
-                # 执行推送
-                push_notify(_type, latest, client_ip, client['port'], client['os'], source, latest_global)
+                # 未超时10分钟才执行推送
+                if not isExpired(latest.get('timestamp', latest_global.get('timestamp', datetime.now().isoformat()))):
+                    # 执行推送
+                    push_notify(_type, latest, client_ip, client['port'], client['os'], source, latest_global)
                 # 记录推送记录，避免二次推送
                 CLIENT_NOTIFY[client_ip] = file_id
         except Exception as e:
@@ -415,19 +417,7 @@ def sync():
             # 新内容
             if latest.get("content") != content:
                 latest_global = latest.copy()
-                # 获取当前时间
-                now_time_str = datetime.now().isoformat()
-                # 转换为 datetime 对象
-                now_time = datetime.fromisoformat(now_time_str)
-                latest_time = datetime.fromisoformat(latest_global["timestamp"])
-                # 计算时间差（返回 timedelta 对象）
-                diff = now_time - latest_time
-                # 判断是否超过 10 分钟（600 秒）
-                if diff < timedelta(minutes=10):
-                    # 拉取时未超过 10 分钟才标记为未使用，超过10分钟默认已使用了
-                    latest_global["pasted"] = False
-                else:
-                    latest_global["pasted"] = True
+                latest_global["pasted"]  = isExpired(latest_global["timestamp"])
                 pasted_item = {
                     "id": latest["id"],
                     "type": latest.get("type", "text"),
