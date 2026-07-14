@@ -1,4 +1,3 @@
-# client/main_menu.py
 import os
 import sys
 import uuid

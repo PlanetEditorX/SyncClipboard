@@ -4,7 +4,6 @@ from common.file_watcher import watch_files
 
 logger = logging.getLogger("gui")
 
-
 class FileWatcherHandler:
     """文件监控处理器"""
     def __init__(self, clipboard_handler, config_manager):

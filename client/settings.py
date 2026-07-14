@@ -1,4 +1,3 @@
-# client/settings.py —— 客户端设置界面
 import json
 import tkinter as tk
 from pathlib import Path

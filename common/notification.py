@@ -1,4 +1,3 @@
-# common/notification.py
 import time
 import logging
 import threading

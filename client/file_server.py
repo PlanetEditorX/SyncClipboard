@@ -1,4 +1,3 @@
-# client/file_server.py
 import os
 import json
 import logging

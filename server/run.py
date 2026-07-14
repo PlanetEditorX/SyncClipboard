@@ -1,4 +1,3 @@
-# server/run.py
 import re
 import sys
 import logging
