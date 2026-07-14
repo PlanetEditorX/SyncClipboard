@@ -114,20 +114,28 @@ def main():
     root_logger = logging.getLogger()
     root_logger.handlers.clear()
 
-    handler = RotatingFileHandler(
+    # 文件处理器
+    file_handler = RotatingFileHandler(
         LOG_FILE,
         maxBytes=1024 * 1024,
         backupCount=1,
         encoding='utf-8'
     )
-    formatter = CleanFormatter(
+    file_handler.setFormatter(CleanFormatter(
         '%(asctime)s [%(levelname)s] %(message)s',
         datefmt='%Y-%m-%d %H:%M:%S'
-    )
-    handler.setFormatter(formatter)
-    root_logger.setLevel(logging.INFO)
-    root_logger.addHandler(handler)
+    ))
+    root_logger.addHandler(file_handler)
 
+    # 2. 控制台处理器（输出到 stdout）
+    console_handler = logging.StreamHandler(sys.stdout)
+    console_handler.setFormatter(CleanFormatter(
+        '%(asctime)s [%(levelname)s] %(message)s',
+        datefmt='%Y-%m-%d %H:%M:%S'
+    ))
+    root_logger.addHandler(console_handler)
+
+    root_logger.setLevel(logging.INFO)
     logging.info('Linux 服务初始化完成')
 
     # 支持通过环境变量覆盖配置文件路径或配置目录
