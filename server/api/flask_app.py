@@ -264,6 +264,16 @@ def push_notify(_type, latest, ip, port, os, source, latest_global):
         except Exception as e:
             logging.error(f"连接客户端 {source} 失败: {e}")
 
+def get_timestamp(data):
+    """返回时间戳"""
+    if isinstance(data, dict):
+        return data.get("timestamp", datetime.now().isoformat())
+
+    if isinstance(data, list) and data and isinstance(data[0], dict):
+        return data[0].get("timestamp", datetime.now().isoformat())
+
+    return datetime.now().isoformat()
+
 def notify_clients(_type):
     """通知客户端"""
     if _type == "text":
@@ -334,11 +344,12 @@ def notify_clients(_type):
             elif isinstance(latest, dict):
                 file_id = latest.get('id')
             if new_client_notify != file_id:
-                # 检查客户端是否在线 ---
+                # 检查客户端是否在线
                 if not check_online(client_ip, client['port'], client['os'], source):
                     continue
                 # 未超时10分钟才执行推送
-                if not isExpired(latest.get('timestamp', latest_global.get('timestamp', datetime.now().isoformat()))):
+                timestamp = get_timestamp(latest) if latest else get_timestamp(latest_global)
+                if not isExpired(timestamp):
                     # 执行推送
                     push_notify(_type, latest, client_ip, client['port'], client['os'], source, latest_global)
                 # 记录推送记录，避免二次推送
