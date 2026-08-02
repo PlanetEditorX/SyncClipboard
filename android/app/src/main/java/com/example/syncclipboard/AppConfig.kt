@@ -2,6 +2,7 @@ package com.example.syncclipboard
 
 import android.content.Context
 import android.os.Build
+import android.provider.Settings
 import java.net.URI
 
 data class AppConfig(
@@ -10,7 +11,6 @@ data class AppConfig(
     val localPort: Int,
     val deviceName: String,
     val downloadTreeUri: String,
-    val uploadPath: String,
     val autoStart: Boolean,
     val autoClipboard: Boolean,
     val autoDownload: Boolean,
@@ -27,15 +27,21 @@ data class AppConfig(
     companion object {
         private const val PREFS = "syncclipboard_config"
 
+        fun defaultDeviceName(context: Context): String =
+            runCatching { Settings.Global.getString(context.contentResolver, Settings.Global.DEVICE_NAME) }
+                .getOrNull()
+                ?.trim()
+                ?.takeIf { it.isNotEmpty() }
+                ?: Build.MODEL.trim().ifBlank { "Android" }
+
         fun load(context: Context): AppConfig {
             val p = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
             return AppConfig(
                 serverUrl = p.getString("serverUrl", "http://192.168.1.10:8000") ?: "http://192.168.1.10:8000",
                 secret = p.getString("secret", "123456") ?: "123456",
                 localPort = p.getInt("localPort", 8080).coerceIn(1024, 65535),
-                deviceName = p.getString("deviceName", Build.MODEL.ifBlank { "Android" }) ?: "Android",
+                deviceName = p.getString("deviceName", null)?.trim().orEmpty().ifBlank { defaultDeviceName(context) },
                 downloadTreeUri = p.getString("downloadTreeUri", "") ?: "",
-                uploadPath = p.getString("uploadPath", "/upload_file") ?: "/upload_file",
                 autoStart = p.getBoolean("autoStart", true),
                 autoClipboard = p.getBoolean("autoClipboard", true),
                 autoDownload = p.getBoolean("autoDownload", false),
@@ -54,7 +60,7 @@ data class AppConfig(
                 .putInt("localPort", config.localPort)
                 .putString("deviceName", config.deviceName)
                 .putString("downloadTreeUri", config.downloadTreeUri)
-                .putString("uploadPath", config.uploadPath)
+                .remove("uploadPath")
                 .putBoolean("autoStart", config.autoStart)
                 .putBoolean("autoClipboard", config.autoClipboard)
                 .putBoolean("autoDownload", config.autoDownload)

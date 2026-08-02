@@ -34,7 +34,6 @@ class MainActivity : AppCompatActivity() {
     private lateinit var secret: EditText
     private lateinit var localPort: EditText
     private lateinit var deviceName: EditText
-    private lateinit var uploadPath: EditText
     private lateinit var downloadFolder: TextView
     private lateinit var autoStart: CheckBox
     private lateinit var autoClipboard: CheckBox
@@ -85,6 +84,7 @@ class MainActivity : AppCompatActivity() {
         super.onCreate(savedInstanceState)
         setContentView(buildUi())
         loadConfig()
+        bindDebugMode()
         requestNotificationPermissionIfNeeded()
         if (AppConfig.load(this).autoStart) {
             SyncService.startAction(this, SyncService.ACTION_START)
@@ -138,12 +138,10 @@ class MainActivity : AppCompatActivity() {
         root.addView(status, matchWrap())
 
         section(root, "连接设置")
-        debugMode = checkbox(root, "调试模式 (显示详细请求日志)", false)
         serverUrl = edit(root, "主机", "http://192.168.1.10:8000")
         secret = edit(root, "密钥", "123456").apply { inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD }
-        localPort = edit(root, "本机端口", "8080").apply { inputType = InputType.TYPE_CLASS_NUMBER }
-        deviceName = edit(root, "设备名称", Build.MODEL)
-        uploadPath = edit(root, "旧版备用上传路径（新客户端选择流程不使用）", "/upload_file")
+        localPort = edit(root, "本机监听端口", "8080").apply { inputType = InputType.TYPE_CLASS_NUMBER }
+        deviceName = edit(root, "设备名称（默认使用手机设备名称）", AppConfig.defaultDeviceName(this))
 
         section(root, "下载设置")
         downloadFolder = TextView(this).apply {
@@ -161,7 +159,7 @@ class MainActivity : AppCompatActivity() {
         autoDownload = checkbox(root, "自动下载通知文件", false)
         notificationTimeoutSeconds = edit(root, "临时通知保留时间（秒，0=不自动清理）", "60").apply { inputType = InputType.TYPE_CLASS_NUMBER }
         screenOffPowerSave = checkbox(root, "息屏省电模式（息屏后仅保活，暂停接收与同步）", false)
-        keepAwake = checkbox(root, "保持唤醒锁", false)
+        keepAwake = checkbox(root, "保持唤醒锁（服务运行时避免 CPU 和 Wi‑Fi 休眠，提升后台同步稳定性，但会增加耗电）", false)
         allowServerHost = checkbox(root, "允许服务器免密上传", true)
 
         row(root,
@@ -203,6 +201,7 @@ class MainActivity : AppCompatActivity() {
         }, matchWrap())
 
         section(root, "运行日志")
+        debugMode = checkbox(root, "显示调试日志（开启后记录详细请求日志；关闭时仅记录简短日志）", false)
         logs = TextView(this).apply {
             typeface = Typeface.MONOSPACE
             textSize = 12f
@@ -225,7 +224,6 @@ class MainActivity : AppCompatActivity() {
         secret.setText(c.secret)
         localPort.setText(c.localPort.toString())
         deviceName.setText(c.deviceName)
-        uploadPath.setText(c.uploadPath)
         selectedTreeUri = c.downloadTreeUri
         downloadFolder.text = c.downloadTreeUri.ifBlank { "默认: Download/SyncClipboard" }
         autoStart.isChecked = c.autoStart
@@ -236,6 +234,16 @@ class MainActivity : AppCompatActivity() {
         keepAwake.isChecked = c.keepAwake
         allowServerHost.isChecked = c.allowServerHostWithoutKey
         debugMode.isChecked = c.debugMode
+    }
+
+    private fun bindDebugMode() {
+        debugMode.setOnCheckedChangeListener { _, enabled ->
+            val config = AppConfig.load(this)
+            if (config.debugMode != enabled) {
+                AppConfig.save(this, config.copy(debugMode = enabled))
+                AppState.log(this, if (enabled) "已开启调试日志" else "已关闭调试日志")
+            }
+        }
     }
 
     private fun saveConfig(): Boolean {
@@ -260,9 +268,8 @@ class MainActivity : AppCompatActivity() {
                 serverUrl = url,
                 secret = secret.text.toString(),
                 localPort = port,
-                deviceName = deviceName.text.toString().trim().ifBlank { Build.MODEL },
+                deviceName = deviceName.text.toString().trim().ifBlank { AppConfig.defaultDeviceName(this) },
                 downloadTreeUri = selectedTreeUri,
-                uploadPath = uploadPath.text.toString().trim().ifBlank { "/upload_file" },
                 autoStart = autoStart.isChecked,
                 autoClipboard = autoClipboard.isChecked,
                 autoDownload = autoDownload.isChecked,
