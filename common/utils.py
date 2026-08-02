@@ -194,8 +194,8 @@ def copy_files_to_clipboard(file_paths: List[str]) -> bool:
     finally:
         try:
             win32clipboard.CloseClipboard()
-        except:
-            pass
+        except Exception as e:
+            logger.error(f"关闭剪贴板失败: {e}")
 
 def parse_filename_from_cd(content_disposition: Optional[str]) -> Optional[str]:
     """

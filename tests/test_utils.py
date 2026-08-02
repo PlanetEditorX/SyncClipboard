@@ -1,7 +1,24 @@
 import unittest
 from unittest.mock import patch
 from datetime import datetime, timedelta
-from common.utils import isExpired
+from common.utils import isExpired, copy_files_to_clipboard
+import sys
+from unittest.mock import MagicMock
+
+class TestCopyFilesToClipboard(unittest.TestCase):
+    @patch('common.utils.logger')
+    def test_close_clipboard_exception(self, mock_logger):
+        # Create a mock win32clipboard module
+        mock_win32clipboard = MagicMock()
+        mock_win32clipboard.CloseClipboard.side_effect = Exception("Test clipboard close error")
+
+        # Patch sys.modules to inject our mock
+        with patch.dict(sys.modules, {'win32clipboard': mock_win32clipboard}):
+            copy_files_to_clipboard(["file1.txt", "file2.txt"])
+
+            # CloseClipboard is called in finally.
+            # We expect the error to be logged.
+            mock_logger.error.assert_any_call("关闭剪贴板失败: Test clipboard close error")
 
 class TestIsExpired(unittest.TestCase):
     def test_isExpired_not_expired(self):
