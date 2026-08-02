@@ -189,3 +189,25 @@ PUT http://192.168.1.10:8000/upload_file_to_download?redirect=http://192.168.1.3
 ## 当前验证状态
 
 0.3.2 已完成 Kotlin 源码结构检查、上传调用点检查、URL 解析模拟测试、XML 解析、Gradle 配置配对和 Wrapper 完整性检查。本环境没有完整 Android SDK，因此未在这里执行完整 `assembleDebug`，交付包中不会把旧版构建产物冒充为新 APK。请用 Android Studio 打开项目后重新构建。详见 `docs/VALIDATION.md`。
+## 发布版签名 APK
+
+仅执行 `assembleRelease` 不会自动签名。先创建发布密钥，并将
+`keystore.properties.example` 复制为 `keystore.properties`，填写实际密钥信息：
+
+```powershell
+keytool -genkeypair -v `
+  -keystore release-key.jks `
+  -alias syncclipboard `
+  -keyalg RSA -keysize 2048 -validity 10000
+```
+
+然后执行：
+
+```powershell
+.\gradlew.bat clean assembleRelease
+```
+
+签名 APK 生成在 `app/build/outputs/apk/release/app-release.apk`。发布密钥和密码
+必须长期备份；后续升级必须继续使用同一密钥，否则 Android 会把它识别为不同应用，
+无法直接覆盖安装。可用 `apksigner verify --verbose app/build/outputs/apk/release/app-release.apk`
+验证签名。

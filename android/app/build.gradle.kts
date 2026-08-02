@@ -1,6 +1,38 @@
+import java.io.FileInputStream
+import java.util.Properties
+
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
+}
+
+val releaseKeystorePropertiesFile = rootProject.file("keystore.properties")
+val releaseKeystoreProperties = Properties()
+if (releaseKeystorePropertiesFile.isFile) {
+    FileInputStream(releaseKeystorePropertiesFile).use(releaseKeystoreProperties::load)
+}
+
+val releaseTaskRequested = gradle.startParameter.taskNames.any { taskName ->
+    taskName.substringAfterLast(':').contains("release", ignoreCase = true)
+}
+
+if (releaseTaskRequested) {
+    if (!releaseKeystorePropertiesFile.isFile) {
+        throw GradleException(
+            "Release signing is not configured. Create android/keystore.properties from " +
+                "android/keystore.properties.example before running a release task."
+        )
+    }
+
+    val requiredSigningProperties = listOf("storeFile", "storePassword", "keyAlias", "keyPassword")
+    val missingSigningProperties = requiredSigningProperties.filter {
+        releaseKeystoreProperties.getProperty(it).isNullOrBlank()
+    }
+    if (missingSigningProperties.isNotEmpty()) {
+        throw GradleException(
+            "Missing release signing properties: ${missingSigningProperties.joinToString()}."
+        )
+    }
 }
 
 android {
@@ -26,6 +58,23 @@ android {
 
     kotlinOptions {
         jvmTarget = "17"
+    }
+
+    signingConfigs {
+        create("release") {
+            if (releaseKeystorePropertiesFile.isFile) {
+                storeFile = rootProject.file(releaseKeystoreProperties.getProperty("storeFile"))
+                storePassword = releaseKeystoreProperties.getProperty("storePassword")
+                keyAlias = releaseKeystoreProperties.getProperty("keyAlias")
+                keyPassword = releaseKeystoreProperties.getProperty("keyPassword")
+            }
+        }
+    }
+
+    buildTypes {
+        release {
+            signingConfig = signingConfigs.getByName("release")
+        }
     }
 
     packaging {
