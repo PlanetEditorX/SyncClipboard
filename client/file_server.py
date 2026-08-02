@@ -125,6 +125,13 @@ class FileServer:
             encoded_filename = request.args.get('filename', 'uploaded_file')
             filename = unquote(encoded_filename)  # 解码 %20 为空格
 
+            # 安全处理文件名：去除空字符，替换反斜杠，提取最后一部分作为纯文件名
+            filename = filename.replace('\x00', '')
+            filename = filename.replace('\\', '/')
+            filename = filename.split('/')[-1]
+            if not filename or filename in ('.', '..'):
+                filename = 'uploaded_file'
+
             file_data = None
             try:
                 file_data = request.get_data(cache=False, as_text=False)
