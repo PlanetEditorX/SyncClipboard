@@ -1,0 +1,6 @@
+<resources>
+    <string name="app_name">SyncClipboard</string>
+    <string name="service_channel">后台同步服务</string>
+    <string name="file_channel">文件同步</string>
+    <string name="accessibility_description">用于辅助检测剪贴板变化（如点击复制按钮）。</string>
+</resources>

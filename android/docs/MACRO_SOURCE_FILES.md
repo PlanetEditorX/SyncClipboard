@@ -1,0 +1,13 @@
+# Uploaded MacroDroid source inventory
+
+Generated from the supplied macrodroid.zip.
+
+```text
+a96d098b6e2b691de0648565811a25045ae66859655535678724f5a5f8e0bafa  ./#U4e0b#U8f7d#U6587#U4ef6.macro
+c78b14fa20e9117c2b34bd253a436904d7ea81b2e7508f149f85c0e054a65ded  ./#U540c#U6b65#U6587#U672c.macro
+9ac87946d279281a28caaecd0367f956127fa6ef180bd2bdd02a1da8a3d6f07c  ./#U540c#U6b65.category
+90a35a814fe48d44fbece32b1798e2674ab5dd7f3dc18f0b81514fbf5216f4a3  ./#U63a5#U53d7#U4e0a#U4f20.macro
+ce589448fb2701db1f48da30c3d4d2256b444583ee709c12a70ca65731f9f01b  ./#U63a5#U53d7#U66f4#U65b0.macro
+65e37564fced6e762e2eeb4a006cec3fa7504224b6a47dfa894588d0f13ef467  ./#U6ce8#U518c#U670d#U52a1.macro
+2dbc4a8c1a98608a83c103111048315b55aa5fdd10bc1650a253b4fdd1cf6ff9  ./ping#U670d#U52a1.macro
+```
