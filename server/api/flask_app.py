@@ -15,6 +15,27 @@ from flask import Flask, request, after_this_request, jsonify, send_file, send_f
 def get_default_save_dir():
     return str(Path.home() / "Downloads")
 
+def secure_save_path(base_dir, user_path):
+    """
+    Safely joins a base directory with a user-provided path.
+    Prevents path traversal vulnerabilities.
+    """
+    if not user_path:
+        return None
+
+    # Handle Windows-style path traversal attempts on non-Windows systems
+    user_path = user_path.replace('\\', '/')
+
+    base_dir = os.path.abspath(base_dir)
+    target_path = os.path.abspath(os.path.join(base_dir, user_path))
+
+    # Ensure the target path is within the base directory
+    if not target_path.startswith(base_dir + os.sep):
+        # Allow exact match of the base directory if needed, but for files we usually want something inside
+        if target_path != base_dir:
+            return None
+    return target_path
+
 # 统一使用 server 包路径的绝对导入
 from server.core.item_builder import build_text_item
 from server.core.file_handler import FileHandler
@@ -841,7 +862,7 @@ def upload_file():
 
     # 从 URL 参数获取文件名，例如 ?filename=my%20file.txt
     encoded_filename = request.args.get('filename', 'uploaded_file')
-    filename = unquote(encoded_filename)  # 解码 %20 为空格
+    filename = unquote(encoded_filename).replace('\\', '/')  # 解码 %20 为空格
 
     # 读取原始二进制数据
     file_data = request.get_data()
@@ -850,7 +871,10 @@ def upload_file():
         return jsonify({"status": "error", "message": "未收到文件"}), 400
 
     # 保存到文件
-    save_path = os.path.join(SAVE_PATH, filename)
+    save_path = secure_save_path(SAVE_PATH, filename)
+    if save_path is None:
+        return jsonify({"status": "error", "message": "非法的文件路径"}), 400
+
     with open(save_path, 'wb') as f:
         f.write(file_data)
 
@@ -937,14 +961,17 @@ def upload_file_to_download():
     parsed = urlparse(redirect_url)
     query_params = parse_qs(parsed.query)
     encoded_filename = query_params.get('filename', ['uploaded_file'])[0]
-    filename = unquote(encoded_filename)
+    filename = unquote(encoded_filename).replace('\\', '/')
 
     # 读取文件数据并保存到本地
     file_data = request.get_data()
     if not file_data:
         return jsonify({"status": "error", "message": "未收到文件"}), 400
 
-    save_path = os.path.join(SAVE_PATH, filename)
+    save_path = secure_save_path(SAVE_PATH, filename)
+    if save_path is None:
+        return jsonify({"status": "error", "message": "非法的文件路径"}), 400
+
     with open(save_path, 'wb') as f:
         f.write(file_data)
 
