@@ -80,6 +80,42 @@ jobs:
           java-version: '17'
           cache: gradle
 
+      - name: Restore Android release signing
+        shell: pwsh
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          $requiredSecrets = @(
+            'ANDROID_KEYSTORE_BASE64',
+            'ANDROID_KEYSTORE_PASSWORD',
+            'ANDROID_KEY_ALIAS',
+            'ANDROID_KEY_PASSWORD'
+          )
+          foreach ($secretName in $requiredSecrets) {
+            if ([string]::IsNullOrWhiteSpace((Get-Item "env:$secretName").Value)) {
+              throw "Missing GitHub Actions secret: $secretName"
+            }
+          }
+
+          $keystorePath = Join-Path $env:GITHUB_WORKSPACE 'android/release-key.jks'
+          $keystoreBytes = [Convert]::FromBase64String($env:ANDROID_KEYSTORE_BASE64)
+          [System.IO.File]::WriteAllBytes($keystorePath, $keystoreBytes)
+
+          $properties = @(
+            "storeFile=release-key.jks",
+            "storePassword=$($env:ANDROID_KEYSTORE_PASSWORD)",
+            "keyAlias=$($env:ANDROID_KEY_ALIAS)",
+            "keyPassword=$($env:ANDROID_KEY_PASSWORD)"
+          ) -join "`n"
+          [System.IO.File]::WriteAllText(
+            (Join-Path $env:GITHUB_WORKSPACE 'android/keystore.properties'),
+            $properties,
+            [System.Text.UTF8Encoding]::new($false)
+          )
+
       - name: Build Android APK
         working-directory: android
         shell: pwsh

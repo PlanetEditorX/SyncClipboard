@@ -211,3 +211,21 @@ keytool -genkeypair -v `
 必须长期备份；后续升级必须继续使用同一密钥，否则 Android 会把它识别为不同应用，
 无法直接覆盖安装。可用 `apksigner verify --verbose app/build/outputs/apk/release/app-release.apk`
 验证签名。
+## GitHub Actions 发布签名
+
+仓库不会提交 `release-key.jks` 或 `keystore.properties`。要让 GitHub Actions 发布签名 APK，
+在仓库的 `Settings > Secrets and variables > Actions` 中创建以下四个 Repository secrets：
+
+- `ANDROID_KEYSTORE_BASE64`：发布 keystore 的 Base64 内容
+- `ANDROID_KEYSTORE_PASSWORD`：keystore 密码
+- `ANDROID_KEY_ALIAS`：密钥别名，当前为 `syncclipboard`
+- `ANDROID_KEY_PASSWORD`：密钥密码
+
+在本机生成 Base64 内容：
+
+```powershell
+[Convert]::ToBase64String([IO.File]::ReadAllBytes('.\release-key.jks'))
+```
+
+将输出完整复制到 `ANDROID_KEYSTORE_BASE64`。推送 `v*` 标签后，工作流会先恢复 keystore，
+再执行 `assembleRelease` 并上传签名 APK。
