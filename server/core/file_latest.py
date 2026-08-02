@@ -50,7 +50,7 @@ class FileLatestTracker:
         with open(FILE_LATEST_FILE, "w", encoding="utf-8") as f:
             json.dump(self.data, f, indent=2, ensure_ascii=False)
 
-    def upsert_file(self, file_id, path, name, size, source, ip, port):
+    def upsert_file(self, file_id, path, name, size, source, ip, port, save=True):
         """
         插入或更新一条文件记录（根据 file_id 去重）
         """
@@ -70,7 +70,8 @@ class FileLatestTracker:
                     "port": port,
                     "updated_at": now
                 })
-                self._save()
+                if save:
+                    self._save()
                 return
 
         # 不存在则追加
@@ -84,7 +85,8 @@ class FileLatestTracker:
             "port": port,
             "updated_at": now
         })
-        self._save()
+        if save:
+            self._save()
 
     def get_all_files(self):
         """返回所有文件记录的副本"""

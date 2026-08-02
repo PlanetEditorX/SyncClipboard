@@ -650,7 +650,8 @@ def file_sync():
                 size=size,
                 source=source,
                 ip=client_ip,
-                port=port
+                port=port,
+                save=False
             )
             success_count += 1
             logging.info(f"文件已记录: {name} ({size} bytes), 来源: {source}")
@@ -659,6 +660,7 @@ def file_sync():
             errors.append(f"{name}: {str(e)}")
 
     if success_count > 0:
+        latest_file._save()
         load_clients_ip()
         notify_clients("file")
 
