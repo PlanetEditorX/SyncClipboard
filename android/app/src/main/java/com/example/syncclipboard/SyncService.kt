@@ -93,7 +93,7 @@ class SyncService : Service(), MiniHttpServer.Listener {
             ACTION_SEND_TEXT -> {
                 val text = intent.getStringExtra(EXTRA_TEXT).orEmpty()
                 val reason = intent.getStringExtra(EXTRA_REASON).orEmpty().ifBlank { "手动发送" }
-                if (text.isNotEmpty()) worker.execute { sendText(text, reason) }
+                if (text.isNotEmpty()) worker.execute { sendText(text, reason, force = intent.getBooleanExtra(EXTRA_FORCE_SEND, false)) }
             }
             ACTION_UPLOAD_URIS -> {
                 val uris = intent.getStringArrayListExtra(EXTRA_URIS).orEmpty().map(Uri::parse)
@@ -265,26 +265,36 @@ class SyncService : Service(), MiniHttpServer.Listener {
             }
     }
 
-    private fun sendText(text: String, reason: String) {
+    private fun sendText(text: String, reason: String, force: Boolean = false) {
         if (screenOffIdle) {
             AppState.log(this, "$reason 已跳过：当前处于息屏省电模式")
             return
         }
-        val now = SystemClock.elapsedRealtime()
-        
-        if (text == AppState.lastGlobalText && (now - AppState.lastGlobalAt < 10000)) {
-            AppState.log(this, "[忽略] $reason: 与全局最新记录匹配，判定为回波", isDebug = true)
+        if (!force && isAlreadySyncedClipboard(text)) {
+            AppState.log(this, "[忽略] $reason：剪贴板内容未变化", isDebug = true)
             return
         }
-        
+
         val client = client() ?: return
         runCatching { client.sendText(text) }
             .onSuccess {
+                rememberSyncedClipboard(text)
                 AppState.lastGlobalText = text
                 AppState.lastGlobalAt = SystemClock.elapsedRealtime()
                 AppState.log(this, "$reason：文字已同步（${text.length} 字符）")
             }
             .onFailure { AppState.log(this, "${reason}失败：${it.message}") }
+    }
+
+    private fun isAlreadySyncedClipboard(text: String): Boolean =
+        getSharedPreferences(CLIPBOARD_STATE_PREFS, Context.MODE_PRIVATE)
+            .getString(KEY_LAST_SYNCED_CLIPBOARD, null) == text
+
+    private fun rememberSyncedClipboard(text: String) {
+        getSharedPreferences(CLIPBOARD_STATE_PREFS, Context.MODE_PRIVATE)
+            .edit()
+            .putString(KEY_LAST_SYNCED_CLIPBOARD, text)
+            .apply()
     }
 
     private fun syncClipboardChange() {
@@ -476,6 +486,7 @@ class SyncService : Service(), MiniHttpServer.Listener {
             }
             if (text.isEmpty()) return@execute
             
+            rememberSyncedClipboard(text)
             AppState.lastGlobalText = text
             AppState.lastGlobalAt = SystemClock.elapsedRealtime()
             
@@ -673,8 +684,9 @@ class SyncService : Service(), MiniHttpServer.Listener {
         const val EXTRA_FILES = "files"
         const val EXTRA_UPLOAD_URL = "upload_url"
         const val EXTRA_UPLOAD_CLIENT = "upload_client"
-        private const val REMOTE_ECHO_WINDOW_MS = 3_000L
-        private const val LOCAL_DUPLICATE_WINDOW_MS = 500L
+        const val EXTRA_FORCE_SEND = "force_send"
+        private const val CLIPBOARD_STATE_PREFS = "syncclipboard_clipboard_state"
+        private const val KEY_LAST_SYNCED_CLIPBOARD = "last_synced_clipboard"
 
         fun startAction(context: Context, action: String, configure: (Intent.() -> Unit)? = null) {
             val intent = Intent(context, SyncService::class.java).setAction(action)

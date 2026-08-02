@@ -189,9 +189,6 @@ class MainActivity : AppCompatActivity() {
         super.onResume()
         AppState.isAppInForeground = true
         refreshState()
-        if (AppConfig.load(this).autoClipboard) {
-            SyncService.startAction(this, SyncService.ACTION_SYNC_CLIPBOARD)
-        }
     }
 
     override fun onPause() {
@@ -287,6 +284,7 @@ class MainActivity : AppCompatActivity() {
         } else {
             SyncService.startAction(this, SyncService.ACTION_SEND_TEXT) {
                 putExtra(SyncService.EXTRA_TEXT, text)
+                putExtra(SyncService.EXTRA_FORCE_SEND, true)
             }
         }
     }
