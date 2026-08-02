@@ -40,8 +40,8 @@ class DownloadProgressDialog:
             try:
                 if getattr(master, 'state', lambda: '')() != 'withdrawn':
                     self.window.transient(master)
-            except Exception:
-                pass
+            except Exception as e:
+                logger.warning("Failed to set window transient: %s", e)
 
         self.window.title(title)
         self.window.resizable(False, False)
@@ -49,19 +49,19 @@ class DownloadProgressDialog:
             icon_path = BASE_DIR / "gui" / "icon" / "icon-active.png"
             if icon_path.exists():
                 self.window.iconphoto(False, tk.PhotoImage(file=str(icon_path)))
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning("Failed to set window icon: %s", e)
 
         if ctk is not None and hasattr(self.window, 'configure'):
             try:
                 self.window.configure(fg_color="#f7f7f7")
-            except Exception:
-                pass
+            except Exception as e:
+                logger.warning("Failed to configure window with ctk: %s", e)
         else:
             try:
                 self.window.configure(bg="#f7f7f7")
-            except Exception:
-                pass
+            except Exception as e:
+                logger.warning("Failed to configure window with tk: %s", e)
 
         if ctk is not None and hasattr(ctk, 'CTkFrame'):
             self.container = ctk.CTkFrame(self.window, fg_color="#f7f7f7")
@@ -71,8 +71,8 @@ class DownloadProgressDialog:
         self.container.grid_columnconfigure(0, weight=1)
         try:
             self.window.grid_rowconfigure(0, weight=1)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning("Failed to configure grid row: %s", e)
 
         if ctk is not None and hasattr(ctk, 'CTkLabel'):
             self.label = ctk.CTkLabel(self.container, text="正在下载文件...", font=("微软雅黑", 15, "bold"), anchor='w')
@@ -122,8 +122,8 @@ class DownloadProgressDialog:
             self.window.attributes("-alpha", 0)
             self.window.deiconify()
             self.window.after(100, self._show_centered)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning("Failed to initialize window attributes: %s", e)
 
     def _show_centered(self):
         self._center_window()
@@ -169,15 +169,15 @@ class DownloadProgressDialog:
                     y = top + max((screen_h - height) // 2, 0)
                     self.window.geometry(f"+{x}+{y}")
                     return
-            except Exception:
-                pass
+            except Exception as e:
+                logger.warning("Failed to calculate center using user32: %s", e)
             screen_w = self.window.winfo_screenwidth()
             screen_h = self.window.winfo_screenheight()
             x = max((screen_w - width) // 2, 0)
             y = max((screen_h - height) // 2, 0)
             self.window.geometry(f"+{x}+{y}")
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning("Failed to center window: %s", e)
 
     def _set_progress_value(self, percentage):
         if getattr(self, '_use_ctk_progress', False):
@@ -224,8 +224,8 @@ class DownloadProgressDialog:
             try:
                 if self.window.winfo_exists():
                     self.window.destroy()
-            except:
-                pass
+            except Exception as e:
+                logger.warning("Error destroying window on cancel: %s", e)
         post_to_main_thread(_destroy)
 
     def close(self):
@@ -235,8 +235,8 @@ class DownloadProgressDialog:
             try:
                 if self.window.winfo_exists():
                     self.window.destroy()
-            except:
-                pass
+            except Exception as e:
+                logger.warning("Error destroying window on close: %s", e)
         post_to_main_thread(_destroy)
 
     def is_cancelled(self):
