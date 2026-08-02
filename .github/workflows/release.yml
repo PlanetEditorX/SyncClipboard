@@ -1,28 +1,77 @@
 name: Build and Release
 
-permissions:
-  contents: write
-
 on:
   push:
     tags:
-      - 'v*'          # 推送 v 开头的标签时触发，例如 v1.0.0
+      - 'v*' # 推送 v 开头的标签时触发，例如 v1.0.0
+
+# 默认只读，只有 release job 获取写权限
+permissions:
+  contents: read
 
 jobs:
-  build:
-    runs-on: windows-latest   # 使用 Windows 环境（因为 build.py 依赖 Windows 特性）
+  # ==============================
+  # Windows 构建
+  # ==============================
+  build-windows:
+    name: Build Windows
+    runs-on: windows-latest
 
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0       # 获取全部标签，方便后续使用
+          fetch-depth: 0
 
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-          cache: 'pip'         # 缓存 pip 依赖，加速构建
+          cache: pip
+
+      - name: Install dependencies
+        shell: pwsh
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Run Windows build script
+        shell: pwsh
+        run: python release/build.py
+
+      - name: Package Windows dist folder
+        shell: pwsh
+        run: |
+          if (-not (Test-Path "release/dist")) {
+            throw "Windows build output directory release/dist does not exist"
+          }
+
+          Compress-Archive `
+            -Path "release/dist/*" `
+            -DestinationPath "SyncClipboard-Windows-${{ github.ref_name }}.zip" `
+            -Force
+
+      # 上传供 release job 使用
+      - name: Upload Windows package
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-package
+          path: SyncClipboard-Windows-${{ github.ref_name }}.zip
+          if-no-files-found: error
+          retention-days: 1
+
+  # ==============================
+  # Android 构建
+  # ==============================
+  build-android:
+    name: Build Android
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Set up Java
         uses: actions/setup-java@v4
@@ -31,38 +80,71 @@ jobs:
           java-version: '17'
           cache: gradle
 
-      - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install -r requirements.txt   # 确保你的项目根目录有 requirements.txt，包含 pyinstaller 等
-
-      - name: Run build script
-        run: python release/build.py
-        shell: pwsh
-
-      - name: Package dist folder
-        run: |
-          Compress-Archive -Path release/dist/* -DestinationPath SyncClipboard.zip
-        shell: pwsh
-
       - name: Build Android APK
         working-directory: android
-        run: .\gradlew.bat :app:assembleRelease --no-daemon
         shell: pwsh
+        run: .\gradlew.bat :app:assembleRelease --no-daemon
 
       - name: Prepare Android APK
-        run: |
-          $apk = Get-ChildItem android/app/build/outputs/apk/release -Filter '*.apk' | Select-Object -First 1
-          if (-not $apk) { throw 'Android APK was not produced' }
-          Copy-Item $apk.FullName "SyncClipboardAndroid-${{ github.ref_name }}.apk"
         shell: pwsh
+        run: |
+          $apk = Get-ChildItem `
+            "android/app/build/outputs/apk/release" `
+            -Filter "*.apk" |
+            Select-Object -First 1
 
-      - name: Create Release and Upload Asset
+          if (-not $apk) {
+            throw "Android APK was not produced"
+          }
+
+          Copy-Item `
+            $apk.FullName `
+            "SyncClipboard-Android-${{ github.ref_name }}.apk"
+
+      # 上传供 release job 使用
+      - name: Upload Android APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-package
+          path: SyncClipboard-Android-${{ github.ref_name }}.apk
+          if-no-files-found: error
+          retention-days: 1
+
+  # ==============================
+  # 创建 GitHub Release
+  # ==============================
+  release:
+    name: Create Release
+    runs-on: ubuntu-latest
+
+    # 两个构建 job 都成功后才发布
+    needs:
+      - build-windows
+      - build-android
+
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download Windows package
+        uses: actions/download-artifact@v4
+        with:
+          name: windows-package
+          path: release-assets
+
+      - name: Download Android package
+        uses: actions/download-artifact@v4
+        with:
+          name: android-package
+          path: release-assets
+
+      - name: Show release assets
+        run: ls -la release-assets
+
+      - name: Create Release and upload assets
         uses: softprops/action-gh-release@v2
         with:
-          files: |
-            SyncClipboard.zip
-            SyncClipboardAndroid-${{ github.ref_name }}.apk
-          generate_release_notes: true   # 自动生成发布说明
+          files: release-assets/*
+          generate_release_notes: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
