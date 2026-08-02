@@ -550,88 +550,88 @@ def ios_get_latest():
 
 @app.route('/clients/online', methods=['GET'])
 def get_online_clients():
-    """返回当前请求者可直接发送文件的在线客户端。"""
+    """获取可直接接收文件的在线客户端。"""
     key = get_api_key()
     if key != KEY:
-        return jsonify({"status": "error", "message": "密钥错误"}), 403
+        return jsonify({
+            "status": "error",
+            "message": "密钥错误"
+        }), 403
 
+    # Android 可以传 source 和 source_port，用于隐藏自身。
+    # iOS 快捷指令可以不传，接口仍然正常工作。
     requester_name = request.args.get("source", "").strip()
     requester_port = request.args.get("source_port", type=int)
     requester_ip = request.remote_addr
 
-    if not requester_name or requester_port is None:
-        return jsonify({
-            "status": "error",
-            "message": "缺少 source 或 source_port 参数"
-        }), 400
-
     load_clients_ip()
-    available_clients = []
+
+    result_clients = []
+
     server_host = app.config.get("host", "127.0.0.1")
     server_port = app.config.get("port", 8000)
 
     for client in clients:
-        ip = str(client.get("ip", "")).strip()
+        ip = client.get("ip")
+        port = int(client.get("port", 0) or 0)
         local_name = str(client.get("local_name", "未知")).strip()
         os_name = str(client.get("os", "Windows")).strip()
         os_normalized = os_name.casefold()
 
-        try:
-            port = int(client.get("port", 8899))
-        except (TypeError, ValueError):
-            logger.warning("跳过端口无效的客户端: %s", client)
-            continue
-
         if not ip or port <= 0:
             continue
 
-        # iOS/iPadOS 通过快捷指令主动轮询，只能拉取，不能作为直传目标。
-        if os_normalized in {"ios", "iphone", "ipad", "ipados"}:
+        # iOS 只能主动轮询拉取，不能作为文件发送目标。
+        if os_normalized in {
+            "ios",
+            "ipados",
+            "iphone",
+            "ipad"
+        }:
             continue
 
-        # 新版 Android 始终提交监听端口，因此用服务器看到的来源 IP
-        # 和注册端口精确识别请求者自己，不依赖可能重名的设备名称。
-        if ip == requester_ip and port == requester_port:
+        # 仅当请求携带相应参数时，才进行自身排除。
+        is_same_name = (
+            bool(requester_name)
+            and local_name.casefold() == requester_name.casefold()
+        )
+
+        is_same_endpoint = (
+            requester_port is not None
+            and ip == requester_ip
+            and port == requester_port
+        )
+
+        if is_same_name or is_same_endpoint:
             continue
 
         ping_url = f"http://{ip}:{port}/ping"
+
         try:
             resp = requests.get(
                 ping_url,
                 headers={"key": KEY},
                 timeout=3
             )
+
             if resp.status_code != 200:
-                logger.info(
-                    "客户端不可用于文件发送: %s (%s:%s), HTTP %s",
-                    local_name,
-                    ip,
-                    port,
-                    resp.status_code
-                )
                 continue
-        except requests.RequestException as exc:
-            logger.info(
-                "客户端离线，已从文件发送列表排除: %s (%s:%s): %s",
-                local_name,
-                ip,
-                port,
-                exc
-            )
+
+        except requests.RequestException:
             continue
 
-        display_name = f"{local_name} ({ip})"
         if os_normalized == "android":
             upload_url = (
-                f"http://{server_host}:{server_port}/upload_file_to_download"
+                f"http://{server_host}:{server_port}"
+                f"/upload_file_to_download"
                 f"?redirect=http://{ip}:{port}/upload_file"
             )
         else:
             upload_url = f"http://{ip}:{port}/upload_file"
 
-        available_clients.append({
+        result_clients.append({
             "name": local_name,
-            "display_name": display_name,
+            "display_name": f"{local_name} ({ip})",
             "ip": ip,
             "port": port,
             "os": os_name,
@@ -640,9 +640,8 @@ def get_online_clients():
 
     return jsonify({
         "status": "ok",
-        "clients": available_clients
+        "clients": result_clients
     }), 200
-
 
 @app.route('/mark_pasted', methods=['POST'])
 def mark_pasted():
