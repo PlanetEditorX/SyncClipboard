@@ -130,21 +130,24 @@ def load_clients_ip():
 def save_clients():
     with _lock:
         now = datetime.now()
-        expired = []
+        active_clients = []
         # 先清理过期客户端
-        for c in clients[:]:
+        for c in clients:
+            is_expired = False
             try:
                 last = datetime.strptime(c["last_seen"], "%Y-%m-%d %H:%M:%S")
+                if now - last > timedelta(hours=CLIENT_EXPIRE_HOURS):
+                    is_expired = True
             except (ValueError, KeyError):
                 # 时间格式错误或缺失字段，视为无效，直接移除
-                expired.append(c)
-                continue
-            if now - last > timedelta(hours=CLIENT_EXPIRE_HOURS):
-                expired.append(c)
+                is_expired = True
 
-        for c in expired:
-            clients.remove(c)
-            logging.info(f"移除过期客户端: {c.get('local_name', '未知')} ({c.get('ip')})")
+            if is_expired:
+                logging.info(f"移除过期客户端: {c.get('local_name', '未知')} ({c.get('ip')})")
+            else:
+                active_clients.append(c)
+
+        clients[:] = active_clients
 
         # 写入文件
         with open(CLIENT_IP_FILE, "w", encoding="utf-8") as f:
