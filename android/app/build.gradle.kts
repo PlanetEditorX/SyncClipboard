@@ -35,6 +35,9 @@ if (releaseTaskRequested) {
     }
 }
 
+val appVersionName = providers.gradleProperty("appVersionName").getOrElse("0.3.4")
+val appVersionCode = providers.gradleProperty("appVersionCode").map { it.toIntOrNull() ?: 7 }.getOrElse(7)
+
 android {
     namespace = "com.example.syncclipboard"
     compileSdk = 35
@@ -43,8 +46,8 @@ android {
         applicationId = "com.example.syncclipboard"
         minSdk = 26
         targetSdk = 35
-        versionCode = 7
-        versionName = "0.3.4"
+        versionCode = appVersionCode
+        versionName = appVersionName
     }
 
     buildFeatures {

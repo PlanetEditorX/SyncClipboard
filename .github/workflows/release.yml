@@ -119,7 +119,15 @@ jobs:
       - name: Build Android APK
         working-directory: android
         shell: pwsh
-        run: .\gradlew.bat :app:assembleRelease --no-daemon
+        run: |
+          $versionName = '${{ github.ref_name }}'
+          if ($versionName.StartsWith('v')) { $versionName = $versionName.Substring(1) }
+          if ([string]::IsNullOrWhiteSpace($versionName)) {
+            throw 'Tag must contain a version after the v prefix'
+          }
+
+          $versionCode = 100000 + [int]${{ github.run_number }}
+          .\gradlew.bat :app:assembleRelease --no-daemon "-PappVersionName=$versionName" "-PappVersionCode=$versionCode"
 
       - name: Prepare Android APK
         shell: pwsh
