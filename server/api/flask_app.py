@@ -558,15 +558,17 @@ def get_online_clients():
             "message": "密钥错误"
         }), 403
 
-    # Android 可以传 source 和 source_port，用于隐藏自身。
-    # iOS 快捷指令可以不传，接口仍然正常工作。
+    # Android 可以传这两个参数隐藏自身；
+    # iOS 快捷指令不传也可以正常请求。
     requester_name = request.args.get("source", "").strip()
     requester_port = request.args.get("source_port", type=int)
     requester_ip = request.remote_addr
 
     load_clients_ip()
 
-    result_clients = []
+    client_items = []
+    online_clients = []
+    upload_url = {}
 
     server_host = app.config.get("host", "127.0.0.1")
     server_port = app.config.get("port", 8000)
@@ -581,7 +583,7 @@ def get_online_clients():
         if not ip or port <= 0:
             continue
 
-        # iOS 只能主动轮询拉取，不能作为文件发送目标。
+        # iOS/iPadOS 只能主动轮询，不能作为文件直传目标。
         if os_normalized in {
             "ios",
             "ipados",
@@ -590,7 +592,8 @@ def get_online_clients():
         }:
             continue
 
-        # 仅当请求携带相应参数时，才进行自身排除。
+        # Android 请求时隐藏自己。
+        # iOS 不传 source/source_port 时，不执行这部分过滤。
         is_same_name = (
             bool(requester_name)
             and local_name.casefold() == requester_name.casefold()
@@ -620,27 +623,40 @@ def get_online_clients():
         except requests.RequestException:
             continue
 
+        display_name = f"{local_name} ({ip})"
+
         if os_normalized == "android":
-            upload_url = (
+            target_upload_url = (
                 f"http://{server_host}:{server_port}"
                 f"/upload_file_to_download"
                 f"?redirect=http://{ip}:{port}/upload_file"
             )
         else:
-            upload_url = f"http://{ip}:{port}/upload_file"
+            target_upload_url = f"http://{ip}:{port}/upload_file"
 
-        result_clients.append({
+        # Android 新版使用。
+        client_items.append({
             "name": local_name,
-            "display_name": f"{local_name} ({ip})",
+            "display_name": display_name,
             "ip": ip,
             "port": port,
             "os": os_name,
-            "upload_url": upload_url
+            "upload_url": target_upload_url
         })
+
+        # iOS 快捷指令直接使用。
+        online_clients.append(display_name)
+        upload_url[display_name] = target_upload_url
 
     return jsonify({
         "status": "ok",
-        "clients": result_clients
+
+        # Android 使用结构化数组。
+        "clients": client_items,
+
+        # iOS 快捷指令直接使用。
+        "online_clients": online_clients,
+        "upload_url": upload_url
     }), 200
 
 @app.route('/mark_pasted', methods=['POST'])
