@@ -1,7 +1,19 @@
 import unittest
 from unittest.mock import patch
 from datetime import datetime, timedelta
-from common.utils import isExpired, safe_get, parse_filename_from_cd
+from common.utils import isExpired, safe_get, parse_filename_from_cd, copy_files_to_clipboard
+
+class TestCopyFilesToClipboard(unittest.TestCase):
+    def test_empty_file_paths(self):
+        self.assertFalse(copy_files_to_clipboard([]))
+        self.assertFalse(copy_files_to_clipboard(None))
+
+    @patch.dict('sys.modules', {'win32clipboard': None})
+    def test_error_path(self):
+        # By setting win32clipboard to None in sys.modules,
+        # importing it inside the function will raise a ModuleNotFoundError or ImportError
+        # which should be caught by the except block and return False.
+        self.assertFalse(copy_files_to_clipboard(['/path/to/file.txt']))
 
 class TestSafeGet(unittest.TestCase):
     def test_safe_get_happy_path(self):
