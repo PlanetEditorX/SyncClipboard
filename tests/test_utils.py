@@ -1,7 +1,32 @@
 import unittest
 from unittest.mock import patch
 from datetime import datetime, timedelta
-from common.utils import isExpired
+from common.utils import isExpired, safe_get
+
+class TestSafeGet(unittest.TestCase):
+    def test_safe_get_happy_path(self):
+        data = {"a": {"b": {"c": "value"}}}
+        self.assertEqual(safe_get(data, "a", "b", "c"), "value")
+
+    def test_safe_get_missing_key(self):
+        data = {"a": {"b": {"c": "value"}}}
+        self.assertIsNone(safe_get(data, "a", "x", "c"))
+        self.assertEqual(safe_get(data, "a", "x", "c", default="not_found"), "not_found")
+
+    def test_safe_get_non_dict_intermediate(self):
+        data = {"a": "not_a_dict"}
+        self.assertIsNone(safe_get(data, "a", "b"))
+        self.assertEqual(safe_get(data, "a", "b", default="fallback"), "fallback")
+
+    def test_safe_get_empty_keys(self):
+        data = {"a": 1}
+        self.assertEqual(safe_get(data), {"a": 1})
+
+    def test_safe_get_non_dict_data(self):
+        data = "just_a_string"
+        self.assertIsNone(safe_get(data, "a"))
+        self.assertEqual(safe_get(data, "a", default="default_val"), "default_val")
+
 
 class TestIsExpired(unittest.TestCase):
     def test_isExpired_not_expired(self):
