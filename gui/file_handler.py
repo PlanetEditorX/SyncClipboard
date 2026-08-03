@@ -53,8 +53,8 @@ class FileHandler:
                 screen_w = root.winfo_screenwidth()
                 screen_h = root.winfo_screenheight()
                 root.geometry(f"+{screen_w//2}+{screen_h//2}")
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning(f"获取或设置对话框父级窗口状态出错: {e}")
         return root
 
     def _ask_save_path(self, filename):
