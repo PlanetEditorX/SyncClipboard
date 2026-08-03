@@ -310,6 +310,22 @@ def get_timestamp(data):
 
     return datetime.now().isoformat()
 
+def _clear_client_task(client, key):
+    try:
+        resp = requests.get(
+            f"http://{client['ip']}:{client['port']}/clear/file_latest",
+            headers={
+                "key": key
+            },
+            timeout=5
+        )
+        if resp.status_code == 200:
+            logging.info(f"最新文件清理通知客户端{client['local_name']}成功...")
+        else:
+            logging.warning(f"最新文件清理通知客户端{client['local_name']}失败: {resp.status_code} {resp.text}")
+    except Exception as e:
+        logging.error(f"连接客户端 {client['local_name']} 失败: {e}")
+
 def notify_clients(_type):
     """通知客户端"""
     if _type == "text":
@@ -334,20 +350,8 @@ def notify_clients(_type):
             continue
         # 同步清理最新文件信息
         if _type == "clear":
-            try:
-                resp = requests.get(
-                    f"http://{client_ip}:{client['port']}/clear/file_latest",
-                    headers={
-                        "key": KEY
-                    },
-                    timeout=5
-                )
-                if resp.status_code == 200:
-                    logging.info(f"最新文件清理通知客户端{client['local_name']}成功...")
-                else:
-                    logging.warning(f"最新文件清理通知客户端{client['local_name']}失败: {resp.status_code} {resp.text}")
-            except Exception as e:
-                logging.error(f"连接客户端 {client['local_name']} 失败: {e}")
+            t = threading.Thread(target=_clear_client_task, args=(client, KEY), daemon=True)
+            t.start()
             continue
 
         #  推送的文件来源是要通知的客户端跳过
