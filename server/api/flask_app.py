@@ -7,6 +7,7 @@ import socket
 import logging
 import requests
 import threading
+import concurrent.futures
 from pathlib import Path
 from datetime import datetime, timedelta
 from urllib.parse import urlparse, parse_qs, unquote
@@ -610,6 +611,8 @@ def get_online_clients():
     server_host = app.config.get("host", "127.0.0.1")
     server_port = app.config.get("port", 8000)
 
+    # 1. 过滤需要 ping 的客户端
+    clients_to_ping = []
     for client in clients:
         ip = client.get("ip")
         port = int(client.get("port", 0) or 0)
@@ -645,20 +648,44 @@ def get_online_clients():
         if is_same_name or is_same_endpoint:
             continue
 
-        ping_url = f"http://{ip}:{port}/ping"
+        clients_to_ping.append({
+            "ip": ip,
+            "port": port,
+            "local_name": local_name,
+            "os_name": os_name,
+            "os_normalized": os_normalized
+        })
 
+    # 2. 并发 ping 检查在线状态
+    def check_ping(client_info):
+        ping_url = f"http://{client_info['ip']}:{client_info['port']}/ping"
         try:
             resp = requests.get(
                 ping_url,
                 headers={"key": KEY},
                 timeout=3
             )
-
-            if resp.status_code != 200:
-                continue
-
+            if resp.status_code == 200:
+                return client_info
         except requests.RequestException:
-            continue
+            pass
+        return None
+
+    online_clients_info = []
+    if clients_to_ping:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
+            results = executor.map(check_ping, clients_to_ping)
+            for result in results:
+                if result:
+                    online_clients_info.append(result)
+
+    # 3. 组装结果
+    for client_info in online_clients_info:
+        ip = client_info["ip"]
+        port = client_info["port"]
+        local_name = client_info["local_name"]
+        os_name = client_info["os_name"]
+        os_normalized = client_info["os_normalized"]
 
         display_name = f"{local_name} ({ip})"
 
