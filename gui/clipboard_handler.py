@@ -40,8 +40,8 @@ class ClipboardHandler:
                         if datetime.now() - record_time > timedelta(minutes=10):
                             logger.info(f"剪贴板记录已过期（超过10分钟），跳过弹窗: {timestamp_str}")
                             return
-                    except Exception as e:
-                        logger.warning(f"解析时间戳失败: {timestamp_str}, 错误: {e}")
+                    except:
+                        pass
 
                 self.last_global_id = current_id
                 source = latest.get('source', '未知来源')
