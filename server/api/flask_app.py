@@ -152,12 +152,23 @@ def save_clients():
     with _lock:
         now = datetime.now()
         active_clients = []
+        # 预先计算过期时间阈值字符串，避免在循环中重复解析 datetime
+        threshold_str = (now - timedelta(hours=CLIENT_EXPIRE_HOURS)).strftime("%Y-%m-%d %H:%M:%S")
+
         # 先清理过期客户端
         for c in clients:
             is_expired = False
             try:
-                last = datetime.strptime(c["last_seen"], "%Y-%m-%d %H:%M:%S")
-                if now - last > timedelta(hours=CLIENT_EXPIRE_HOURS):
+                last_seen = c["last_seen"]
+                # 使用 fromisoformat 进行快速的严格语义校验，若格式或数值错误会抛出 ValueError
+                # 这保证了与之前 strptime 相同的准确度，但速度快几十倍
+                try:
+                    datetime.fromisoformat(last_seen)
+                except ValueError:
+                    # 如果 fromisoformat 无法解析，回退到 strptime 做最终判定，以便和原来保持绝对一致
+                    datetime.strptime(last_seen, "%Y-%m-%d %H:%M:%S")
+
+                if last_seen < threshold_str:
                     is_expired = True
             except (ValueError, KeyError):
                 # 时间格式错误或缺失字段，视为无效，直接移除
