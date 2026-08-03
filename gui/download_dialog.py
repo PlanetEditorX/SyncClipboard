@@ -56,11 +56,13 @@ class DownloadProgressDialog:
             try:
                 self.window.configure(fg_color="#f7f7f7")
             except Exception as e:
+                # 记录配置前景色异常，避免错误被静默吞没（空 except block）
                 logger.warning(f"配置窗口前景色失败: {e}", exc_info=True)
         else:
             try:
                 self.window.configure(bg="#f7f7f7")
             except Exception as e:
+                # 记录配置背景色异常，避免错误被静默吞没（空 except block）
                 logger.warning(f"配置窗口背景色失败: {e}", exc_info=True)
 
         if ctk is not None and hasattr(ctk, 'CTkFrame'):
