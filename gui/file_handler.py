@@ -113,8 +113,8 @@ class FileHandler:
                             f.close()
                             try:
                                 os.remove(file_path)
-                            except:
-                                pass
+                            except OSError as e:
+                                logger.warning(f"清理下载文件失败: {e}")
                             show_message("已取消", "文件下载已取消")
                             return
 
@@ -146,8 +146,8 @@ class FileHandler:
             try:
                 if os.path.exists(file_path):
                     os.remove(file_path)
-            except:
-                pass
+            except OSError as e:
+                logger.warning(f"清理下载文件失败: {e}")
         finally:
             response.close()
 
@@ -191,8 +191,8 @@ class FileHandler:
                                 f.close()
                                 try:
                                     os.remove(file_path)
-                                except:
-                                    pass
+                                except OSError as e:
+                                    logger.warning(f"清理下载文件失败: {e}")
                                 show_message("已取消", "文件下载已取消")
                                 return False
 
@@ -220,8 +220,8 @@ class FileHandler:
             try:
                 if os.path.exists(file_path):
                     os.remove(file_path)
-            except:
-                pass
+            except OSError as e:
+                logger.warning(f"清理下载文件失败: {e}")
             return False
         finally:
             if own_dialog:
