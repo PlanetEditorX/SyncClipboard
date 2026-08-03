@@ -44,19 +44,23 @@ def get_tk_root():
         return _tk_root
 
 def process_ui_queue():
-    try:
-        while True:
+    while True:
+        try:
             func, args, kwargs, result_event = _ui_queue.get_nowait()
-            try:
-                ret = func(*args, **kwargs)
-                if result_event is not None:
-                    result_event.set_result(ret)
-            except Exception as e:
-                if result_event is not None:
-                    result_event.set_exception(e)
-            _ui_queue.task_done()
-    except queue.Empty:
-        pass
+        except queue.Empty:
+            break
+
+        try:
+            ret = func(*args, **kwargs)
+            if result_event is not None:
+                result_event.set_result(ret)
+        except Exception as e:
+            if result_event is not None:
+                result_event.set_exception(e)
+            else:
+                logger.error(f"UI队列任务执行失败: {e}", exc_info=True)
+        _ui_queue.task_done()
+
     root = get_tk_root()
     if root is not None:
         root.after(50, process_ui_queue)
