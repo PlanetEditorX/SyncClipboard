@@ -7,7 +7,6 @@ import socket
 import logging
 import requests
 import threading
-import concurrent.futures
 from pathlib import Path
 from datetime import datetime, timedelta
 from urllib.parse import urlparse, parse_qs, unquote
@@ -26,7 +25,6 @@ def secure_save_path(base_dir, user_path):
 
     # Handle Windows-style path traversal attempts on non-Windows systems
     user_path = user_path.replace('\\', '/')
-    user_path = user_path.lstrip('/')
 
     base_dir = os.path.abspath(base_dir)
     target_path = os.path.abspath(os.path.join(base_dir, user_path))
@@ -154,23 +152,12 @@ def save_clients():
     with _lock:
         now = datetime.now()
         active_clients = []
-        # 预先计算过期时间阈值字符串，避免在循环中重复解析 datetime
-        threshold_str = (now - timedelta(hours=CLIENT_EXPIRE_HOURS)).strftime("%Y-%m-%d %H:%M:%S")
-
         # 先清理过期客户端
         for c in clients:
             is_expired = False
             try:
-                last_seen = c["last_seen"]
-                # 使用 fromisoformat 进行快速的严格语义校验，若格式或数值错误会抛出 ValueError
-                # 这保证了与之前 strptime 相同的准确度，但速度快几十倍
-                try:
-                    datetime.fromisoformat(last_seen)
-                except ValueError:
-                    # 如果 fromisoformat 无法解析，回退到 strptime 做最终判定，以便和原来保持绝对一致
-                    datetime.strptime(last_seen, "%Y-%m-%d %H:%M:%S")
-
-                if last_seen < threshold_str:
+                last = datetime.strptime(c["last_seen"], "%Y-%m-%d %H:%M:%S")
+                if now - last > timedelta(hours=CLIENT_EXPIRE_HOURS):
                     is_expired = True
             except (ValueError, KeyError):
                 # 时间格式错误或缺失字段，视为无效，直接移除
@@ -311,22 +298,6 @@ def get_timestamp(data):
 
     return datetime.now().isoformat()
 
-def _clear_client_task(client, key):
-    try:
-        resp = requests.get(
-            f"http://{client['ip']}:{client['port']}/clear/file_latest",
-            headers={
-                "key": key
-            },
-            timeout=5
-        )
-        if resp.status_code == 200:
-            logging.info(f"最新文件清理通知客户端{client['local_name']}成功...")
-        else:
-            logging.warning(f"最新文件清理通知客户端{client['local_name']}失败: {resp.status_code} {resp.text}")
-    except Exception as e:
-        logging.error(f"连接客户端 {client['local_name']} 失败: {e}")
-
 def notify_clients(_type):
     """通知客户端"""
     if _type == "text":
@@ -351,8 +322,20 @@ def notify_clients(_type):
             continue
         # 同步清理最新文件信息
         if _type == "clear":
-            t = threading.Thread(target=_clear_client_task, args=(client, KEY), daemon=True)
-            t.start()
+            try:
+                resp = requests.get(
+                    f"http://{client_ip}:{client['port']}/clear/file_latest",
+                    headers={
+                        "key": KEY
+                    },
+                    timeout=5
+                )
+                if resp.status_code == 200:
+                    logging.info(f"最新文件清理通知客户端{client['local_name']}成功...")
+                else:
+                    logging.warning(f"最新文件清理通知客户端{client['local_name']}失败: {resp.status_code} {resp.text}")
+            except Exception as e:
+                logging.error(f"连接客户端 {client['local_name']} 失败: {e}")
             continue
 
         #  推送的文件来源是要通知的客户端跳过
@@ -611,8 +594,6 @@ def get_online_clients():
     server_host = app.config.get("host", "127.0.0.1")
     server_port = app.config.get("port", 8000)
 
-    # 1. 过滤需要 ping 的客户端
-    clients_to_ping = []
     for client in clients:
         ip = client.get("ip")
         port = int(client.get("port", 0) or 0)
@@ -648,44 +629,20 @@ def get_online_clients():
         if is_same_name or is_same_endpoint:
             continue
 
-        clients_to_ping.append({
-            "ip": ip,
-            "port": port,
-            "local_name": local_name,
-            "os_name": os_name,
-            "os_normalized": os_normalized
-        })
+        ping_url = f"http://{ip}:{port}/ping"
 
-    # 2. 并发 ping 检查在线状态
-    def check_ping(client_info):
-        ping_url = f"http://{client_info['ip']}:{client_info['port']}/ping"
         try:
             resp = requests.get(
                 ping_url,
                 headers={"key": KEY},
                 timeout=3
             )
-            if resp.status_code == 200:
-                return client_info
+
+            if resp.status_code != 200:
+                continue
+
         except requests.RequestException:
-            pass
-        return None
-
-    online_clients_info = []
-    if clients_to_ping:
-        with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
-            results = executor.map(check_ping, clients_to_ping)
-            for result in results:
-                if result:
-                    online_clients_info.append(result)
-
-    # 3. 组装结果
-    for client_info in online_clients_info:
-        ip = client_info["ip"]
-        port = client_info["port"]
-        local_name = client_info["local_name"]
-        os_name = client_info["os_name"]
-        os_normalized = client_info["os_normalized"]
+            continue
 
         display_name = f"{local_name} ({ip})"
 
@@ -975,9 +932,7 @@ def download_file(filename):
     if key != KEY:
         return jsonify({"status": "error", "message": "密钥错误"}), 403
 
-    filepath = secure_save_path(SAVE_PATH, filename)
-    if filepath is None:
-        return "非法的文件路径", 400
+    filepath = os.path.join(SAVE_PATH, filename)
 
     # 检查文件是否存在
     if not os.path.exists(filepath):

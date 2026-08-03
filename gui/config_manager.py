@@ -39,8 +39,8 @@ class ConfigManager:
                     s = json.load(f)
                 self.server_running = s.get('server_running', False)
                 self.client_running = s.get('client_running', False)
-            except Exception as e:
-                logger.error(f"加载服务运行状态失败: {e}")
+            except Exception:
+                pass
 
     def save_state(self):
         """保存服务运行状态"""

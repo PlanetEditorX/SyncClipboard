@@ -40,8 +40,8 @@ class DownloadProgressDialog:
             try:
                 if getattr(master, 'state', lambda: '')() != 'withdrawn':
                     self.window.transient(master)
-            except Exception as e:
-                logger.warning(f"无法设置 transient: {e}", exc_info=True)
+            except Exception:
+                pass
 
         self.window.title(title)
         self.window.resizable(False, False)
@@ -49,19 +49,19 @@ class DownloadProgressDialog:
             icon_path = BASE_DIR / "gui" / "icon" / "icon-active.png"
             if icon_path.exists():
                 self.window.iconphoto(False, tk.PhotoImage(file=str(icon_path)))
-        except Exception as e:
-            logger.warning(f"加载图标失败: {e}", exc_info=True)
+        except Exception:
+            pass
 
         if ctk is not None and hasattr(self.window, 'configure'):
             try:
                 self.window.configure(fg_color="#f7f7f7")
-            except Exception as e:
-                logger.warning(f"配置窗口前景色失败: {e}", exc_info=True)
+            except Exception:
+                pass
         else:
             try:
                 self.window.configure(bg="#f7f7f7")
-            except Exception as e:
-                logger.warning(f"配置窗口背景色失败: {e}", exc_info=True)
+            except Exception:
+                pass
 
         if ctk is not None and hasattr(ctk, 'CTkFrame'):
             self.container = ctk.CTkFrame(self.window, fg_color="#f7f7f7")
@@ -71,8 +71,8 @@ class DownloadProgressDialog:
         self.container.grid_columnconfigure(0, weight=1)
         try:
             self.window.grid_rowconfigure(0, weight=1)
-        except Exception as e:
-            logger.warning(f"配置行权重失败: {e}", exc_info=True)
+        except Exception:
+            pass
 
         if ctk is not None and hasattr(ctk, 'CTkLabel'):
             self.label = ctk.CTkLabel(self.container, text="正在下载文件...", font=("微软雅黑", 15, "bold"), anchor='w')
@@ -122,8 +122,8 @@ class DownloadProgressDialog:
             self.window.attributes("-alpha", 0)
             self.window.deiconify()
             self.window.after(100, self._show_centered)
-        except Exception as e:
-            logger.warning(f"显示窗口并居中时失败: {e}", exc_info=True)
+        except Exception:
+            pass
 
     def _show_centered(self):
         self._center_window()
@@ -169,15 +169,15 @@ class DownloadProgressDialog:
                     y = top + max((screen_h - height) // 2, 0)
                     self.window.geometry(f"+{x}+{y}")
                     return
-            except Exception as e:
-                logger.warning(f"使用 user32 获取多显示器位置失败: {e}", exc_info=True)
+            except Exception:
+                pass
             screen_w = self.window.winfo_screenwidth()
             screen_h = self.window.winfo_screenheight()
             x = max((screen_w - width) // 2, 0)
             y = max((screen_h - height) // 2, 0)
             self.window.geometry(f"+{x}+{y}")
-        except Exception as e:
-            logger.warning(f"窗口居中失败: {e}", exc_info=True)
+        except Exception:
+            pass
 
     def _set_progress_value(self, percentage):
         if getattr(self, '_use_ctk_progress', False):
@@ -224,8 +224,8 @@ class DownloadProgressDialog:
             try:
                 if self.window.winfo_exists():
                     self.window.destroy()
-            except Exception as e:
-                logger.warning(f"取消下载销毁窗口失败: {e}", exc_info=True)
+            except:
+                pass
         post_to_main_thread(_destroy)
 
     def close(self):
@@ -235,8 +235,8 @@ class DownloadProgressDialog:
             try:
                 if self.window.winfo_exists():
                     self.window.destroy()
-            except Exception as e:
-                logger.warning(f"关闭对话框销毁窗口失败: {e}", exc_info=True)
+            except:
+                pass
         post_to_main_thread(_destroy)
 
     def is_cancelled(self):
