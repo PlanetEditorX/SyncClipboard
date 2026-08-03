@@ -25,6 +25,7 @@ def secure_save_path(base_dir, user_path):
 
     # Handle Windows-style path traversal attempts on non-Windows systems
     user_path = user_path.replace('\\', '/')
+    user_path = user_path.lstrip('/')
 
     base_dir = os.path.abspath(base_dir)
     target_path = os.path.abspath(os.path.join(base_dir, user_path))
@@ -943,7 +944,9 @@ def download_file(filename):
     if key != KEY:
         return jsonify({"status": "error", "message": "密钥错误"}), 403
 
-    filepath = os.path.join(SAVE_PATH, filename)
+    filepath = secure_save_path(SAVE_PATH, filename)
+    if filepath is None:
+        return "非法的文件路径", 400
 
     # 检查文件是否存在
     if not os.path.exists(filepath):
