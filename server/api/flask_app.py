@@ -667,8 +667,8 @@ def get_online_clients():
             )
             if resp.status_code == 200:
                 return client_info
-        except requests.RequestException:
-            pass
+        except requests.RequestException as e:
+            logging.warning(f"Ping 客户端 {client_info['ip']}:{client_info['port']} 失败: {e}")
         return None
 
     online_clients_info = []

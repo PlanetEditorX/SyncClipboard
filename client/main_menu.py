@@ -226,5 +226,5 @@ class SyncClient:
         finally:
             try:
                 win32clipboard.CloseClipboard()
-            except:
-                pass
+            except Exception as e:
+                logger.warning(f"关闭剪贴板失败: {e}", exc_info=True)
