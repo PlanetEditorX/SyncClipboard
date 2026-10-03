@@ -22,6 +22,8 @@ set "SRC={src}"
 set "DST={dst}"
 set "EXE={exe}"
 set "WORK={work}"
+set "TRACE={trace}"
+echo [%date% %time%] 更新脚本启动 >> "%TRACE%"
 set /a COUNT=0
 :wait
 tasklist /FI "IMAGENAME eq SyncClipboard.exe" 2>NUL | find /I "SyncClipboard.exe" >NUL
@@ -32,9 +34,13 @@ if not errorlevel 1 (
     goto wait
 )
 :copy
+echo 主程序已退出，开始替换文件 >> "%TRACE%"
 robocopy "%SRC%" "%DST%" /E /IS /IT /R:2 /W:1 /NFL /NDL /NJH /NJS
+echo robocopy 返回码=!errorlevel! >> "%TRACE%"
 start "" "%EXE%"
+echo 已请求重启主程序 >> "%TRACE%"
 rmdir /S /Q "%WORK%" 2>NUL
+echo 更新脚本结束 >> "%TRACE%"
 endlocal
 """
 
@@ -104,27 +110,36 @@ def ensure_writable(app_dir):
 
 
 def launch_updater(app_dir, payload_dir, work_dir):
-    """生成替换脚本并分离启动，脚本会等待本程序退出后覆盖文件并重启。"""
+    """生成替换脚本并后台启动，脚本会等待本程序退出后覆盖文件并重启。"""
     app_dir = Path(app_dir)
+    temp_dir = Path(tempfile.gettempdir())
+    pid = os.getpid()
+    trace_path = temp_dir / f"syncclipboard_update_{pid}.log"
     script = _UPDATER_SCRIPT.format(
         src=payload_dir,
         dst=app_dir,
         exe=app_dir / "SyncClipboard.exe",
         work=work_dir,
+        trace=trace_path,
         wait=WAIT_SECONDS,
     )
-    script_path = Path(tempfile.gettempdir()) / f"syncclipboard_update_{os.getpid()}.bat"
+    script_path = temp_dir / f"syncclipboard_update_{pid}.bat"
     # cmd.exe 使用系统 ANSI 代码页解析批处理，用 mbcs 保证中文路径正确
     script_path.write_text(script, encoding="mbcs")
 
+    # 只用 CREATE_NO_WINDOW，不能用 DETACHED_PROCESS：后者会让 cmd 失去标准
+    # 句柄，批处理执行到第一条 `tasklist | find` 管道时会永久卡住，脚本再也
+    # 走不到替换和重启，表现为程序退出后再也不回来（闪退）。显式把标准流接到
+    # DEVNULL，子进程才能在父进程退出后继续存活。
     creation_flags = 0
-    if hasattr(subprocess, "DETACHED_PROCESS"):
-        creation_flags |= subprocess.DETACHED_PROCESS
     if hasattr(subprocess, "CREATE_NO_WINDOW"):
         creation_flags |= subprocess.CREATE_NO_WINDOW
     subprocess.Popen(
         ["cmd", "/c", str(script_path)],
         creationflags=creation_flags,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
         close_fds=True,
     )
     logger.info("更新脚本已启动: %s", script_path)

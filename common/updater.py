@@ -13,7 +13,7 @@ import requests
 logger = logging.getLogger(__name__)
 
 # 当前应用版本，发布时与 git tag 保持一致
-APP_VERSION = "1.8.1"
+APP_VERSION = "1.8.2"
 
 # 代码仓库与发布地址
 REPOSITORY = "PlanetEditorX/SyncClipboard"
