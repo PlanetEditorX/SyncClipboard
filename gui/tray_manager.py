@@ -7,6 +7,7 @@ import threading
 
 from PIL import Image
 
+from common.single_instance import start_show_watcher
 from common.utils import (
     BASE_DIR,
     clear_tk_root,
@@ -261,6 +262,8 @@ class TrayManager:
             threading.Thread(target=self.icon.run, name="tray-icon", daemon=True).start()
 
         self.refresh_ui()
+        # 界面与服务就绪后开始响应重复启动的唤出请求
+        start_show_watcher(self.show_main_window)
         if "--minimized" not in sys.argv:
             self.window.show()
 

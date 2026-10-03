@@ -88,6 +88,22 @@ def _fallback_color(color):
     return color[0] if isinstance(color, tuple) else color
 
 
+def _raise_window(root):
+    """把窗口提到最前；从后台进程唤出时 Windows 可能拒绝抢焦点，先临时置顶。"""
+    root.deiconify()
+    root.attributes("-topmost", True)
+    root.lift()
+    root.focus_force()
+    root.after(200, lambda: _drop_topmost(root))
+
+
+def _drop_topmost(root):
+    try:
+        root.attributes("-topmost", False)
+    except tk.TclError:
+        pass
+
+
 class UpdateCheckMixin:
     """两种界面实现共用的「检查 → 下载 → 重启更新」流程。"""
 
@@ -850,9 +866,7 @@ class ModernMainWindow(UpdateCheckMixin):
         if not self._centered:
             self._center_window()
             self._centered = True
-        self.root.deiconify()
-        self.root.lift()
-        self.root.focus_force()
+        _raise_window(self.root)
 
     def hide(self):
         self.root.withdraw()
@@ -988,8 +1002,7 @@ class FallbackMainWindow(UpdateCheckMixin):
         self._refresh_job = self.root.after(1000, self.refresh_status)
 
     def show(self):
-        self.root.deiconify()
-        self.root.lift()
+        _raise_window(self.root)
 
     def hide(self):
         self.root.withdraw()

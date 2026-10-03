@@ -1,6 +1,12 @@
 import logging
 import multiprocessing
 from pathlib import Path
+from common.single_instance import (
+    DELEGATED,
+    UNREACHABLE,
+    ensure_single_instance,
+    notify_unreachable,
+)
 from common.utils import BASE_DIR
 from gui.tray_manager import TrayManager
 from logging.handlers import RotatingFileHandler
@@ -31,5 +37,13 @@ if __name__ == "__main__":
         logger = logging.getLogger(__name__)
         logger.info("托盘管理程序启动")
 
-        # 启动托盘（会阻塞在这里）
-        main()
+        # 单实例：重复启动时唤出已有实例的窗口，本次启动随即退出
+        outcome = ensure_single_instance()
+        if outcome == DELEGATED:
+            logger.info("已请求现有实例唤出窗口，本次启动退出")
+        elif outcome == UNREACHABLE:
+            logger.error("已有实例在运行但无法唤出窗口")
+            notify_unreachable()
+        else:
+            # 启动托盘（会阻塞在这里）
+            main()
