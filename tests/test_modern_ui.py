@@ -8,6 +8,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
+from common.updater import UpdateResult
 from gui.config_manager import ConfigManager
 from gui.main_window import ModernMainWindow, validate_client_settings
 from gui.service_manager import ServiceManager
@@ -67,6 +68,89 @@ class TestModernUiCompatibility(unittest.TestCase):
         self.assertEqual(config.server_port, 8000)
         self.assertEqual(config.local_name, "Old-PC")
         self.assertEqual(config.key, "old-key")
+
+    def test_new_version_enables_update_button(self):
+        window = ModernMainWindow.__new__(ModernMainWindow)
+        window._update_state = "idle"
+        window._update_result = None
+        window._update_button = MagicMock()
+        window._update_message = MagicMock()
+
+        with patch("gui.main_window.is_self_update_available", return_value=True):
+            window._render_update_result(
+                UpdateResult(
+                    "1.7.0",
+                    latest_version="1.8.0",
+                    has_update=True,
+                    download_url="https://example.com/app.zip",
+                )
+            )
+
+        self.assertEqual(window._update_state, "available")
+        self.assertIn("1.8.0", window._update_message.configure.call_args.kwargs["text"])
+        button_kwargs = window._update_button.configure.call_args.kwargs
+        self.assertEqual(button_kwargs["state"], "normal")
+        self.assertIn("1.8.0", button_kwargs["text"])
+
+    def test_new_version_without_windows_asset_stays_idle(self):
+        window = ModernMainWindow.__new__(ModernMainWindow)
+        window._update_state = "idle"
+        window._update_result = None
+        window._update_button = MagicMock()
+        window._update_message = MagicMock()
+
+        with patch("gui.main_window.is_self_update_available", return_value=True):
+            window._render_update_result(
+                UpdateResult("1.7.0", latest_version="1.8.0", has_update=True)
+            )
+
+        self.assertEqual(window._update_state, "idle")
+        self.assertIn("未找到 Windows 安装包", window._update_message.configure.call_args.kwargs["text"])
+
+    def test_new_version_in_source_mode_does_not_offer_update(self):
+        window = ModernMainWindow.__new__(ModernMainWindow)
+        window._update_state = "idle"
+        window._update_result = None
+        window._update_button = MagicMock()
+        window._update_message = MagicMock()
+
+        with patch("gui.main_window.is_self_update_available", return_value=False):
+            window._render_update_result(
+                UpdateResult(
+                    "1.7.0",
+                    latest_version="1.8.0",
+                    has_update=True,
+                    download_url="https://example.com/app.zip",
+                )
+            )
+
+        self.assertEqual(window._update_state, "idle")
+        self.assertIn("源码运行", window._update_message.configure.call_args.kwargs["text"])
+
+    def test_up_to_date_message_is_shown(self):
+        window = ModernMainWindow.__new__(ModernMainWindow)
+        window._update_state = "idle"
+        window._update_result = None
+        window._update_button = MagicMock()
+        window._update_message = MagicMock()
+
+        window._render_update_result(UpdateResult("1.7.0", latest_version="1.7.0"))
+
+        self.assertEqual(window._update_state, "idle")
+        self.assertIn("已是最新版本", window._update_message.configure.call_args.kwargs["text"])
+
+    def test_check_error_resets_button(self):
+        window = ModernMainWindow.__new__(ModernMainWindow)
+        window._update_state = "checking"
+        window._update_result = None
+        window._update_button = MagicMock()
+        window._update_message = MagicMock()
+
+        window._render_update_result(UpdateResult("1.7.0", error="检查更新失败，请检查网络后重试"))
+
+        self.assertEqual(window._update_state, "idle")
+        self.assertIn("检查更新失败", window._update_message.configure.call_args.kwargs["text"])
+        self.assertEqual(window._update_button.configure.call_args.kwargs["text"], "检查更新")
 
     def test_importing_tray_manager_does_not_create_a_root_window(self):
         module = importlib.import_module("gui.tray_manager")

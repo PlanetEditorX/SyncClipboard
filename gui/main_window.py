@@ -1,13 +1,28 @@
 """Modern desktop control panel for SyncClipboard."""
 
+import logging
 import os
+import shutil
+import tempfile
 import threading
 import tkinter as tk
 from pathlib import Path
-from tkinter import filedialog, ttk
+from tkinter import filedialog, messagebox, ttk
 
-from common.utils import BASE_DIR, show_message
+from common.update_apply import (
+    UpdateError,
+    ensure_writable,
+    extract_package,
+    is_self_update_available,
+    launch_updater,
+    resolve_app_dir,
+)
+from common.updater import APP_VERSION, check_for_update, download_file
+from common.utils import BASE_DIR, post_to_main_thread_no_wait, show_message
 from gui.ui_backend import ctk, set_appearance_mode
+
+
+logger = logging.getLogger("gui")
 
 
 FONT = "Microsoft YaHei UI"
@@ -68,13 +83,153 @@ def validate_client_settings(
     }
 
 
+def _fallback_color(color):
+    """ttk 不支持明暗双色元组，取浅色值。"""
+    return color[0] if isinstance(color, tuple) else color
+
+
+class UpdateCheckMixin:
+    """两种界面实现共用的「检查 → 下载 → 重启更新」流程。"""
+
+    _update_button = None
+    _update_message = None
+    _update_state = "idle"
+    _update_result = None
+    _pending_payload = None
+    _pending_work_dir = None
+    _update_color_key = "text_color"
+
+    def _prepare_color(self, color):
+        return color
+
+    def _set_update_message(self, text, color):
+        if self._update_message is not None:
+            self._update_message.configure(
+                text=text, **{self._update_color_key: self._prepare_color(color)}
+            )
+
+    def _set_update_state(self, state, text, color, button_text=None, button_state="normal"):
+        self._update_state = state
+        self._set_update_message(text, color)
+        if self._update_button is not None:
+            self._update_button.configure(
+                state=button_state,
+                text=button_text or "检查更新",
+            )
+
+    def check_for_updates(self):
+        """按钮唯一入口，按当前状态决定是检查、下载还是重启更新。"""
+        if self._update_state in {"checking", "downloading"}:
+            return
+        if self._update_state == "available":
+            self._start_update_download()
+            return
+        if self._update_state == "ready":
+            self._apply_update()
+            return
+        self._set_update_state("checking", "正在检查更新…", MUTED, button_state="disabled")
+        threading.Thread(target=self._run_update_check, name="update-check", daemon=True).start()
+
+    def _run_update_check(self):
+        result = check_for_update()
+        post_to_main_thread_no_wait(self._render_update_result, result)
+
+    def _render_update_result(self, result):
+        self._update_result = result
+        if result.error:
+            self._set_update_state("idle", result.error, DANGER)
+        elif result.has_update and result.download_url and is_self_update_available():
+            self._set_update_state(
+                "available",
+                f"发现新版本 v{result.latest_version}（当前 v{result.current_version}）",
+                SUCCESS,
+                button_text=f"更新到 v{result.latest_version}",
+            )
+        elif result.has_update and not is_self_update_available():
+            self._set_update_state(
+                "idle",
+                f"发现新版本 v{result.latest_version}，当前为源码运行，请前往 Releases 下载",
+                WARNING,
+            )
+        elif result.has_update:
+            self._set_update_state(
+                "idle",
+                f"发现新版本 v{result.latest_version}，但未找到 Windows 安装包",
+                WARNING,
+            )
+        else:
+            self._set_update_state("idle", f"已是最新版本 v{result.current_version}", MUTED)
+
+    def _start_update_download(self):
+        self._last_download_percent = -1
+        self._set_update_state(
+            "downloading", "正在下载更新…", WARNING, button_text="下载中…", button_state="disabled"
+        )
+        threading.Thread(target=self._download_update, name="update-download", daemon=True).start()
+
+    def _download_update(self):
+        work_dir = Path(tempfile.mkdtemp(prefix="syncclipboard_update_"))
+        try:
+            zip_path = work_dir / "update.zip"
+            download_file(
+                self._update_result.download_url,
+                zip_path,
+                progress=self._on_download_progress,
+            )
+            payload = extract_package(zip_path, work_dir / "payload")
+        except Exception as exc:
+            logger.warning("下载更新失败: %s", exc)
+            shutil.rmtree(work_dir, ignore_errors=True)
+            post_to_main_thread_no_wait(
+                self._set_update_state, "idle", f"更新失败：{exc}", DANGER
+            )
+            return
+        post_to_main_thread_no_wait(self._finish_download, payload, work_dir)
+
+    def _on_download_progress(self, downloaded, total):
+        if not total:
+            return
+        percent = int(downloaded * 100 / total)
+        if percent == self._last_download_percent:
+            return
+        self._last_download_percent = percent
+        post_to_main_thread_no_wait(
+            self._set_update_message, f"正在下载更新… {percent}%", WARNING
+        )
+
+    def _finish_download(self, payload, work_dir):
+        self._pending_payload = payload
+        self._pending_work_dir = work_dir
+        self._set_update_state(
+            "ready",
+            f"更新 v{self._update_result.latest_version} 已就绪，重启后生效",
+            SUCCESS,
+            button_text="重启并更新",
+        )
+
+    def _apply_update(self):
+        if not messagebox.askyesno(
+            "更新 SyncClipboard", "将关闭程序、替换文件并重新启动，是否继续？"
+        ):
+            return
+        try:
+            app_dir = resolve_app_dir()
+            ensure_writable(app_dir)
+            launch_updater(app_dir, self._pending_payload, self._pending_work_dir)
+        except UpdateError as exc:
+            self._set_update_state("idle", f"更新失败：{exc}", DANGER)
+            return
+        self._set_update_state("ready", "正在重启以完成更新…", WARNING, button_state="disabled")
+        self.manager.quit_app()
+
+
 def create_main_window(root, manager, use_customtkinter=True):
     if use_customtkinter and ctk is not None:
         return ModernMainWindow(root, manager)
     return FallbackMainWindow(root, manager)
 
 
-class ModernMainWindow:
+class ModernMainWindow(UpdateCheckMixin):
     """Single-page CustomTkinter dashboard."""
 
     APPEARANCE_LABELS = {
@@ -522,12 +677,52 @@ class ModernMainWindow:
         return entry
 
     def _build_footer(self):
+        footer = ctk.CTkFrame(self.body, fg_color="transparent")
+        footer.grid(row=4, column=0, columnspan=2, sticky="ew", padx=24, pady=(10, 24))
+        footer.grid_columnconfigure(0, weight=1)
+
         ctk.CTkLabel(
-            self.body,
+            footer,
             text="关闭窗口后应用仍会在系统托盘中运行",
             text_color=MUTED,
             font=(FONT, 10),
-        ).grid(row=4, column=0, columnspan=2, pady=(10, 24))
+            anchor="w",
+        ).grid(row=0, column=0, sticky="ew")
+
+        self.update_button = ctk.CTkButton(
+            footer,
+            text="检查更新",
+            command=self.check_for_updates,
+            width=140,
+            height=32,
+            corner_radius=10,
+            fg_color=CARD_ALT,
+            hover_color=BORDER,
+            text_color=TEXT,
+            border_width=1,
+            border_color=BORDER,
+            font=(FONT, 10),
+        )
+        self.update_button.grid(row=0, column=1, sticky="e", padx=(12, 0))
+
+        ctk.CTkLabel(
+            footer,
+            text=f"当前版本 v{APP_VERSION}",
+            text_color=MUTED,
+            font=(FONT, 10),
+            anchor="e",
+        ).grid(row=0, column=2, sticky="e", padx=(12, 0))
+
+        self.update_message = ctk.CTkLabel(
+            footer,
+            text="",
+            text_color=MUTED,
+            font=(FONT, 10),
+            anchor="e",
+        )
+        self.update_message.grid(row=1, column=0, columnspan=3, sticky="e", pady=(6, 0))
+        self._update_button = self.update_button
+        self._update_message = self.update_message
 
     @staticmethod
     def _set_entry(entry, value):
@@ -739,8 +934,13 @@ class ModernMainWindow:
             self.settings_message.configure(text="外观偏好保存失败", text_color=DANGER)
 
 
-class FallbackMainWindow:
+class FallbackMainWindow(UpdateCheckMixin):
     """Functional ttk fallback for source environments without CustomTkinter."""
+
+    _update_color_key = "foreground"
+
+    def _prepare_color(self, color):
+        return _fallback_color(color)
 
     def __init__(self, root, manager):
         self.root = root
@@ -760,6 +960,15 @@ class FallbackMainWindow:
         ttk.Button(frame, text="切换本机服务器", command=self._toggle_server).pack(fill="x", pady=5)
         ttk.Button(frame, text="获取共享文件", command=self._fetch_file).pack(fill="x", pady=5)
         ttk.Button(frame, text="打开配置目录", command=self._open_config).pack(fill="x", pady=5)
+
+        update_bar = ttk.Frame(frame)
+        update_bar.pack(fill="x", pady=(18, 5))
+        ttk.Label(update_bar, text=f"当前版本 v{APP_VERSION}").pack(side="left")
+        self._update_button = ttk.Button(update_bar, text="检查更新", command=self.check_for_updates)
+        self._update_button.pack(side="right")
+        self._update_message = ttk.Label(frame, text="", foreground="#64748B", anchor="w")
+        self._update_message.pack(fill="x")
+
         ttk.Button(frame, text="隐藏到托盘", command=self.hide).pack(fill="x", pady=(18, 5))
         self.refresh_status()
 
