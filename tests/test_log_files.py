@@ -111,7 +111,7 @@ class TestReadLog(unittest.TestCase):
 
 
 class TestLazyLoading(unittest.TestCase):
-    """查看器只应在窗口可见时读文件，且不能自带周期任务。"""
+    """自动刷新只在窗口可见时跑，隐藏状态下一律不碰磁盘。"""
 
     def test_hidden_viewer_never_reads_the_file(self):
         from gui.qt_log_view import LogViewer
@@ -123,13 +123,6 @@ class TestLazyLoading(unittest.TestCase):
             LogViewer.refresh(viewer)
 
         read_log_mock.assert_not_called()
-
-    def test_viewer_does_not_own_a_timer(self):
-        """守住「不要一直加载日志」这条约束，防止以后被顺手加回自动刷新。"""
-        from gui.qt_log_view import LogViewer
-
-        source = Path(inspect.getsourcefile(LogViewer)).read_text(encoding="utf-8")
-        self.assertNotIn("QTimer", source)
 
 
 class TestLogViewerWiring(unittest.TestCase):
@@ -215,6 +208,39 @@ class TestLogViewerWiring(unittest.TestCase):
         with patch("gui.qt_log_view.read_log") as read_log_mock:
             window._log_viewer.refresh()
         read_log_mock.assert_not_called()
+
+    def test_auto_refresh_ticks_only_while_the_window_is_open(self):
+        """打开后自动刷新，关闭（含收进托盘）后必须停表，不留周期任务。"""
+        from gui.qt_log_view import AUTO_REFRESH_MS
+
+        window = self._build_window()
+        window.show_window()
+        self.app.processEvents()
+
+        snapshot = LogSnapshot(
+            source="server", path=Path("server.log"), text="一行日志", line_count=1
+        )
+        with patch("gui.qt_log_view.read_log", return_value=snapshot) as read_log_mock:
+            window.open_log_view("server")
+            self.app.processEvents()
+
+            viewer = window._log_viewer
+            self.assertTrue(viewer.isVisible())
+            self.assertTrue(viewer._auto_timer.isActive())
+            self.assertEqual(viewer._auto_timer.interval(), AUTO_REFRESH_MS)
+            self.assertEqual(read_log_mock.call_count, 1)
+
+            # 定时器到点必须真的再读一次
+            viewer._auto_timer.timeout.emit()
+            self.assertEqual(read_log_mock.call_count, 2)
+
+            window.hide_window()
+            self.app.processEvents()
+            self.assertFalse(viewer._auto_timer.isActive())
+
+            # 隐藏后即使有人手动触发 refresh 也不该产生 I/O
+            viewer.refresh()
+            self.assertEqual(read_log_mock.call_count, 2)
 
 
 if __name__ == "__main__":

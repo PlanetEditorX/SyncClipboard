@@ -1,10 +1,12 @@
-"""日志查看器（按需加载，零后台开销）。
+"""日志查看器（打开即自动刷新，关闭即停）。
 
-三条约束都来自「界面不该在后台偷偷吃资源」：
+资源边界很明确，全部围绕"窗口可见"这一件事：
 
-1. 只有点开时才读文件——构造函数不碰磁盘，`refresh()` 先查 `isVisible()`；
-2. 没有周期定时器，也不监听文件变化——「刷新」按钮是再次读取的唯一入口；
-3. 窗口关掉后没有任何残留任务，下次打开才重新读一次。
+1. 构造函数不碰磁盘，只有用户点开某个日志（`open_source`）时才读第一次；
+2. 自动刷新由 2 秒的 QTimer 驱动，但定时器**只在窗口显示期间运行**：
+   `showEvent` 启动，`hideEvent` / `closeEvent` 停止；
+3. `refresh()` 自己也先查 `isVisible()`，隐藏状态下即使有人误触发也不产生 I/O；
+4. 内容没变化时不重设正文，避免打断用户选中文本和滚动位置。
 
 服务日志 / 客户端日志 / 界面日志是三份独立文件，切换分段即切换来源，
 切过去才会去读对应文件，没点过的文件全程不会被打开。
@@ -15,7 +17,7 @@ import os
 from datetime import datetime
 from pathlib import Path
 
-from PySide6.QtCore import QRegularExpression, Qt
+from PySide6.QtCore import QRegularExpression, QTimer, Qt
 from PySide6.QtGui import QColor, QGuiApplication, QSyntaxHighlighter, QTextCharFormat
 from PySide6.QtWidgets import (
     QButtonGroup,
@@ -74,8 +76,11 @@ class LogLevelHighlighter(QSyntaxHighlighter):
                 self.setFormat(match.capturedStart(), match.capturedLength(), fmt)
 
 
+AUTO_REFRESH_MS = 2000
+
+
 class LogViewer(QDialog):
-    """日志窗口。单实例复用，关掉只是隐藏，不做任何清理性工作。"""
+    """日志窗口。单实例复用，关掉只是隐藏，隐藏时自动刷新随之停止。"""
 
     def __init__(self, parent=None, palette=None, base_dir=None):
         super().__init__(parent)
@@ -91,6 +96,11 @@ class LogViewer(QDialog):
 
         self._build()
         self._update_path_label()
+
+        # 自动刷新定时器：构造时不启动，等窗口真正显示才跑（见 showEvent）
+        self._auto_timer = QTimer(self)
+        self._auto_timer.setInterval(AUTO_REFRESH_MS)
+        self._auto_timer.timeout.connect(self.refresh)
 
     # ------------------------------------------------------------------ 构建
 
@@ -127,7 +137,7 @@ class LogViewer(QDialog):
         self.text.setReadOnly(True)
         self.text.setUndoRedoEnabled(False)  # 只读日志不需要撤销栈，省内存
         self.text.setLineWrapMode(QPlainTextEdit.NoWrap)
-        self.text.setPlaceholderText("点击「刷新」读取日志（打开窗口时不会自动读取）")
+        self.text.setPlaceholderText("正在读取日志…")
         self.highlighter = LogLevelHighlighter(self.text.document(), self._palette)
         root.addWidget(self.text, 1)
 
@@ -230,11 +240,17 @@ class LogViewer(QDialog):
 
         scroll = self.text.verticalScrollBar()
         stick_to_bottom = (not self._has_content) or scroll.value() >= scroll.maximum() - 4
+        kept_position = scroll.value()
 
-        self.text.setPlainText(snapshot.text)
+        # 自动刷新每 2 秒跑一次，内容没变就别重设正文：
+        # setPlainText 会清掉选中区并让滚动条跳位，平白打断正在看日志的人。
+        if snapshot.text != self.text.toPlainText():
+            self.text.setPlainText(snapshot.text)
+            if stick_to_bottom:
+                scroll.setValue(scroll.maximum())
+            else:
+                scroll.setValue(min(kept_position, scroll.maximum()))
         self._has_content = bool(snapshot.text)
-        if stick_to_bottom:
-            scroll.setValue(scroll.maximum())
 
         detail = f"共 {snapshot.line_count} 行 · {format_size(snapshot.file_size)}"
         if snapshot.truncated:
@@ -242,7 +258,9 @@ class LogViewer(QDialog):
         if not snapshot.text:
             detail += " · 日志内容为空"
         self._set_status(detail, self._palette["muted"])
-        self.time_label.setText(f"读取于 {datetime.now():%H:%M:%S}")
+        self.time_label.setText(
+            f"读取于 {datetime.now():%H:%M:%S} · 每 {AUTO_REFRESH_MS // 1000} 秒自动刷新"
+        )
 
     def _set_status(self, text, color):
         self.status_label.setText(text)
@@ -266,8 +284,19 @@ class LogViewer(QDialog):
         except Exception as exc:  # noqa: BLE001 - 需要告知用户
             info_message("无法打开日志目录", str(exc))
 
+    def showEvent(self, event):  # noqa: N802 - Qt 命名
+        """窗口显示后才开始自动刷新，这样隐藏期间不存在任何周期任务。"""
+        super().showEvent(event)
+        if not self._auto_timer.isActive():
+            self._auto_timer.start()
+
+    def hideEvent(self, event):  # noqa: N802 - Qt 命名
+        # 最小化、被主窗口收起、关闭都会走到这里：一律停表
+        self._auto_timer.stop()
+        super().hideEvent(event)
+
     def closeEvent(self, event):  # noqa: N802 - Qt 命名
-        # 没有定时器要停，也没有线程要收；只把内容标记清掉，
-        # 下次打开时会重新读一次并滚到底部。
+        # 关闭即停止自动刷新；正文保留，下次打开会重新读一次并滚到底部
+        self._auto_timer.stop()
         self._has_content = False
         super().closeEvent(event)

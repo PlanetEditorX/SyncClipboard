@@ -340,7 +340,8 @@ class MainWindow(QMainWindow):
         lay.addLayout(head)
 
         hint = QLabel(
-            "服务端、客户端与界面各写一份日志，点哪个读哪个；窗口关闭后不再读取文件"
+            "服务端、客户端与界面各写一份日志，点哪个读哪个；打开后每 2 秒自动刷新，"
+            "窗口关闭即停止读取"
         )
         hint.setObjectName("Hint")
         hint.setWordWrap(True)
