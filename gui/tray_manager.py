@@ -5,11 +5,8 @@ import queue
 import sys
 import threading
 
-from PIL import Image
-
 from common.single_instance import start_show_watcher
 from common.utils import (
-    BASE_DIR,
     clear_tk_root,
     post_to_main_thread_no_wait,
     process_ui_queue,
@@ -18,6 +15,7 @@ from common.utils import (
     show_message,
 )
 from gui.clipboard_handler import ClipboardHandler
+from gui.icon_theme import load_icon_image
 from gui.config_manager import ConfigManager
 from gui.file_handler import FileHandler
 from gui.file_watcher_handler import FileWatcherHandler
@@ -158,14 +156,8 @@ class TrayManager:
                 logger.debug("刷新托盘菜单失败", exc_info=True)
 
     def _load_icon_image(self):
-        state = self.get_service_state()
-        active = state["server_alive"] or state["client_alive"]
-        icon_name = "icon-active.png" if active else "icon-stop.png"
-        icon_path = BASE_DIR / "gui" / "icon" / icon_name
-        if icon_path.exists():
-            with Image.open(icon_path) as source:
-                return source.convert("RGBA").copy()
-        return Image.new("RGBA", (64, 64), "#2563EB" if active else "#64748B")
+        # 按系统主题挑图标：浅色任务栏用深色图标，深色任务栏用浅色图标
+        return load_icon_image(self.get_service_state())
 
     def update_icon(self):
         if self.icon is not None:

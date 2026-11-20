@@ -89,10 +89,10 @@ def copy_runtime_assets():
 
     dst_icon = APP_DIR / "gui" / "icon"
     dst_icon.mkdir(parents=True, exist_ok=True)
-    for filename in ("icon.ico", "icon-active.png", "icon-stop.png"):
-        source = PROJECT_ROOT / "gui" / "icon" / filename
-        if source.exists():
-            shutil.copy2(source, dst_icon / filename)
+    # 浅色 / 深色任务栏是两套图标文件，统一按目录复制，避免新增变体漏打进去
+    for source in sorted((PROJECT_ROOT / "gui" / "icon").iterdir()):
+        if source.suffix.lower() in {".png", ".ico"}:
+            shutil.copy2(source, dst_icon / source.name)
     print(f"  [OK] 图标 -> {dst_icon}")
 
     src_bat = RELEASE_DIR / "bat"

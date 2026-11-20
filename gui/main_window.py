@@ -19,6 +19,7 @@ from common.update_apply import (
 )
 from common.updater import APP_VERSION, check_for_update, download_file
 from common.utils import BASE_DIR, post_to_main_thread_no_wait, show_message
+from gui.icon_theme import icon_path as _icon_path
 from gui.ui_backend import ctk, set_appearance_mode
 
 
@@ -283,8 +284,9 @@ class ModernMainWindow(UpdateCheckMixin):
 
     def _set_window_icon(self):
         try:
-            icon_path = BASE_DIR / "gui" / "icon" / "icon-active.png"
-            if icon_path.exists():
+            # 跟随系统主题：浅色标题栏用深色图标，深色标题栏用浅色图标
+            icon_path = _icon_path("active")
+            if icon_path is not None:
                 self._window_icon = tk.PhotoImage(file=str(icon_path))
                 self.root.iconphoto(False, self._window_icon)
         except Exception:

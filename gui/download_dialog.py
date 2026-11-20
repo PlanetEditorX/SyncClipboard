@@ -2,7 +2,8 @@ import logging
 import threading
 import tkinter as tk
 from tkinter import ttk
-from common.utils import post_to_main_thread, get_tk_root, post_to_main_thread_no_wait, BASE_DIR
+from common.utils import post_to_main_thread, get_tk_root, post_to_main_thread_no_wait
+from gui.icon_theme import icon_path as _icon_path
 from gui.ui_backend import create_root, ctk
 
 import ctypes
@@ -44,8 +45,8 @@ class DownloadProgressDialog:
         self.window.title(title)
         self.window.resizable(False, False)
         try:
-            icon_path = BASE_DIR / "gui" / "icon" / "icon-active.png"
-            if icon_path.exists():
+            icon_path = _icon_path("active")
+            if icon_path is not None:
                 self.window.iconphoto(False, tk.PhotoImage(file=str(icon_path)))
         except Exception as e:
             logger.warning(f"加载图标失败: {e}", exc_info=True)
