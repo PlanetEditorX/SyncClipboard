@@ -224,6 +224,9 @@ class TrayManager(QObject):
         self.action_server_config.triggered.connect(
             lambda: self._open_config("server_config.json")
         )
+
+        self.action_logs = menu.addAction("查看运行日志")
+        self.action_logs.triggered.connect(lambda: self.show_log_view("server"))
         menu.addSeparator()
 
         self.action_quit = menu.addAction("退出")
@@ -285,6 +288,20 @@ class TrayManager(QObject):
             self.window.hide_window()
         else:
             post_to_main_thread_no_wait(self.window.hide_window)
+
+    def show_log_view(self, source="server"):
+        """从托盘直接打开某个日志：先把主窗口叫出来，再按要求读一次。"""
+        if self.window is None:
+            return
+
+        def action():
+            self.window.show_window()
+            self.window.open_log_view(source)
+
+        if threading.current_thread() is threading.main_thread():
+            action()
+        else:
+            post_to_main_thread_no_wait(action)
 
     def fetch_shared_file(self, *_args):
         threading.Thread(

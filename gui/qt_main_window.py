@@ -33,6 +33,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from common.log_files import DEFAULT_SOURCE, LOG_SOURCES
 from common.update_apply import (
     UpdateError,
     ensure_writable,
@@ -45,6 +46,7 @@ from common.updater import APP_VERSION, check_for_update, download_file
 from common.utils import BASE_DIR, post_to_main_thread_no_wait
 from gui import qt_dialogs
 from gui.main_window import validate_client_settings
+from gui.qt_log_view import LogViewer
 from gui.qt_theme import (
     APPEARANCE_LABELS,
     APPEARANCE_MODES,
@@ -147,6 +149,7 @@ class MainWindow(QMainWindow):
         self._pending_payload = None
         self._pending_work_dir = None
         self._last_download_percent = -1
+        self._log_viewer = None
 
         self.setWindowTitle("SyncClipboard")
         self.setWindowIcon(app_icon("active"))
@@ -189,6 +192,7 @@ class MainWindow(QMainWindow):
         self._build_hero()
         self._build_service_cards()
         self._build_quick_actions()
+        self._build_logs()
         self._build_settings()
         self._build_footer()
 
@@ -314,6 +318,49 @@ class MainWindow(QMainWindow):
             row.addWidget(button, 1)
 
         lay.addLayout(row)
+        self.body.addWidget(card)
+
+    def _build_logs(self):
+        """日志入口卡片：三个来源各一个按钮，点哪个读哪个。"""
+        card = QFrame()
+        card.setObjectName("Card")
+        lay = QVBoxLayout(card)
+        lay.setContentsMargins(18, 16, 18, 16)
+        lay.setSpacing(12)
+
+        head = QHBoxLayout()
+        head.addWidget(_section_title("运行日志"))
+        head.addStretch(1)
+        folder = QPushButton("打开日志目录")
+        folder.setCursor(Qt.PointingHandCursor)
+        folder.setFixedWidth(120)
+        folder.setMinimumHeight(32)
+        folder.clicked.connect(self._open_log_folder)
+        head.addWidget(folder)
+        lay.addLayout(head)
+
+        hint = QLabel(
+            "服务端、客户端与界面各写一份日志，点哪个读哪个；窗口关闭后不再读取文件"
+        )
+        hint.setObjectName("Hint")
+        hint.setWordWrap(True)
+        lay.addWidget(hint)
+
+        row = QHBoxLayout()
+        row.setSpacing(10)
+        self.log_buttons = {}
+        for source, (title, file_name, description) in LOG_SOURCES.items():
+            button = QPushButton(f"查看{title}")
+            button.setCursor(Qt.PointingHandCursor)
+            button.setMinimumHeight(38)
+            button.setToolTip(f"{description} · log/{file_name}")
+            button.clicked.connect(
+                lambda _checked=False, value=source: self.open_log_view(value)
+            )
+            row.addWidget(button, 1)
+            self.log_buttons[source] = button
+        lay.addLayout(row)
+
         self.body.addWidget(card)
 
     def _build_settings(self):
@@ -623,6 +670,27 @@ class MainWindow(QMainWindow):
         except Exception as exc:  # noqa: BLE001
             qt_dialogs.info_message("无法打开目录", str(exc))
 
+    # -------------------------------------------------------------- 运行日志
+
+    def open_log_view(self, source=DEFAULT_SOURCE):
+        """日志查看的唯一入口：点开时才创建窗口并读一次文件。
+
+        查看器本身不带定时器，所以关掉窗口之后不会再有磁盘读取；
+        再次点击会复用同一个窗口并重新读一次。
+        """
+        if self._log_viewer is None:
+            self._log_viewer = LogViewer(self, self._palette)
+        self._log_viewer.set_palette(self._palette)
+        self._log_viewer.open_source(source)
+
+    def _open_log_folder(self):
+        log_dir = BASE_DIR / "log"
+        log_dir.mkdir(parents=True, exist_ok=True)
+        try:
+            os.startfile(log_dir)
+        except Exception as exc:  # noqa: BLE001
+            qt_dialogs.info_message("无法打开日志目录", str(exc))
+
     def _choose_directory(self):
         selected = qt_dialogs.choose_directory(
             self.save_path_edit.text() or self.config.save_path,
@@ -657,6 +725,8 @@ class MainWindow(QMainWindow):
             self.autostart_switch,
         ):
             switch.setPaletteColors(self._palette)
+        if self._log_viewer is not None:
+            self._log_viewer.set_palette(self._palette)
         self.config.appearance_mode = mode
         if not self.config.save_state():
             self._set_settings_message("外观偏好保存失败", self._palette["danger"])
@@ -829,6 +899,9 @@ class MainWindow(QMainWindow):
         return width, height
 
     def hide_window(self):
+        # 日志窗跟着主窗口一起收起：界面不见了就不该有窗口还在读文件
+        if self._log_viewer is not None and self._log_viewer.isVisible():
+            self._log_viewer.hide()
         self.hide()
 
     def _center_once(self):

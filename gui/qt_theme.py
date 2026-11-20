@@ -218,6 +218,18 @@ def build_qss(p):
     QLineEdit:focus {{ border: 1px solid {p['accent']}; }}
     QLineEdit::placeholder {{ color: {p['muted']}; }}
 
+    QPlainTextEdit#LogText {{
+        background: {p['card_alt']};
+        color: {p['text']};
+        border: 1px solid {p['border']};
+        border-radius: 10px;
+        padding: 8px 10px;
+        font-family: "Consolas", "Cascadia Mono", monospace;
+        font-size: 12px;
+        selection-background-color: {p['accent']};
+        selection-color: #FFFFFF;
+    }}
+
     QProgressBar {{
         background: {p['card_alt']};
         border: none;
