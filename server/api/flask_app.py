@@ -407,6 +407,38 @@ def notify_clients(_type):
         except Exception as e:
             logging.error(f"通知客户端 {client['local_name']} 失败: {e}")
 
+def _echo_pending_count(source):
+    """估算这次广播会有多少个客户端可能把内容原样回传（用于发放回音票据）。"""
+    try:
+        names = {
+            c.get("local_name")
+            for c in clients
+            if c.get("local_name")
+        }
+    except Exception:
+        names = set()
+    names.discard(source)
+    names.discard(LOCAL_NAME)
+    return max(1, len(names))
+
+
+def _is_echo_submission(content, source):
+    """
+    溯源判断：这次 /text_sync 提交是“用户手动复制”还是“客户端把收到的东西回传”？
+
+    - 全局最新已经是同一份内容：其它设备再发一遍属于回音，忽略；
+      同一设备重复提交同一份内容（重试/重复事件）也忽略，避免重复弹窗。
+    - 命中回音票据：这份内容刚被广播出去、票据还没用完，说明是接收方回传，忽略。
+    - 其余情况（票据已耗尽/过期）视为用户手动又复制了一次，正常广播。
+    """
+    latest = tracker.get_global_latest()
+    same_as_latest = latest is not None and latest.get("content") == content
+    # 无论是否因“与全局最新相同”而忽略，都要消耗票据，避免票据长期挂住，
+    # 把用户后续真正的手动复制误判成回音（首发者本人不会消耗票据）。
+    consumed = tracker.consume_echo(content, source)
+    return same_as_latest or consumed
+
+
 # ------------------- 文字同步接口 -------------------
 @app.route('/text_sync', methods=['POST'])
 def text_sync():
@@ -426,17 +458,21 @@ def text_sync():
     if not content:
         return jsonify({"status": "error", "message": "内容为空"}), 400
 
-    # 任意客户端把全局最新文字原样发回，都属于同步回音；不再改变来源或重新广播。
-    if content == tracker.get_latest_global_content():
+    # 任意客户端把已广播过的内容原样发回，都属于同步回音；不再改变来源或重新广播。
+    if _is_echo_submission(content, source):
         return jsonify({"status": "ignored", "message": "忽略重复回传内容"}), 200
 
     item = build_text_item(text=content, source=source, pasted=False)
 
-    # 去重：用 tracker 的 is_duplicate 方法
+    # 去重：仅拦截完全相同的推送事件（事件 ID 唯一，正常复制不会被拦）
     if tracker.is_duplicate(item["id"]):
         return jsonify({"status": "duplicate", "message": "重复内容"}), 200
     # 更新记录（同时注册 ID、更新客户端最新和全局最新）
-    tracker.update(item)
+    # 用 force_latest：能走到这里说明已经确认是“用户手动复制”的新内容，
+    # 以到达顺序为准，避免客户端时钟偏差导致新内容顶不上来（历史上同样表现为“手机拿不到新文字”）。
+    tracker.update(item, force_latest=True)
+    # 发放回音票据：允许接收方把这份内容回传一次而不被当成新内容
+    tracker.register_echo(content, origin=source, pending=_echo_pending_count(source))
     # 在需要时写入剪贴板（仅 Windows 服务器或启用了剪贴板功能时）
     copy_text_to_clipboard(content)
     load_clients_ip()
@@ -460,12 +496,18 @@ def sync():
     # 判断内容是否发生了变化（首次连接也算变化）
     is_new = (not client_last) or (client_last.get("content") != content)
 
-    if is_new and content and source != LOCAL_NAME:
+    # 溯源：这次“新内容”其实是别的设备刚广播过来、被本机剪贴板原样回传吗？
+    is_echo = bool(is_new and content and source != LOCAL_NAME) and tracker.consume_echo(content, source)
+    if is_echo:
+        logging.info("忽略客户端 %s 的回音内容: %s", source, str(content)[:30])
+
+    if is_new and content and source != LOCAL_NAME and not is_echo:
         # 手机有新内容 → 强制更新为自己，并设为全局最新
         item = build_text_item(text=content, source=source, pasted=True)
         copy_text_to_clipboard(content)
         if not tracker.is_duplicate(item["id"]):
             tracker.update(item, force_latest=True)
+            tracker.register_echo(content, origin=source, pending=_echo_pending_count(source))
             load_clients_ip()
             notify_clients("text")
         # latest_global = tracker.get_global_latest()
@@ -484,7 +526,7 @@ def sync():
                     "id": latest["id"],
                     "type": latest.get("type", "text"),
                     "content": latest["content"],
-                    "timestamp": now_time_str,
+                    "timestamp": datetime.now().isoformat(),
                     "source": latest["source"],   # 保留原始来源
                     "pasted": True
                 }
@@ -558,12 +600,18 @@ def iosSync():
     # 判断内容是否发生了变化（首次连接也算变化）
     is_new = (not client_last) or (client_last.get("content") != content)
 
-    if is_new and content and source != LOCAL_NAME:
+    # 溯源：过滤“收到后原样回传”的回音，但保留用户手动复制的新内容
+    is_echo = bool(is_new and content and source != LOCAL_NAME) and tracker.consume_echo(content, source)
+    if is_echo:
+        logging.info("忽略 iOS 客户端 %s 的回音内容: %s", source, str(content)[:30])
+
+    if is_new and content and source != LOCAL_NAME and not is_echo:
         # 手机有新内容 → 强制更新为自己，并设为全局最新
         item = build_text_item(text=content, source=source, pasted=True)
         copy_text_to_clipboard(content)
         if not tracker.is_duplicate(item["id"]):
             tracker.update(item, force_latest=True)
+            tracker.register_echo(content, origin=source, pending=_echo_pending_count(source))
             load_clients_ip()
             notify_clients("text")
         latest_global =  item

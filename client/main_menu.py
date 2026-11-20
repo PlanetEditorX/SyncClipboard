@@ -17,6 +17,22 @@ from server.core.text_tracker import TextTracker
 
 logger = logging.getLogger("client")
 
+
+def get_clipboard_sequence():
+    """
+    读取 Windows 剪贴板序列号（GetClipboardSequenceNumber）。
+
+    每次剪贴板内容发生变化（用户 Ctrl+C，或程序调用 SetClipboardData）系统都会
+    自增这个计数器。它是判断“这次变化是用户手动复制，还是我们自己注入的”的
+    最可靠依据，比对比文本内容可靠得多 —— 用户重复复制同一段文字也能识别出来。
+    非 Windows 平台返回 None，调用方会退回纯文本比较的老逻辑。
+    """
+    try:
+        return int(win32clipboard.GetClipboardSequenceNumber())
+    except Exception:
+        return None
+
+
 class SyncClient:
     """剪贴板同步客户端：推送本地变化 + 拉取远程最新"""
     def __init__(self, config, file_server=None):
@@ -27,6 +43,8 @@ class SyncClient:
         self.running = False
         self.last_remote_id = None
         self._last_remote_content = None
+        # 最近一次“已处理过”的剪贴板序列号，用于精确识别手动复制
+        self._last_clipboard_seq = None
         self.push_thread = None
         self.pull_thread = None
         # 文件服务
@@ -48,6 +66,7 @@ class SyncClient:
     def start(self):
         self.running = True
         self.last_text = self.safe_paste()
+        self._last_clipboard_seq = get_clipboard_sequence()
         logger.info("客户端剪贴板监听启动")
 
         # 推送线程
@@ -82,6 +101,15 @@ class SyncClient:
     def _get_local_text_to_push(self):
         """原子地读取剪贴板并判断这次变化是否需要上传。"""
         with self.clipboard_lock:
+            # 溯源第一层：剪贴板序列号没变 → 这一轮没有任何复制动作，直接跳过。
+            # 序列号变了才可能是用户手动复制，也可能是别的程序（含本机服务端）
+            # 写入剪贴板，因此后面还要再做一次内容/回音判断。
+            seq = get_clipboard_sequence()
+            if seq is not None:
+                if seq == self._last_clipboard_seq:
+                    return None
+                self._last_clipboard_seq = seq
+
             text = self.safe_paste() or ""
             if text == self.last_text:
                 return None
@@ -113,6 +141,8 @@ class SyncClient:
             self.last_remote_id = item_id
             self._last_remote_content = content
             self.last_text = content
+            # 记录注入后的序列号：这次写入是我们自己干的，不该再被当成手动复制上传
+            self._last_clipboard_seq = get_clipboard_sequence()
 
         self.tracker.update(latest)
         logger.info(f"更新剪贴板: {content[:50]} (来自 {source})")

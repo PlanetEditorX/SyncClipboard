@@ -15,3 +15,4 @@ release/*
 !release/build.py
 !release/bat
 !release/macrodroid
+.workbuddy/
