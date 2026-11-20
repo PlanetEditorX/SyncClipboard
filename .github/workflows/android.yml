@@ -1,0 +1,165 @@
+name: Build Android
+
+# 安卓端代码改动少，不再跟随每个 tag 自动出包。
+# 需要 APK 时手动运行本工作流：默认取仓库最新的版本标签，
+# 用同样的版本号构建，并自动挂到该标签对应的 Release 上。
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: '要构建的版本标签（留空 = 仓库最新的版本标签）'
+        required: false
+        default: ''
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  build-android:
+    name: Build Android
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # 解析版本号：优先用输入，否则取当前分支可达的最新标签
+      - name: Resolve version
+        id: ver
+        shell: pwsh
+        run: |
+          $tag = "${{ github.event.inputs.tag }}".Trim()
+          if ([string]::IsNullOrWhiteSpace($tag)) {
+            $tag = (git describe --tags --abbrev=0).Trim()
+            if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($tag)) {
+              throw "仓库里没有可用的版本标签，请在输入框里手动指定，例如 v1.8.5"
+            }
+          }
+          if (-not $tag.StartsWith('v')) {
+            throw "版本标签必须以 v 开头，例如 v1.8.5（当前传入：$tag）"
+          }
+
+          $versionName = $tag.Substring(1)
+          if ($versionName -notmatch '^(\d+)\.(\d+)\.(\d+)$') {
+            throw "无法从标签解析版本号：$tag（需要形如 v1.8.5 的格式）"
+          }
+
+          $major = [int]$Matches[1]
+          $minor = [int]$Matches[2]
+          $patch = [int]$Matches[3]
+          if ($minor -ge 1000 -or $patch -ge 1000) {
+            throw "版本号段过大，无法换算 versionCode：$tag（minor / patch 需小于 1000）"
+          }
+
+          # 由标签推导，保证单调递增且可重复构建。
+          # v1.8.4 -> 1008004，大于历史构建使用的 100000 + run_number 区间。
+          $versionCode = $major * 1000000 + $minor * 1000 + $patch
+
+          "tag=$tag" >> $env:GITHUB_OUTPUT
+          "version_name=$versionName" >> $env:GITHUB_OUTPUT
+          "version_code=$versionCode" >> $env:GITHUB_OUTPUT
+          Write-Host "构建版本：$versionName（versionCode=$versionCode，标签 $tag）"
+
+      # 用标签指向的代码构建，避免打包进标签之后未发布的改动
+      - name: Checkout version tag
+        shell: pwsh
+        run: |
+          git -c advice.detachedHead=false checkout "${{ steps.ver.outputs.tag }}"
+          git describe --tags --exact-match
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: gradle
+
+      - name: Restore Android release signing
+        shell: pwsh
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          $requiredSecrets = @(
+            'ANDROID_KEYSTORE_BASE64',
+            'ANDROID_KEYSTORE_PASSWORD',
+            'ANDROID_KEY_ALIAS',
+            'ANDROID_KEY_PASSWORD'
+          )
+          foreach ($secretName in $requiredSecrets) {
+            if ([string]::IsNullOrWhiteSpace((Get-Item "env:$secretName").Value)) {
+              throw "Missing GitHub Actions secret: $secretName"
+            }
+          }
+
+          $keystorePath = Join-Path $env:GITHUB_WORKSPACE 'android/release-key.jks'
+          $keystoreBytes = [Convert]::FromBase64String($env:ANDROID_KEYSTORE_BASE64)
+          [System.IO.File]::WriteAllBytes($keystorePath, $keystoreBytes)
+
+          $properties = @(
+            "storeFile=release-key.jks",
+            "storePassword=$($env:ANDROID_KEYSTORE_PASSWORD)",
+            "keyAlias=$($env:ANDROID_KEY_ALIAS)",
+            "keyPassword=$($env:ANDROID_KEY_PASSWORD)"
+          ) -join "`n"
+          [System.IO.File]::WriteAllText(
+            (Join-Path $env:GITHUB_WORKSPACE 'android/keystore.properties'),
+            $properties,
+            [System.Text.UTF8Encoding]::new($false)
+          )
+
+      - name: Build Android APK
+        working-directory: android
+        shell: pwsh
+        run: |
+          .\gradlew.bat :app:assembleRelease --no-daemon `
+            "-PappVersionName=${{ steps.ver.outputs.version_name }}" `
+            "-PappVersionCode=${{ steps.ver.outputs.version_code }}"
+
+      - name: Prepare Android APK
+        shell: pwsh
+        run: |
+          $apk = Get-ChildItem `
+            "android/app/build/outputs/apk/release" `
+            -Filter "*.apk" |
+            Select-Object -First 1
+
+          if (-not $apk) {
+            throw "Android APK was not produced"
+          }
+
+          Copy-Item `
+            $apk.FullName `
+            "SyncClipboard-Android-${{ steps.ver.outputs.tag }}.apk"
+
+      # 先留存产物，即使挂载 Release 失败也能在 Actions 页面下载
+      - name: Upload Android APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-package-${{ steps.ver.outputs.version_name }}
+          path: SyncClipboard-Android-${{ steps.ver.outputs.tag }}.apk
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Attach APK to release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          $tag = "${{ steps.ver.outputs.tag }}"
+          $repo = $env:GITHUB_REPOSITORY
+
+          gh release view $tag --repo $repo *> $null
+          if ($LASTEXITCODE -ne 0) {
+            throw "标签 $tag 还没有对应的 Release，请先推送该标签让 Build and Release 生成 Release，再手动运行本工作流"
+          }
+
+          $apk = "SyncClipboard-Android-$tag.apk"
+          gh release upload $tag $apk --clobber --repo $repo
+          Write-Host "已把 $apk 挂到 Release $tag"

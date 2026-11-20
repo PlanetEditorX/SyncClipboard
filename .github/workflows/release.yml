@@ -9,6 +9,10 @@ on:
 permissions:
   contents: read
 
+# 说明：安卓端代码改动少，APK 不再跟随每个 tag 自动构建。
+# 需要出 APK 时，手动运行 "Build Android" 工作流（android.yml），
+# 它会自动取仓库最新的版本标签、用同样版本号构建，并把 APK 挂到对应的 Release 上。
+
 jobs:
   # ==============================
   # Windows 构建
@@ -61,110 +65,15 @@ jobs:
           retention-days: 1
 
   # ==============================
-  # Android 构建
-  # ==============================
-  build-android:
-    name: Build Android
-    runs-on: windows-latest
-
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - name: Set up Java
-        uses: actions/setup-java@v4
-        with:
-          distribution: temurin
-          java-version: '17'
-          cache: gradle
-
-      - name: Restore Android release signing
-        shell: pwsh
-        env:
-          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
-          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
-          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
-          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
-        run: |
-          $requiredSecrets = @(
-            'ANDROID_KEYSTORE_BASE64',
-            'ANDROID_KEYSTORE_PASSWORD',
-            'ANDROID_KEY_ALIAS',
-            'ANDROID_KEY_PASSWORD'
-          )
-          foreach ($secretName in $requiredSecrets) {
-            if ([string]::IsNullOrWhiteSpace((Get-Item "env:$secretName").Value)) {
-              throw "Missing GitHub Actions secret: $secretName"
-            }
-          }
-
-          $keystorePath = Join-Path $env:GITHUB_WORKSPACE 'android/release-key.jks'
-          $keystoreBytes = [Convert]::FromBase64String($env:ANDROID_KEYSTORE_BASE64)
-          [System.IO.File]::WriteAllBytes($keystorePath, $keystoreBytes)
-
-          $properties = @(
-            "storeFile=release-key.jks",
-            "storePassword=$($env:ANDROID_KEYSTORE_PASSWORD)",
-            "keyAlias=$($env:ANDROID_KEY_ALIAS)",
-            "keyPassword=$($env:ANDROID_KEY_PASSWORD)"
-          ) -join "`n"
-          [System.IO.File]::WriteAllText(
-            (Join-Path $env:GITHUB_WORKSPACE 'android/keystore.properties'),
-            $properties,
-            [System.Text.UTF8Encoding]::new($false)
-          )
-
-      - name: Build Android APK
-        working-directory: android
-        shell: pwsh
-        run: |
-          $versionName = '${{ github.ref_name }}'
-          if ($versionName.StartsWith('v')) { $versionName = $versionName.Substring(1) }
-          if ([string]::IsNullOrWhiteSpace($versionName)) {
-            throw 'Tag must contain a version after the v prefix'
-          }
-
-          $versionCode = 100000 + [int]${{ github.run_number }}
-          .\gradlew.bat :app:assembleRelease --no-daemon "-PappVersionName=$versionName" "-PappVersionCode=$versionCode"
-
-      - name: Prepare Android APK
-        shell: pwsh
-        run: |
-          $apk = Get-ChildItem `
-            "android/app/build/outputs/apk/release" `
-            -Filter "*.apk" |
-            Select-Object -First 1
-
-          if (-not $apk) {
-            throw "Android APK was not produced"
-          }
-
-          Copy-Item `
-            $apk.FullName `
-            "SyncClipboard-Android-${{ github.ref_name }}.apk"
-
-      # 上传供 release job 使用
-      - name: Upload Android APK
-        uses: actions/upload-artifact@v4
-        with:
-          name: android-package
-          path: SyncClipboard-Android-${{ github.ref_name }}.apk
-          if-no-files-found: error
-          retention-days: 1
-
-  # ==============================
   # 创建 GitHub Release
   # ==============================
   release:
     name: Create Release
     runs-on: ubuntu-latest
 
-    # 两个构建 job 都成功后才发布
+    # Windows 构建成功后才发布（安卓包由 android.yml 手动补）
     needs:
       - build-windows
-      - build-android
 
     permissions:
       contents: write
@@ -176,12 +85,6 @@ jobs:
           name: windows-package
           path: release-assets
 
-      - name: Download Android package
-        uses: actions/download-artifact@v4
-        with:
-          name: android-package
-          path: release-assets
-
       - name: Show release assets
         run: ls -la release-assets
 
@@ -190,5 +93,9 @@ jobs:
         with:
           files: release-assets/*
           generate_release_notes: true
+          append_body: true
+          body: |
+            > 安卓端如有改动，请在 Actions 页手动运行 **Build Android** 工作流，
+            > 它会用本版本号构建 APK 并挂到这条 Release 上。
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
