@@ -183,6 +183,25 @@ class SameMachineEndToEndTest(unittest.TestCase):
         self.handler.handle_client_latest()
         self.assertEqual(self.notify.call_count, 1)
 
+    def test_own_copy_is_silent_then_remote_copy_notifies(self):
+        """同机双开的完整交替：自己复制静默，只有别的设备推来才弹。"""
+        # ① 本机复制：自己提醒自己没有意义
+        self.assertEqual(self._push("本机复制的第一条", MACHINE_NAME), "ok")
+        self.handler.handle_client_latest()
+        self.notify.assert_not_called()
+
+        # ② 手机上复制了另一条：这才是要提醒的内容
+        self.assertEqual(self._push("手机上复制的第二条", "Phone"), "ok")
+        self.handler.handle_client_latest()
+        self.assertEqual(self.notify.call_count, 1)
+        self.assertIn("Phone", self.notify.call_args.args[1])
+        self.assertIn("手机上复制的第二条", self.notify.call_args.args[1])
+
+        # ③ 回到本机复制：再次静默
+        self.assertEqual(self._push("本机复制的第三条", MACHINE_NAME), "ok")
+        self.handler.handle_client_latest()
+        self.assertEqual(self.notify.call_count, 1)
+
 
 if __name__ == "__main__":
     unittest.main()
