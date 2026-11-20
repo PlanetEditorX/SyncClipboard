@@ -8,150 +8,58 @@ import socket
 import struct
 import logging
 import requests
-import threading
 from pathlib import Path
 from urllib.parse import unquote
 from typing import Optional, List
-import queue
 from datetime import datetime, timedelta
+
+from common import ui_bridge
 
 # 创建模块级日志记录器
 logger = logging.getLogger(__name__)
 
-# ---------- 全局 Tk 根窗口支持 ----------
-_tk_root = None
-_ui_accepting = False
-_tk_lock = threading.Lock()
-_ui_queue = queue.Queue()
-
-def _get_tkinter_components():
-    try:
-        import tkinter as tk
-        from tkinter import messagebox
-        return tk, messagebox
-    except Exception as e:
-        logger.warning(f"Tkinter 初始化失败: {e}")
-        return None, None
+# ---------- UI 主线程投递 ----------
+# 实现搬到 common/ui_bridge.py（Qt 时代仍在用同一套队列模型）。
+# 这里的函数名带 tk_ 是历史包袱，为了让 file_handler / clipboard_handler
+# 等调用方零改动而保留；新代码请直接用 ui_bridge 里的中性命名。
 
 
 def set_tk_root(root):
-    """在主线程启动时调用，注册全局根窗口"""
-    global _tk_root, _ui_accepting
-    with _tk_lock:
-        _tk_root = root
-        _ui_accepting = True
+    """在主线程启动时调用，登记 UI 根对象。"""
+    ui_bridge.set_ui_root(root)
 
-def _reject_pending_ui_tasks(message):
-    while True:
-        try:
-            _, _, _, result_event = _ui_queue.get_nowait()
-        except queue.Empty:
-            break
-        if result_event is not None:
-            result_event.set_exception(RuntimeError(message))
-        _ui_queue.task_done()
 
 def clear_tk_root(root=None):
-    """清除已停止的根窗口，避免后台线程继续投递 UI 任务。"""
-    global _tk_root, _ui_accepting
-    with _tk_lock:
-        if root is None or _tk_root is root:
-            _ui_accepting = False
-            _tk_root = None
-            _reject_pending_ui_tasks("UI 主循环已经停止")
+    """清除已停止的根对象，避免后台线程继续投递 UI 任务。"""
+    ui_bridge.clear_ui_root(root)
+
 
 def request_tk_shutdown(root):
-    """停止接收新任务，并保证 root.quit 由 UI 队列执行。"""
-    global _ui_accepting
-    with _tk_lock:
-        if _tk_root is not root:
-            return False
-        _ui_accepting = False
-        _reject_pending_ui_tasks("UI 主循环正在关闭")
-        _ui_queue.put((root.quit, (), {}, None))
-        return True
+    """停止接收新任务，并保证退出动作由 UI 队列执行。"""
+    return ui_bridge.request_ui_shutdown(root)
+
 
 def get_tk_root():
-    with _tk_lock:
-        return _tk_root
+    return ui_bridge.get_ui_root()
+
 
 def process_ui_queue():
-    while True:
-        try:
-            func, args, kwargs, result_event = _ui_queue.get_nowait()
-        except queue.Empty:
-            break
+    """抽干待执行的界面任务（由 Qt 定时器周期驱动）。"""
+    ui_bridge.process_ui_queue()
 
-        try:
-            ret = func(*args, **kwargs)
-            if result_event is not None:
-                result_event.set_result(ret)
-        except Exception as e:
-            if result_event is not None:
-                result_event.set_exception(e)
-            else:
-                logger.error(f"UI队列任务执行失败: {e}", exc_info=True)
-        _ui_queue.task_done()
-
-    root = get_tk_root()
-    if root is not None:
-        root.after(50, process_ui_queue)
 
 def post_to_main_thread(func, *args, **kwargs):
-    if threading.current_thread() is threading.main_thread():
-        return func(*args, **kwargs)
-    with _tk_lock:
-        if _tk_root is None or not _ui_accepting:
-            raise RuntimeError("UI 主循环尚未启动或已经停止")
-        result_event = _ResultEvent()
-        _ui_queue.put((func, args, kwargs, result_event))
-    return result_event.wait()
+    return ui_bridge.post_to_main_thread(func, *args, **kwargs)
+
 
 def post_to_main_thread_no_wait(func, *args, **kwargs):
     """异步投递到主线程队列，不等待执行结果。"""
-    if threading.current_thread() is threading.main_thread():
-        func(*args, **kwargs)
-        return True
-    with _tk_lock:
-        if _tk_root is None or not _ui_accepting:
-            logger.debug("忽略 UI 投递：主循环尚未启动或已经停止")
-            return False
-        _ui_queue.put((func, args, kwargs, None))
-        return True
-
-class _ResultEvent:
-    """简单的线程同步结果容器"""
-    def __init__(self):
-        self._event = threading.Event()
-        self._result = None
-        self._exception = None
-
-    def set_result(self, result):
-        self._result = result
-        self._event.set()
-
-    def set_exception(self, exc):
-        self._exception = exc
-        self._event.set()
-
-    def wait(self, timeout=300):
-        if not self._event.wait(timeout):
-            raise TimeoutError("等待 UI 主线程响应超时")
-        if self._exception is not None:
-            raise self._exception
-        return self._result
+    return ui_bridge.post_to_main_thread_no_wait(func, *args, **kwargs)
 
 
 def show_message(title, message):
     """线程安全的消息框"""
-    _, messagebox = _get_tkinter_components()
-    if messagebox is None or get_tk_root() is None:
-        logger.info(f"[消息] {title}: {message}")
-        return
-    try:
-        post_to_main_thread(messagebox.showinfo, title, message)
-    except (RuntimeError, TimeoutError) as e:
-        logger.info(f"[消息未显示] {title}: {message} ({e})")
+    ui_bridge.show_message(title, message)
 
 def get_base_dir() -> Path:
     """

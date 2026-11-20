@@ -2,10 +2,10 @@ import os
 import logging
 import requests
 import threading
-import tkinter as tk
-from tkinter import filedialog
-from gui.download_dialog import DownloadProgressDialog
-from common.utils import post_to_main_thread, show_message, copy_files_to_clipboard, parse_filename_from_cd, get_tk_root
+from common import ui_bridge
+from common.utils import post_to_main_thread, show_message, copy_files_to_clipboard, parse_filename_from_cd
+from gui import qt_dialogs
+from gui.qt_download_dialog import DownloadProgressDialog
 
 logger = logging.getLogger("gui")
 
@@ -23,51 +23,23 @@ class FileHandler:
         return func(*args, **kwargs)
 
     def _run_in_main_thread(self, func, *args, **kwargs):
-        """
-        在主线程执行 func 并同步返回结果。
-        若当前已是主线程则直接执行，否则用 after 调度并等待。
-        """
-        root = get_tk_root()
-        if root is None:
-            logger.error("Tk 根窗口未初始化")
-            return None
+        """在主线程执行 func 并同步返回结果。"""
         if threading.current_thread() is threading.main_thread():
             return func(*args, **kwargs)
-
-        result = [None]
-        event = threading.Event()
-        def wrapper():
-            result[0] = func(*args, **kwargs)
-            event.set()
-        root.after(0, wrapper)
-        event.wait()
-        return result[0]
+        try:
+            return post_to_main_thread(func, *args, **kwargs)
+        except (RuntimeError, TimeoutError):
+            logger.error("UI 主循环未就绪，无法执行界面操作")
+            return None
 
     def _get_dialog_parent(self):
-        root = get_tk_root()
-        if root is None:
-            return None
-        try:
-            if getattr(root, 'state', lambda: '')() == 'withdrawn':
-                root.update_idletasks()
-                screen_w = root.winfo_screenwidth()
-                screen_h = root.winfo_screenheight()
-                root.geometry(f"+{screen_w//2}+{screen_h//2}")
-        except Exception as e:
-            logger.warning(f"获取或设置对话框父级窗口状态出错: {e}")
-        return root
+        return ui_bridge.get_main_window()
 
     def _ask_save_path(self, filename):
         """弹出保存对话框（线程安全）"""
         def _ask():
-            parent = self._get_dialog_parent()
-            file_path = filedialog.asksaveasfilename(
-                title="保存文件",
-                initialdir=self.config.save_path,
-                initialfile=filename,
-                defaultextension="",
-                filetypes=[("所有文件", "*.*")],
-                parent=parent
+            file_path = qt_dialogs.ask_save_file(
+                self.config.save_path, filename, "保存文件"
             )
             if file_path:
                 self.config.save_path = os.path.dirname(file_path)
@@ -78,12 +50,7 @@ class FileHandler:
     def _ask_save_directory(self):
         """弹出目录选择对话框（线程安全）"""
         def _ask():
-            parent = self._get_dialog_parent()
-            dir_path = filedialog.askdirectory(
-                title="选择保存文件夹",
-                initialdir=self.config.save_path,
-                parent=parent
-            )
+            dir_path = qt_dialogs.choose_directory(self.config.save_path, "选择保存文件夹")
             if dir_path:
                 self.config.save_path = dir_path
                 self.config.save_client_config()

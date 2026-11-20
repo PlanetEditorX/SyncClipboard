@@ -10,7 +10,9 @@ from unittest.mock import MagicMock, patch
 
 from common.updater import UpdateResult
 from gui.config_manager import ConfigManager
-from gui.main_window import ModernMainWindow, validate_client_settings
+from gui.main_window import validate_client_settings
+from gui.qt_main_window import MainWindow
+from gui.qt_theme import LIGHT
 from gui.service_manager import ServiceManager
 
 
@@ -51,16 +53,17 @@ class TestModernUiCompatibility(unittest.TestCase):
             save_path="D:/Old",
             update_client_config=MagicMock(return_value=False),
         )
-        window = ModernMainWindow.__new__(ModernMainWindow)
+        window = MainWindow.__new__(MainWindow)
+        window._palette = dict(LIGHT)
         window.config = config
         window.manager = MagicMock()
         window.settings_message = MagicMock()
-        window.server_host_entry = MagicMock(get=MagicMock(return_value="new-host"))
-        window.server_port_entry = MagicMock(get=MagicMock(return_value="9000"))
-        window.local_name_entry = MagicMock(get=MagicMock(return_value="New-PC"))
-        window.file_port_entry = MagicMock(get=MagicMock(return_value="9999"))
-        window.key_entry = MagicMock(get=MagicMock(return_value="new-key"))
-        window.save_path_entry = MagicMock(get=MagicMock(return_value="D:/New"))
+        window.server_host_edit = MagicMock(text=MagicMock(return_value="new-host"))
+        window.server_port_edit = MagicMock(text=MagicMock(return_value="9000"))
+        window.local_name_edit = MagicMock(text=MagicMock(return_value="New-PC"))
+        window.file_port_edit = MagicMock(text=MagicMock(return_value="9999"))
+        window.key_edit = MagicMock(text=MagicMock(return_value="new-key"))
+        window.save_path_edit = MagicMock(text=MagicMock(return_value="D:/New"))
 
         window.save_settings()
 
@@ -70,13 +73,14 @@ class TestModernUiCompatibility(unittest.TestCase):
         self.assertEqual(config.key, "old-key")
 
     def test_new_version_enables_update_button(self):
-        window = ModernMainWindow.__new__(ModernMainWindow)
+        window = MainWindow.__new__(MainWindow)
+        window._palette = dict(LIGHT)
         window._update_state = "idle"
         window._update_result = None
-        window._update_button = MagicMock()
-        window._update_message = MagicMock()
+        window.update_button = MagicMock()
+        window.update_message = MagicMock()
 
-        with patch("gui.main_window.is_self_update_available", return_value=True):
+        with patch("gui.qt_main_window.is_self_update_available", return_value=True):
             window._render_update_result(
                 UpdateResult(
                     "1.7.0",
@@ -87,34 +91,35 @@ class TestModernUiCompatibility(unittest.TestCase):
             )
 
         self.assertEqual(window._update_state, "available")
-        self.assertIn("1.8.0", window._update_message.configure.call_args.kwargs["text"])
-        button_kwargs = window._update_button.configure.call_args.kwargs
-        self.assertEqual(button_kwargs["state"], "normal")
-        self.assertIn("1.8.0", button_kwargs["text"])
+        self.assertIn("1.8.0", window.update_message.setText.call_args.args[0])
+        self.assertIn("1.8.0", window.update_button.setText.call_args.args[0])
+        self.assertTrue(window.update_button.setEnabled.call_args.args[0])
 
     def test_new_version_without_windows_asset_stays_idle(self):
-        window = ModernMainWindow.__new__(ModernMainWindow)
+        window = MainWindow.__new__(MainWindow)
+        window._palette = dict(LIGHT)
         window._update_state = "idle"
         window._update_result = None
-        window._update_button = MagicMock()
-        window._update_message = MagicMock()
+        window.update_button = MagicMock()
+        window.update_message = MagicMock()
 
-        with patch("gui.main_window.is_self_update_available", return_value=True):
+        with patch("gui.qt_main_window.is_self_update_available", return_value=True):
             window._render_update_result(
                 UpdateResult("1.7.0", latest_version="1.8.0", has_update=True)
             )
 
         self.assertEqual(window._update_state, "idle")
-        self.assertIn("未找到 Windows 安装包", window._update_message.configure.call_args.kwargs["text"])
+        self.assertIn("未找到 Windows 安装包", window.update_message.setText.call_args.args[0])
 
     def test_new_version_in_source_mode_does_not_offer_update(self):
-        window = ModernMainWindow.__new__(ModernMainWindow)
+        window = MainWindow.__new__(MainWindow)
+        window._palette = dict(LIGHT)
         window._update_state = "idle"
         window._update_result = None
-        window._update_button = MagicMock()
-        window._update_message = MagicMock()
+        window.update_button = MagicMock()
+        window.update_message = MagicMock()
 
-        with patch("gui.main_window.is_self_update_available", return_value=False):
+        with patch("gui.qt_main_window.is_self_update_available", return_value=False):
             window._render_update_result(
                 UpdateResult(
                     "1.7.0",
@@ -125,32 +130,34 @@ class TestModernUiCompatibility(unittest.TestCase):
             )
 
         self.assertEqual(window._update_state, "idle")
-        self.assertIn("源码运行", window._update_message.configure.call_args.kwargs["text"])
+        self.assertIn("源码运行", window.update_message.setText.call_args.args[0])
 
     def test_up_to_date_message_is_shown(self):
-        window = ModernMainWindow.__new__(ModernMainWindow)
+        window = MainWindow.__new__(MainWindow)
+        window._palette = dict(LIGHT)
         window._update_state = "idle"
         window._update_result = None
-        window._update_button = MagicMock()
-        window._update_message = MagicMock()
+        window.update_button = MagicMock()
+        window.update_message = MagicMock()
 
         window._render_update_result(UpdateResult("1.7.0", latest_version="1.7.0"))
 
         self.assertEqual(window._update_state, "idle")
-        self.assertIn("已是最新版本", window._update_message.configure.call_args.kwargs["text"])
+        self.assertIn("已是最新版本", window.update_message.setText.call_args.args[0])
 
     def test_check_error_resets_button(self):
-        window = ModernMainWindow.__new__(ModernMainWindow)
+        window = MainWindow.__new__(MainWindow)
+        window._palette = dict(LIGHT)
         window._update_state = "checking"
         window._update_result = None
-        window._update_button = MagicMock()
-        window._update_message = MagicMock()
+        window.update_button = MagicMock()
+        window.update_message = MagicMock()
 
         window._render_update_result(UpdateResult("1.7.0", error="检查更新失败，请检查网络后重试"))
 
         self.assertEqual(window._update_state, "idle")
-        self.assertIn("检查更新失败", window._update_message.configure.call_args.kwargs["text"])
-        self.assertEqual(window._update_button.configure.call_args.kwargs["text"], "检查更新")
+        self.assertIn("检查更新失败", window.update_message.setText.call_args.args[0])
+        self.assertEqual(window.update_button.setText.call_args.args[0], "检查更新")
 
     def test_importing_tray_manager_does_not_create_a_root_window(self):
         module = importlib.import_module("gui.tray_manager")
@@ -158,12 +165,52 @@ class TestModernUiCompatibility(unittest.TestCase):
 
     def test_build_script_is_import_safe_and_uses_onedir(self):
         build = importlib.import_module("release.build")
-        command = build.build_command(Path("C:/preview/customtkinter"))
+        command = build.build_command()
 
         self.assertIn("--onedir", command)
         self.assertNotIn("--onefile", command)
-        self.assertIn("--add-data", command)
-        self.assertTrue(any(value.endswith("customtkinter") for value in command))
+        # Qt 由 PyInstaller 官方 hook 负责收集，不再手工搬运 customtkinter 资源
+        self.assertNotIn("--add-data", command)
+        self.assertIn("--exclude-module=tkinter", command)
+        self.assertIn("--exclude-module=customtkinter", command)
+        self.assertTrue(any("QtQml" in value for value in command))
+
+    def test_build_embeds_dpi_aware_manifest(self):
+        """缺 manifest 时进程会被 DPI 虚拟化，200% 缩放下界面直接糊掉。"""
+        build = importlib.import_module("release.build")
+        command = build.build_command()
+
+        self.assertTrue(any(str(value).startswith("--manifest=") for value in command))
+        self.assertTrue(build.MANIFEST_FILE.exists())
+        text = build.MANIFEST_FILE.read_text(encoding="utf-8")
+        self.assertIn("PerMonitorV2", text)
+        self.assertIn("asInvoker", text)
+
+    def test_clean_step_keeps_manifest_and_drops_build_outputs(self):
+        """clean 曾是「删掉白名单外的一切」，会把 app.manifest 一起删掉。
+
+        CI 跑的是 main() -> clean_release_outputs() -> build_command()，
+        因此 manifest 必须在 clean 阶段存活，否则 PyInstaller 报找不到文件。
+        """
+        build = importlib.import_module("release.build")
+        with tempfile.TemporaryDirectory() as temp_dir:
+            release_dir = Path(temp_dir) / "release"
+            (release_dir / "bat").mkdir(parents=True)
+            (release_dir / "bat" / "start.bat").write_text("echo", encoding="utf-8")
+            (release_dir / "build.py").write_text("# build", encoding="utf-8")
+            (release_dir / "app.manifest").write_text("<assembly/>", encoding="utf-8")
+            for stale in ("dist", "spec", "build_cache"):
+                (release_dir / stale).mkdir()
+            (release_dir / "stale.spec").write_text("", encoding="utf-8")
+
+            with patch.object(build, "RELEASE_DIR", release_dir):
+                build.clean_release_outputs()
+
+            self.assertTrue((release_dir / "app.manifest").exists())
+            self.assertTrue((release_dir / "build.py").exists())
+            self.assertTrue((release_dir / "bat" / "start.bat").exists())
+            for removed in ("dist", "spec", "build_cache", "stale.spec"):
+                self.assertFalse((release_dir / removed).exists(), removed)
 
     def test_build_assets_keep_templates_separate_from_runtime_config(self):
         build = importlib.import_module("release.build")
@@ -344,7 +391,8 @@ class TestModernUiCompatibility(unittest.TestCase):
         self.assertIsNone(manager.client_process)
 
     def test_shutdown_runs_after_an_accepted_service_action(self):
-        from gui.tray_manager import TrayManager
+        from gui.service_queue import ServiceActionQueue
+        from gui.tray_manager import build_shutdown_handler
 
         order = []
         config = SimpleNamespace(
@@ -371,35 +419,35 @@ class TestModernUiCompatibility(unittest.TestCase):
                 if not preserve_intent:
                     config.server_running = False
 
-        manager = TrayManager.__new__(TrayManager)
-        manager.config = config
-        manager.services = Services()
-        manager.root = MagicMock()
-        manager.window = None
-        manager.icon = None
-        manager._service_busy = False
-        manager._quitting = False
-        manager._state_lock = threading.Lock()
-        manager._operation_queue = queue.Queue()
-        manager._operation_thread = threading.Thread(
-            target=manager._process_operation_queue,
-            daemon=True,
-        )
-        manager._operation_thread.start()
+        services = Services()
+        actions = ServiceActionQueue()
 
-        posted = []
-        with (
-            patch("gui.tray_manager.post_to_main_thread_no_wait", side_effect=lambda func, *args: posted.append(func)),
-            patch("gui.tray_manager.request_tk_shutdown") as request_shutdown,
-        ):
-            self.assertTrue(manager.request_service_state("client", True))
-            manager.quit_app()
-            manager._operation_thread.join(timeout=2)
+        with patch("gui.tray_manager.request_ui_shutdown") as request_shutdown:
+            self.assertTrue(actions.submit(services.start_client))
+            self.assertTrue(
+                actions.shutdown(build_shutdown_handler(services, config, "UI-ROOT"))
+            )
+            actions.join(timeout=2)
 
-        self.assertFalse(manager._operation_thread.is_alive())
+        # 退出动作必须排在已接受的服务操作之后，且意图被还原
         self.assertEqual(order[:3], ["start-client", "stop-server", "stop-client"])
+        self.assertEqual(order[-1], "save")
         self.assertTrue(config.client_running)
-        request_shutdown.assert_called_once_with(manager.root)
+        request_shutdown.assert_called_once_with("UI-ROOT")
+
+    def test_busy_queue_rejects_a_second_action(self):
+        from gui.service_queue import ServiceActionQueue
+
+        gate = threading.Event()
+        actions = ServiceActionQueue()
+        try:
+            self.assertTrue(actions.submit(gate.wait))
+            self.assertTrue(actions.busy)
+            self.assertFalse(actions.submit(lambda: None))
+        finally:
+            gate.set()
+            actions.join(timeout=2)
+        self.assertFalse(actions.busy)
 
 
 if __name__ == "__main__":

@@ -1,7 +1,6 @@
 """Build the Windows onedir distribution without side effects on import."""
 
 import io
-import os
 import shutil
 import subprocess
 import sys
@@ -16,6 +15,7 @@ WORK_DIR = RELEASE_DIR / "build_cache"
 SPEC_DIR = RELEASE_DIR / "spec"
 ENTRY_SCRIPT = PROJECT_ROOT / "gui" / "run.py"
 ICON_FILE = PROJECT_ROOT / "gui" / "icon" / "icon-active.png"
+MANIFEST_FILE = RELEASE_DIR / "app.manifest"
 
 
 def _configure_stdout():
@@ -23,17 +23,12 @@ def _configure_stdout():
         sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8")
 
 
-def _customtkinter_dir():
-    try:
-        import customtkinter
-    except ImportError as exc:
-        raise RuntimeError("请先安装 requirements.txt 中的 customtkinter") from exc
-    return Path(customtkinter.__file__).resolve().parent
+def build_command():
+    """Return the PyInstaller command so CI can inspect it without building.
 
-
-def build_command(customtkinter_dir=None):
-    """Return the PyInstaller command so CI can inspect it without building."""
-    customtkinter_dir = Path(customtkinter_dir or _customtkinter_dir()).resolve()
+    PySide6 有官方 hook，Qt 的 DLL 与平台插件会自动收集；这里只额外排除
+    确定用不到的模块（QML/Quick、tkinter、旧版 customtkinter）来控制体积。
+    """
     return [
         sys.executable,
         "-m",
@@ -50,22 +45,39 @@ def build_command(customtkinter_dir=None):
         "--specpath",
         str(SPEC_DIR),
         f"--icon={ICON_FILE}",
+        # PyInstaller 默认 manifest 不声明 DPI 感知，200% 缩放下窗口会被系统拉伸变糊
+        f"--manifest={MANIFEST_FILE}",
         "--paths",
         str(PROJECT_ROOT),
         "--hidden-import=win32clipboard",
         "--hidden-import=watchdog",
         "--hidden-import=watchdog.observers",
         "--hidden-import=watchdog.events",
-        "--add-data",
-        f"{customtkinter_dir}{os.pathsep}customtkinter",
+        "--exclude-module=tkinter",
+        "--exclude-module=customtkinter",
+        # PIL 只被图标配色的单元测试用到，界面与托盘都走 QIcon，可整体排除
+        "--exclude-module=PIL",
+        "--exclude-module=PySide6.QtQml",
+        "--exclude-module=PySide6.QtQuick",
+        "--exclude-module=PySide6.QtQuickWidgets",
+        "--exclude-module=PySide6.Qt3DCore",
+        "--exclude-module=PySide6.QtMultimedia",
+        "--exclude-module=PySide6.QtWebEngineCore",
+        "--exclude-module=PySide6.QtWebEngineWidgets",
         str(ENTRY_SCRIPT),
     ]
+
+
+# release/ 目录下会被 clean 步骤保留的源文件（其余都是构建产物，可删）。
+# 老实现只保留了 build.py 与 bat，导致新增的 app.manifest 被删掉后
+# build_command() 再去引用它时 PyInstaller 直接报「找不到 manifest」。
+SOURCE_ARTIFACTS = {"build.py", "bat", "app.manifest"}
 
 
 def clean_release_outputs():
     print("[Clean] 清理旧构建输出...")
     for item in RELEASE_DIR.iterdir():
-        if item.name in {"build.py", "bat"}:
+        if item.name in SOURCE_ARTIFACTS:
             continue
         if item.is_dir():
             shutil.rmtree(item, ignore_errors=True)
@@ -100,7 +112,51 @@ def copy_runtime_assets():
         for file in src_bat.glob("*.bat"):
             shutil.copy2(file, APP_DIR / file.name)
         print(f"  [OK] bat 文件 -> {APP_DIR}")
+
+    prune_qt_payload(APP_DIR)
     return exe_path
+
+
+# PyInstaller 的 PySide6 hook 会把整个 Qt 运行时搬进来，其中这些对纯
+# QWidget（raster 渲染）应用毫无用处。删掉能省约 28MB。
+PRUNABLE_PATHS = (
+    "PySide6/opengl32sw.dll",  # 软件 OpenGL 渲染器，Widgets 不依赖
+    "PySide6/translations",  # Qt 自带翻译，项目未加载 QTranslator
+    "PySide6/plugins/tls",  # Qt 的 TLS 后端，网络请求走 requests
+    "PySide6/plugins/networkinformation",
+    "PySide6/plugins/generic",
+)
+
+
+def prune_qt_payload(app_dir=None):
+    """裁剪打包产物里确定用不到的内容，返回释放的字节数。
+
+    每一项独立处理：某一项删不掉（文件被占用、权限不足、外部安全策略）
+    不能影响其余项，否则体积会悄悄反弹。
+    """
+    internal = Path(app_dir or APP_DIR) / "_internal"
+    if not internal.is_dir():
+        return 0
+
+    removed = 0
+    for relative in PRUNABLE_PATHS:
+        target = internal / relative
+        try:
+            if target.is_dir():
+                size = sum(f.stat().st_size for f in target.rglob("*") if f.is_file())
+                shutil.rmtree(target)
+                print(f"  [PRUNE] 目录 {relative} ({size / 1048576:.1f} MB)")
+                removed += size
+            elif target.is_file():
+                size = target.stat().st_size
+                target.unlink()
+                print(f"  [PRUNE] 文件 {relative} ({size / 1048576:.1f} MB)")
+                removed += size
+        except OSError as exc:
+            print(f"  [PRUNE] 跳过 {relative}: {exc}")
+    if removed:
+        print(f"  [PRUNE] 合计减少 {removed / 1048576:.1f} MB")
+    return removed
 
 
 def main():

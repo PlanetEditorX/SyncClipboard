@@ -7,12 +7,15 @@ Windows 11 的任务栏/托盘有浅色和深色两套主题：
 - 深色主题下反过来，深色图标会糊掉。
 
 所以这里按系统主题挑对应的图标文件，读取失败时退回原来的白色图标。
+
+只负责「状态 + 主题 -> 文件路径」。界面迁到 Qt 后，托盘直接用
+``QIcon(icon_path(state))`` 加载 PNG；本模块不读图像内容，因此不依赖
+Pillow，打包时可以整体排除（省约 11MB）。图标配色的回归验证放在
+``tests/test_icon_theme.py`` 里，由测试自己读像素。
 """
 import logging
 import sys
 import time
-
-from PIL import Image
 
 from common.utils import BASE_DIR
 
@@ -31,10 +34,6 @@ _DARK_TASKBAR_FILES = {
 _FALLBACK_FILES = {
     "active": "icon-active.png",
     "stop": "icon-stop.png",
-}
-_FALLBACK_COLORS = {
-    "active": "#111827",
-    "stop": "#6B7280",
 }
 
 # 主题查询结果缓存（秒）：切换系统主题后最多 3 秒生效，避免每次刷新都读注册表
@@ -96,13 +95,3 @@ def icon_path(state="active", light_taskbar=None):
 def is_active_state(service_state):
     """把服务状态压成 active / stop 两档。"""
     return "active" if (service_state.get("server_alive") or service_state.get("client_alive")) else "stop"
-
-
-def load_icon_image(service_state, light_taskbar=None):
-    """按主题加载托盘图标（PIL Image）。service_state 为 None 时按 active 处理。"""
-    state = is_active_state(service_state) if service_state else "active"
-    path = icon_path(state, light_taskbar)
-    if path is None:
-        return Image.new("RGBA", (64, 64), _FALLBACK_COLORS[state])
-    with Image.open(path) as source:
-        return source.convert("RGBA").copy()

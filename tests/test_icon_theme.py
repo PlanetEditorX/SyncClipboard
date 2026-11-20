@@ -68,26 +68,24 @@ class TestIconTheme(unittest.TestCase):
 
         self.assertEqual(active.name, "icon-active.png")
 
-    def test_load_icon_image_follows_service_state(self):
-        active = icon_theme.load_icon_image(
-            {"server_alive": True, "client_alive": False}, light_taskbar=True
-        )
-        stopped = icon_theme.load_icon_image(
-            {"server_alive": False, "client_alive": False}, light_taskbar=True
+    def test_service_state_maps_to_distinct_icons(self):
+        """运行态与停止态必须落在不同文件上，否则托盘状态看不出变化。"""
+        active = icon_theme.is_active_state({"server_alive": True, "client_alive": False})
+        stopped = icon_theme.is_active_state({"server_alive": False, "client_alive": False})
+        self.assertEqual(active, "active")
+        self.assertEqual(stopped, "stop")
+
+        self.assertNotEqual(
+            icon_theme.icon_path(active, light_taskbar=True),
+            icon_theme.icon_path(stopped, light_taskbar=True),
         )
 
-        self.assertEqual(active.mode, "RGBA")
-        self.assertEqual(stopped.mode, "RGBA")
-        # 运行态用近黑图标，停止态用中灰图标，两者不能是同一张图
-        self.assertNotEqual(active.tobytes(), stopped.tobytes())
-
-    def test_missing_icon_files_do_not_crash(self):
+    def test_missing_icon_files_return_none(self):
+        """文件全缺时返回 None，由托盘侧退回内置图标；不能抛异常。"""
         with tempfile.TemporaryDirectory() as tmp:
             with patch.object(icon_theme, "BASE_DIR", Path(tmp)):
-                image = icon_theme.load_icon_image(None, light_taskbar=True)
-
-        self.assertEqual(image.mode, "RGBA")
-        self.assertEqual(image.size, (64, 64))
+                self.assertIsNone(icon_theme.icon_path("active", light_taskbar=True))
+                self.assertIsNone(icon_theme.icon_path("stop", light_taskbar=False))
 
 
 if __name__ == "__main__":
