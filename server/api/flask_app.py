@@ -62,11 +62,12 @@ latest_file = None
 computer_name = socket.gethostname()
 clipboard_lock = threading.Lock()
 CLIPBOARD_ENABLED = True
-CLIENT_EXPIRE_HOURS = 168   # 客户端超过1周未出现就删除
+CLIENT_EXPIRE_HOURS = 168   # 客户端超过1周没有任何活跃证据就删除
+CLIENT_TOUCH_INTERVAL = 600  # 同一客户端 10 分钟内最多写一次注册表
+ONLINE_CHECK_TIMEOUT = 2    # 推送前的在线探测超时（原先 5 秒，串行时会拖慢复制）
 CLIENT_NOTIFY = {} # 客户端通知记录
 IOS_NOTIFY = {} # ios的通知文件
-IOS_TOUCH = {}  # iOS 客户端最近一次写盘续期的时间戳
-IOS_TOUCH_INTERVAL = 600  # 轮询型客户端每 10 分钟最多写一次注册表
+CLIENT_TOUCH = {}  # (客户端名, seen|delivery) -> 最近一次写盘的时间戳
 
 def init_services(config_manager=None):
     """由 run.py 在配置注入后调用，初始化依赖配置的服务"""
@@ -152,34 +153,59 @@ def load_clients_ip():
         logging.warning(f"加载客户端 IP 文件失败，已重置为列表: {e}")
         clients = []
 
+def _parse_client_time(value):
+    """解析注册表里的时间戳；认不出来的返回 None。"""
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(str(value))
+    except (TypeError, ValueError):
+        return None
+
+def _client_last_alive(client):
+    """
+    这台客户端最后一次「还活着」的证据。
+
+    主动请求（last_seen）与成功投递（last_delivery）都算，取较晚的一个。
+    投递只在真的送达时才记账（见 touch_clients_delivered），所以已经下线的
+    设备不会靠投递记录无限续命 —— 它既没有新请求，也没有成功的投递，
+    TTL 一到就被清掉。
+    """
+    stamps = [
+        stamp for stamp in (
+            _parse_client_time(client.get("last_seen")),
+            _parse_client_time(client.get("last_delivery")),
+        ) if stamp is not None
+    ]
+    return max(stamps) if stamps else None
+
+def _find_client(local_name, ip):
+    """按设备身份查找：先认名字，再退回 IP。"""
+    for c in clients:
+        if c.get("local_name") == local_name:
+            return c
+    if ip:
+        for c in clients:
+            if c.get("ip") == ip:
+                return c
+    return None
+
 def save_clients():
     with _lock:
         now = datetime.now()
+        threshold = now - timedelta(hours=CLIENT_EXPIRE_HOURS)
         active_clients = []
-        # 预先计算过期时间阈值字符串，避免在循环中重复解析 datetime
-        threshold_str = (now - timedelta(hours=CLIENT_EXPIRE_HOURS)).strftime("%Y-%m-%d %H:%M:%S")
 
-        # 先清理过期客户端
+        # 清理过期客户端：判定基准是「最后活跃时间」，而不是单纯的 last_seen
         for c in clients:
-            is_expired = False
-            try:
-                last_seen = c["last_seen"]
-                # 使用 fromisoformat 进行快速的严格语义校验，若格式或数值错误会抛出 ValueError
-                # 这保证了与之前 strptime 相同的准确度，但速度快几十倍
-                try:
-                    datetime.fromisoformat(last_seen)
-                except ValueError:
-                    # 如果 fromisoformat 无法解析，回退到 strptime 做最终判定，以便和原来保持绝对一致
-                    datetime.strptime(last_seen, "%Y-%m-%d %H:%M:%S")
-
-                if last_seen < threshold_str:
-                    is_expired = True
-            except (ValueError, KeyError):
-                # 时间格式错误或缺失字段，视为无效，直接移除
-                is_expired = True
-
-            if is_expired:
-                logging.info(f"移除过期客户端: {c.get('local_name', '未知')} ({c.get('ip')})")
+            last_alive = _client_last_alive(c)
+            if last_alive is None or last_alive < threshold:
+                logging.info(
+                    "移除过期客户端: %s (%s) 最后活跃=%s",
+                    c.get("local_name", "未知"),
+                    c.get("ip"),
+                    last_alive.strftime("%Y-%m-%d %H:%M:%S") if last_alive else "无记录",
+                )
             else:
                 active_clients.append(c)
 
@@ -191,15 +217,18 @@ def save_clients():
 
 def add_or_update_client(ip, port, local_name, os):
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    # 查找是否已存在同 IP
-    for c in clients:
-        if c["ip"] == ip:
-            c["last_seen"] = now
-            c["port"] = port
-            c["local_name"] = local_name
-            c["os"] = os
-            save_clients()
-            return False  # 已存在，仅更新
+    # 先按设备名匹配：换 IP 不该变成另一台设备
+    client = _find_client(local_name, ip)
+    if client is not None:
+        client["ip"] = ip
+        # 只接受有效的推送端口；自动登记的记录默认是 0，别把已有端口覆盖掉
+        if port:
+            client["port"] = port
+        client["local_name"] = local_name
+        client["os"] = os or client.get("os", "Windows")
+        client["last_seen"] = now
+        save_clients()
+        return False  # 已存在，仅更新
     # 新客户端
     clients.append({
         "ip": ip,
@@ -212,14 +241,109 @@ def add_or_update_client(ip, port, local_name, os):
     save_clients()
     return True
 
+def touch_client(ip, source, os_name=None, *, delivery=False):
+    """
+    自动登记 / 续期一台客户端。
+
+    任何带 key 且能报出自己名字的请求都可以走到这里 —— 首次见到就登记，
+    之后每次请求刷新 last_seen，投递成功则另记 last_delivery。同一客户端
+    10 分钟内最多写一次注册表，避免 iOS 那种几秒一次的轮询把文件写爆。
+    """
+    source = (source or "").strip()
+    ip = (ip or "").strip()
+    if not source or not ip:
+        return False
+
+    now = datetime.now()
+    throttle_key = (source, "delivery" if delivery else "seen")
+    if now.timestamp() - CLIENT_TOUCH.get(throttle_key, 0) < CLIENT_TOUCH_INTERVAL:
+        return False
+    CLIENT_TOUCH[throttle_key] = now.timestamp()
+
+    stamp = now.strftime("%Y-%m-%d %H:%M:%S")
+    load_clients_ip()
+    client = _find_client(source, ip)
+    is_new = client is None
+    if is_new:
+        client = {
+            "ip": ip,
+            "port": 0,
+            "local_name": source,
+            "os": os_name or "Windows",
+            "first_seen": stamp,
+            "last_seen": stamp,
+        }
+        clients.append(client)
+    else:
+        client["ip"] = ip
+        if os_name:
+            client["os"] = os_name
+    if delivery:
+        client["last_delivery"] = stamp
+        client.setdefault("last_seen", stamp)
+    else:
+        client["last_seen"] = stamp
+
+    save_clients()
+    if is_new:
+        logging.info("自动登记客户端: %s (%s, %s)", source, ip, client.get("os"))
+    return True
+
+def touch_clients_delivered(targets):
+    """
+    批量记录「投递成功」：一次读盘、一次写盘。
+
+    只有真的送到才调用它。送不到（离线、端口不通、iOS 还等着轮询来取）
+    就不记账，于是那台设备会按 last_seen 正常过期。
+    """
+    if not targets:
+        return
+    now = datetime.now()
+    pending = []
+    for ip, source, os_name in targets:
+        source = (source or "").strip()
+        if not source:
+            continue
+        throttle_key = (source, "delivery")
+        if now.timestamp() - CLIENT_TOUCH.get(throttle_key, 0) < CLIENT_TOUCH_INTERVAL:
+            continue
+        CLIENT_TOUCH[throttle_key] = now.timestamp()
+        pending.append((ip, source, os_name))
+    if not pending:
+        return
+
+    stamp = now.strftime("%Y-%m-%d %H:%M:%S")
+    load_clients_ip()
+    touched = False
+    for ip, source, os_name in pending:
+        client = _find_client(source, ip)
+        if client is None:
+            continue
+        if os_name:
+            client["os"] = os_name
+        client["last_delivery"] = stamp
+        client.setdefault("last_seen", stamp)
+        touched = True
+    if touched:
+        save_clients()
+
 def check_online(ip, port, os, source):
-    """检测客户端是否在线"""
-    check_url = f"http://{ip}:{port}/ping"
-    # iOS默认在线
+    """检测客户端是否在线（也就是：能不能主动推给它）"""
+    try:
+        port = int(port or 0)
+    except (TypeError, ValueError):
+        port = 0
+    # iOS 快捷指令没有推送端口，只能等它自己来拉
     if os == "iOS":
         return True
+    if port <= 0:
+        # 还没上报推送端口的设备（比如只被自动登记过）无从推送，
+        # 等它自己 register 带上 file_server_port 之后才会走主动推送
+        logging.info("客户端 %s(%s) 未上报推送端口，跳过主动推送", source, ip)
+        return False
+    check_url = f"http://{ip}:{port}/ping"
     try:
-        resp = requests.get(check_url, timeout=5)
+        resp = requests.get(check_url, timeout=ONLINE_CHECK_TIMEOUT)
         if resp.status_code != 200:
             logging.warning(f"客户端 {source}({ip}) 状态异常: {resp.status_code}")
             return False
@@ -230,6 +354,15 @@ def check_online(ip, port, os, source):
         return False
 
 def push_notify(_type, latest, ip, port, os, source, latest_global):
+    """
+    向一台客户端投递一次更新，返回「是否真的送到了」。
+
+    返回值决定要不要给这台设备记 last_delivery（见 touch_clients_delivered）：
+    只有真送到才算它还活着，送不到就让它按 last_seen 正常过期。
+
+    iOS 例外：服务端这里只是把内容挂到内存字典等它来拉，投递尚未完成，
+    因此返回 False —— 它拉走时才会刷新自己的活跃时间。
+    """
     global IOS_NOTIFY
     if os == "iOS":
         if _type == "text":
@@ -249,59 +382,59 @@ def push_notify(_type, latest, ip, port, os, source, latest_global):
                 str(latest["content"])[:30],
                 latest["source"]
             )
-    else:
-        if _type == "text":
-            # 标记为已粘贴
-            pasted_item = {
-                "id": latest["id"],
-                "type": latest.get("type", "text"),
-                "content": latest["content"],
-                "timestamp": datetime.now().isoformat(),
-                "source": latest["source"],
-                "pasted": True
-            }
-            tracker.mark_pasted(source, pasted_item)
+        return False
 
-            logging.info(
-                "客户端 %s 已获取并标记粘贴: %s (来自 %s)",
-                source,
-                str(latest["content"])[:30], # 防止 content 不是字符串导致报错
-                latest["source"]
-            )
-        else:
-            logging.info("客户端 %s 已获取文件发布通知", source)
-        # 推送更新到客户端
-        update_url = f"http://{ip}:{port}/update/current_latest"
+    # 推送更新到客户端
+    update_url = f"http://{ip}:{port}/update/current_latest"
+    try:
+        resp = requests.post(
+            update_url,
+            json={
+                "key": KEY,
+                "latest_global": latest_global,
+                "server_source": LOCAL_NAME,
+                "type": _type
+            },
+            timeout=5
+        )
+    except Exception as e:
+        logging.error(f"连接客户端 {source} 失败: {e}")
+        return False
+
+    if resp.status_code != 200:
+        logging.warning(f"推送失败: {resp.status_code} {resp.text}")
+        return False
+
+    # 只有确认送达，才把它标记为已获取；否则下次还要再推一次
+    if _type == "text":
+        tracker.mark_pasted(source, {
+            "id": latest["id"],
+            "type": latest.get("type", "text"),
+            "content": latest["content"],
+            "timestamp": datetime.now().isoformat(),
+            "source": latest["source"],
+            "pasted": True
+        })
+        logging.info(
+            "客户端 %s 已获取并标记粘贴: %s (来自 %s)",
+            source,
+            str(latest["content"])[:30],
+            latest["source"]
+        )
+        logging.info("文字推送成功: %s...", str(latest["content"])[:50])
+    else:
         try:
-            resp = requests.post(
-                update_url,
-                json={
-                    "key": KEY,
-                    "latest_global": latest_global,
-                    "server_source": LOCAL_NAME,
-                    "type": _type
-                },
-                timeout=5
-            )
-            if resp.status_code == 200:
-                if _type == "text":
-                    content_preview = str(latest["content"])[:50]
-                    logging.info(f"文字推送成功: {content_preview}...")
-                else:
-                    try:
-                        if isinstance(latest, list) and latest:
-                            name = latest[0].get('name') if isinstance(latest[0], dict) else str(latest[0])
-                        elif isinstance(latest, dict):
-                            name = latest.get('name', '<unknown>')
-                        else:
-                            name = '<unknown>'
-                    except Exception:
-                        name = '<unknown>'
-                    logging.info(f"文件发布推送成功: {name}...")
+            if isinstance(latest, list) and latest:
+                name = latest[0].get('name') if isinstance(latest[0], dict) else str(latest[0])
+            elif isinstance(latest, dict):
+                name = latest.get('name', '<unknown>')
             else:
-                logging.warning(f"推送失败: {resp.status_code} {resp.text}")
-        except Exception as e:
-            logging.error(f"连接客户端 {source} 失败: {e}")
+                name = '<unknown>'
+        except Exception:
+            name = '<unknown>'
+        logging.info(f"客户端 {source} 已获取文件发布通知")
+        logging.info(f"文件发布推送成功: {name}...")
+    return True
 
 def get_timestamp(data):
     """返回时间戳"""
@@ -353,6 +486,8 @@ def notify_clients(_type):
         latest_global = latest.copy()
         latest_file_item = latest[0]
 
+    # 第一遍：筛出这次真正需要投递的客户端
+    candidates = []
     for client in clients:
         source = client["local_name"]
         client_ip = client['ip']
@@ -394,25 +529,58 @@ def notify_clients(_type):
         if already_pasted:
             continue
 
+        if isinstance(latest, list) and latest:
+            file_id = latest[0].get('file_id') if isinstance(latest[0], dict) else str(latest[0])
+        else:
+            file_id = latest.get('id') if isinstance(latest, dict) else None
+        if CLIENT_NOTIFY.get(client_ip, '') == file_id:
+            continue
+
+        candidates.append((client, source, client_ip, file_id))
+
+    if not candidates:
+        return
+
+    # 并发探测在线状态：串行 5 秒超时会让一次复制卡住十几秒
+    online = {}
+    with concurrent.futures.ThreadPoolExecutor(
+        max_workers=min(8, len(candidates))
+    ) as pool:
+        futures = {
+            pool.submit(check_online, c['ip'], c['port'], c['os'], s): c['ip']
+            for c, s, _ip, _fid in candidates
+        }
+        for future, client_ip in futures.items():
+            try:
+                online[client_ip] = future.result()
+            except Exception as e:  # noqa: BLE001
+                logging.warning(f"在线探测异常 {client_ip}: {e}")
+                online[client_ip] = False
+
+    delivered = []
+    for client, source, client_ip, file_id in candidates:
         try:
-            new_client_notify = CLIENT_NOTIFY.get(client_ip, '')
-            if isinstance(latest, list) and latest:
-                file_id = latest[0].get('file_id') if isinstance(latest[0], dict) else str(latest[0])
-            elif isinstance(latest, dict):
-                file_id = latest.get('id')
-            if new_client_notify != file_id:
-                # 检查客户端是否在线
-                if not check_online(client_ip, client['port'], client['os'], source):
-                    continue
-                # 未超时10分钟才执行推送
-                timestamp = get_timestamp(latest) if latest else get_timestamp(latest_global)
-                if not isExpired(timestamp):
-                    # 执行推送
-                    push_notify(_type, latest, client_ip, client['port'], client['os'], source, latest_global)
-                # 记录推送记录，避免二次推送
+            if not online.get(client_ip):
+                continue
+            # 未超时10分钟才执行推送
+            timestamp = get_timestamp(latest) if latest else get_timestamp(latest_global)
+            if isExpired(timestamp):
+                continue
+            # 执行推送；只有真送到才记账，送不到下次还会重试
+            if push_notify(
+                _type, latest, client_ip, client['port'], client['os'], source, latest_global
+            ):
                 CLIENT_NOTIFY[client_ip] = file_id
+                # iOS 只是把内容挂到内存字典，等它自己来拉，不算送达
+                if client.get('os') != "iOS":
+                    delivered.append((client_ip, source, client.get('os')))
+            else:
+                CLIENT_NOTIFY.pop(client_ip, None)
         except Exception as e:
             logging.error(f"通知客户端 {client['local_name']} 失败: {e}")
+
+    # 批量续期：投递成功 = 这台设备还在线，别按 last_seen 把它清掉
+    touch_clients_delivered(delivered)
 
 def _is_echo_submission(content, source):
     """
@@ -457,33 +625,13 @@ def _handle_echo(source, content):
     tracker.note_client_hold(source, content)
 
 
-def _touch_ios_client(source, ip):
-    """
-    给轮询型 iOS 客户端续期登记。
-
-    iOS 快捷指令只会定时 GET/POST，从不调用 /register，而 save_clients()
-    会清理 7 天没出现过的客户端 —— 于是它会在某个不相关的时间点静默消失，
-    之后 notify_clients 不再为它准备数据，手机就再也收不到新内容了。
-    这里在轮询时顺手刷新 last_seen，每 10 分钟最多写一次盘，避免几秒一个
-    请求就把注册表重写一遍。
-    """
-    if not source or not ip:
-        return
-    now = datetime.now().timestamp()
-    if now - IOS_TOUCH.get(source, 0) < IOS_TOUCH_INTERVAL:
-        return
-    IOS_TOUCH[source] = now
-    load_clients_ip()
-    add_or_update_client(ip, 0, source, "iOS")
-
-
 def _take_ios_latest(source):
     """
     给轮询型 iOS 客户端取一份待投递内容，没有就返回空。
 
     不能只依赖内存里的 IOS_NOTIFY：那是 notify_clients 主动推送时填的，
     而 notify_clients 只遍历 clients 表。这台手机一旦从表里过期消失（见
-    _touch_ios_client），就再也不会有人给它塞数据，接口会一直返回
+    touch_client），就再也不会有人给它塞数据，接口会一直返回
     {"pasted": true} 空对象 —— 表现就是「手机拉不到电脑刚复制的内容」。
 
     所以分两级取：
@@ -528,6 +676,8 @@ def text_sync():
     source = data.get("source", "")
     content = data.get("content", "")
     encode = data.get("encode", "")
+    # 首次见到的设备自动登记，之后靠请求续期；不再需要单独手动注册
+    touch_client(request.remote_addr, source, get_os_type(request.headers.get("User-Agent", "")))
     if encode == "base64":
         content = base64.b64decode(content).decode('utf-8')
 
@@ -565,6 +715,7 @@ def sync():
     source = data.get("source", "")
     content = data.get("content", "")
     latest_global = { "pasted": False }
+    touch_client(request.remote_addr, source, get_os_type(request.headers.get("User-Agent", "")))
     # 获取该客户端当前记录
     client_last = tracker.data.get("clients", {}).get(source)
 
@@ -617,6 +768,7 @@ def get_latest():
 
     # 获取请求客户端的名称（用于自动标记粘贴）
     source = request.args.get("source", "")
+    touch_client(request.remote_addr, source, get_os_type(request.headers.get("User-Agent", "")))
     latest = tracker.get_global_latest()
     if latest is None:
         latest_global = {}
@@ -669,7 +821,7 @@ def iosSync():
     content = data.get("content", "")
     os = data.get("os", "iOS")
     latest_global = { "pasted": True, "content": content }
-    _touch_ios_client(source, request.remote_addr)
+    touch_client(request.remote_addr, source, "iOS")
     # 获取该客户端当前记录
     client_last = tracker.data.get("clients", {}).get(source)
 
@@ -705,7 +857,7 @@ def ios_get_latest():
 
     # 获取请求客户端的名称（用于自动标记粘贴）
     source = request.args.get("source", "")
-    _touch_ios_client(source, request.remote_addr)
+    touch_client(request.remote_addr, source, "iOS")
     latest_global = _take_ios_latest(source)
 
     return jsonify({"status": "ok", "latest_global": latest_global}), 200
@@ -726,6 +878,9 @@ def get_online_clients():
     requester_name = request.args.get("source", "").strip()
     requester_port = request.args.get("source_port", type=int)
     requester_ip = request.remote_addr
+
+    # 来问「谁在线」的设备本身也是客户端，顺手登记
+    touch_client(requester_ip, requester_name, get_os_type(request.headers.get("User-Agent", "")))
 
     load_clients_ip()
 
@@ -859,6 +1014,8 @@ def mark_pasted():
     content = data.get("content")
     original_source = data.get("original_source")  # 内容的原始来源，如 "Xun’s iPhone"
 
+    touch_client(request.remote_addr, source, get_os_type(request.headers.get("User-Agent", "")))
+
     if not all([source, item_id, content, original_source]):
         return jsonify({"status": "error", "message": "参数不完整"}), 400
 
@@ -891,6 +1048,12 @@ def file_sync():
     file_list = data.get("file_list", [])
     source = data.get("source", "unknown")
     port = data.get("port", 8899)
+    if source and source != "unknown":
+        touch_client(
+            request.remote_addr,
+            source,
+            get_os_type(request.headers.get("User-Agent", "")),
+        )
 
     if not file_list:
         return jsonify({"status": "error", "message": "file_list 为空"}), 400
@@ -1040,6 +1203,7 @@ def upload_file():
 
     logging.info(f"手机上传文件已保存: {save_path}")
     source = unquote(request.headers.get("source", ""))
+    touch_client(request.remote_addr, source, get_os_type(request.headers.get("User-Agent", "")))
     msg = f"来源：{source}\n文件：{filename}\n保存：{save_path}"
     show_notification("手机文件已保存", msg)
     return jsonify({"status": "ok", "message": "文件上传成功","path": save_path}), 200

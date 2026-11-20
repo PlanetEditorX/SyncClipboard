@@ -33,7 +33,7 @@ class IOSDeliveryTest(unittest.TestCase):
             ("CLIENT_IP_FILE", self.clients_file),
             ("CLIENT_NOTIFY", {}),
             ("IOS_NOTIFY", {}),
-            ("IOS_TOUCH", {}),
+            ("CLIENT_TOUCH", {}),
             ("KEY", "secret"),
             ("tracker", TextTracker()),
             ("clients", []),
