@@ -65,6 +65,8 @@ CLIPBOARD_ENABLED = True
 CLIENT_EXPIRE_HOURS = 168   # 客户端超过1周未出现就删除
 CLIENT_NOTIFY = {} # 客户端通知记录
 IOS_NOTIFY = {} # ios的通知文件
+IOS_TOUCH = {}  # iOS 客户端最近一次写盘续期的时间戳
+IOS_TOUCH_INTERVAL = 600  # 轮询型客户端每 10 分钟最多写一次注册表
 
 def init_services(config_manager=None):
     """由 run.py 在配置注入后调用，初始化依赖配置的服务"""
@@ -455,6 +457,64 @@ def _handle_echo(source, content):
     tracker.note_client_hold(source, content)
 
 
+def _touch_ios_client(source, ip):
+    """
+    给轮询型 iOS 客户端续期登记。
+
+    iOS 快捷指令只会定时 GET/POST，从不调用 /register，而 save_clients()
+    会清理 7 天没出现过的客户端 —— 于是它会在某个不相关的时间点静默消失，
+    之后 notify_clients 不再为它准备数据，手机就再也收不到新内容了。
+    这里在轮询时顺手刷新 last_seen，每 10 分钟最多写一次盘，避免几秒一个
+    请求就把注册表重写一遍。
+    """
+    if not source or not ip:
+        return
+    now = datetime.now().timestamp()
+    if now - IOS_TOUCH.get(source, 0) < IOS_TOUCH_INTERVAL:
+        return
+    IOS_TOUCH[source] = now
+    load_clients_ip()
+    add_or_update_client(ip, 0, source, "iOS")
+
+
+def _take_ios_latest(source):
+    """
+    给轮询型 iOS 客户端取一份待投递内容，没有就返回空。
+
+    不能只依赖内存里的 IOS_NOTIFY：那是 notify_clients 主动推送时填的，
+    而 notify_clients 只遍历 clients 表。这台手机一旦从表里过期消失（见
+    _touch_ios_client），就再也不会有人给它塞数据，接口会一直返回
+    {"pasted": true} 空对象 —— 表现就是「手机拉不到电脑刚复制的内容」。
+
+    所以分两级取：
+    1. IOS_NOTIFY 里有主动推送的记录 → 直接给，并记为已投递；
+    2. 否则看全局最新：不是这台设备自己发的、且它手上还不是这份内容 → 给；
+    3. 都没有 → 空（pasted: true），让快捷指令什么都不做。
+    """
+    if not source:
+        return {"pasted": True}
+
+    if source in IOS_NOTIFY:
+        pending = IOS_NOTIFY.pop(source)
+        latest_global = dict(pending)
+        latest_global["pasted"] = False
+        tracker.mark_pasted(source, dict(pending, pasted=True))
+        return latest_global
+
+    latest = tracker.get_global_latest()
+    if not latest or latest.get("source") == source:
+        return {"pasted": True}
+
+    client_last = tracker.data.get("clients", {}).get(source) or {}
+    if client_last.get("content") == latest.get("content"):
+        return {"pasted": True}
+
+    latest_global = dict(latest)
+    latest_global["pasted"] = False
+    tracker.mark_pasted(source, dict(latest, pasted=True))
+    return latest_global
+
+
 # ------------------- 文字同步接口 -------------------
 @app.route('/text_sync', methods=['POST'])
 def text_sync():
@@ -609,6 +669,7 @@ def iosSync():
     content = data.get("content", "")
     os = data.get("os", "iOS")
     latest_global = { "pasted": True, "content": content }
+    _touch_ios_client(source, request.remote_addr)
     # 获取该客户端当前记录
     client_last = tracker.data.get("clients", {}).get(source)
 
@@ -633,11 +694,7 @@ def iosSync():
     # 获取该客户端当前记录
     else:
         # 内容没变 → 纯拉取操作
-        if source in IOS_NOTIFY:
-            pasted_item = IOS_NOTIFY.pop(source)
-            latest_global = pasted_item.copy()
-            pasted_item['pasted'] = True
-            tracker.mark_pasted(source, pasted_item)
+        latest_global = _take_ios_latest(source)
     return jsonify({"status": "ok", "latest_global": latest_global})
 
 @app.route('/ios/latest', methods=['GET'])
@@ -648,13 +705,8 @@ def ios_get_latest():
 
     # 获取请求客户端的名称（用于自动标记粘贴）
     source = request.args.get("source", "")
-    latest_global = { "pasted": True}
-
-    if source in IOS_NOTIFY:
-        pasted_item = IOS_NOTIFY.pop(source)
-        latest_global = pasted_item.copy()
-        pasted_item['pasted'] = True
-        tracker.mark_pasted(source, pasted_item)
+    _touch_ios_client(source, request.remote_addr)
+    latest_global = _take_ios_latest(source)
 
     return jsonify({"status": "ok", "latest_global": latest_global}), 200
 # --------------------------------------------
