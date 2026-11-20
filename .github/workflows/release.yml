@@ -39,9 +39,27 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
+      # 发版前必须验证：打包配置（manifest / 排除项）与 UI 逻辑都有回归测试覆盖，
+      # 这些用例只在本地跑过就发版风险太大。
+      - name: Run tests
+        shell: pwsh
+        run: python -m unittest discover -s tests -v
+
       - name: Run Windows build script
         shell: pwsh
         run: python release/build.py
+
+      # 体积回归护栏：PySide6 的裁剪一旦失效，包会从 ~80MB 涨回 ~120MB
+      - name: Check package size
+        shell: pwsh
+        run: |
+          $size = (Get-ChildItem -Recurse "release/dist/SyncClipboard" |
+                   Measure-Object -Property Length -Sum).Sum
+          $mb = [math]::Round($size / 1MB, 1)
+          Write-Host "Windows package size: $mb MB"
+          if ($mb -gt 110) {
+            throw "打包体积 $mb MB 超过 110MB 阈值，检查 prune_qt_payload 是否失效"
+          }
 
       - name: Package Windows dist folder
         shell: pwsh

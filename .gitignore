@@ -1,11 +1,13 @@
 clipboard_cache.json
 server.log
 *.pyc
+__pycache__/
 .venv
 client.log
 text_latest.json
 file_latest.json
 syncclipboard.pid
+latest/
 # 配置文件（包含敏感信息）
 config/*.json
 # 但保留示例模板
@@ -13,5 +15,15 @@ config/*.json
 log/
 release/*
 !release/build.py
+!release/app.manifest
 !release/bat
 .workbuddy/
+
+# ---- 调试/打包临时产物护栏 ----
+# 仓库根目录下划线开头的文件与目录一律忽略（临时探针、基准脚本、截图等）。
+# 只作用于根目录，不影响 gui/_internal.py 这类模块内的私有命名。
+/_*
+# PyInstaller 生成物
+*.spec
+build/
+dist/
