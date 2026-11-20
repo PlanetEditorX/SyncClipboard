@@ -1,6 +1,6 @@
 # SyncClipboard Android 0.3.4（在线目标过滤版）
 
-一个用于替代 MacroDroid 宏的原生 Android 客户端。0.3.4 在 0.3.3 基础上修正文件发送目标列表：隐藏当前 Android 设备自身，并排除只能主动轮询拉取的 iOS 客户端。
+一个原生 Android 客户端。0.3.4 在 0.3.3 基础上修正文件发送目标列表：隐藏当前 Android 设备自身，并排除只能主动轮询拉取的 iOS 客户端。
 
 ## 已实现
 
@@ -179,7 +179,7 @@ PUT http://192.168.1.10:8000/upload_file_to_download?redirect=http://192.168.1.3
 - 默认示例使用明文 HTTP，仅适合可信局域网。跨公网使用时应改为 HTTPS/VPN。
 - 不要继续使用示例密钥 `123456`。
 - `/update/current_latest` 必须携带正确密钥。
-- `/upload_file` 接受正确密钥；也可选允许配置服务器的 IP 无密钥调用，以兼容旧宏。
+- `/upload_file` 必须携带正确密钥。
 - 内置 HTTP 服务只用于小型 JSON 控制请求，正文上限为 2 MiB；实际文件通过下载 URL 传输。
 
 ## 协议映射

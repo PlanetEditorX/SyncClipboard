@@ -65,7 +65,7 @@ def build_command(customtkinter_dir=None):
 def clean_release_outputs():
     print("[Clean] 清理旧构建输出...")
     for item in RELEASE_DIR.iterdir():
-        if item.name in {"build.py", "bat", "macrodroid"}:
+        if item.name in {"build.py", "bat"}:
             continue
         if item.is_dir():
             shutil.rmtree(item, ignore_errors=True)

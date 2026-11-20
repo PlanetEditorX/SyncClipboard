@@ -1144,6 +1144,8 @@ def status():
 def get_os_type(ua):
     ua_lower = ua.lower()
     if re.search(r'macrodroid', ua_lower):
+        # 旧版 MacroDroid 宏（已停用）遗留的 UA 兜底：万一还有设备在用旧宏，
+        # 至少能正确归为 Android，而不是被当成未知系统影响推送分支。
         return 'Android'
     if re.search(r'darwin', ua_lower):
         # macOS 的 UA 也包含 Darwin，但通常还包含 'Mac OS X'
