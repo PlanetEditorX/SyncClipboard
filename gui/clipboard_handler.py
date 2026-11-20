@@ -1,12 +1,19 @@
+import hashlib
 import json
 import logging
 import threading
+import time
 from datetime import datetime, timedelta
 from common.utils import SAFE_POST
 from common.notification import show_notification, show_notification_with_click
 from server.core.file_latest import is_file_record_expired
 
 logger = logging.getLogger("gui")
+
+# 同一来源的同一份内容，在这个时间窗内重复出现只提醒一次。
+# 轮询型客户端（iOS 快捷指令 / Android）会反复把本地剪贴板 POST 上来，
+# 服务端偶尔会为同一段文字生成新的 id，光靠 id 去重挡不住。
+NOTIFY_DEDUP_SECONDS = 60
 
 
 class ClipboardHandler:
@@ -15,6 +22,36 @@ class ClipboardHandler:
         self.config = config_manager
         self.tray_manager = tray_manager_ref
         self.last_global_id = None
+        # 最近一次处理过的 (来源, 内容指纹)，用于识别反复推送的同一段文字
+        self._last_seen_key = None
+        self._last_seen_at = 0.0
+
+    @staticmethod
+    def _content_digest(content):
+        """内容指纹：来源不同、内容相同也能稳定比较。"""
+        if isinstance(content, str):
+            raw = content
+        else:
+            raw = json.dumps(content, ensure_ascii=False, sort_keys=True, default=str)
+        return hashlib.sha1(raw.encode("utf-8")).hexdigest()
+
+    def _should_announce(self, source, content):
+        """这条记录该不该弹窗。
+
+        只拦「同一来源的同一份内容刚刚提醒过」：轮询型客户端每隔一两秒把
+        剪贴板整块推上来，服务端偶尔会给同一段文字生成新的 id，靠 id 去重
+        挡不住，会变成反复弹窗。
+
+        反过来，中间只要换过内容（A → B → A），即便 A 的内容指纹相同，
+        也照常提醒 —— 那是用户又复制了一次。
+        """
+        key = (source, self._content_digest(content))
+        now = time.monotonic()
+        if key == self._last_seen_key and now - self._last_seen_at < NOTIFY_DEDUP_SECONDS:
+            return False
+        self._last_seen_key = key
+        self._last_seen_at = now
+        return True
 
     def handle_client_latest(self):
         """处理文本剪贴板更新"""
@@ -50,16 +87,16 @@ class ClipboardHandler:
                 ctype = latest.get('type', 'text')
                 title = "✂️ 剪贴板更新"
 
-                # 剪贴板里已经是这份内容：说明这条记录只是回传/重复事件，
-                # 不必再弹一次窗（历史上表现为“同一段文字反复弹窗”）。
-                if ctype == 'text' and content:
-                    try:
-                        import pyperclip
-                        if (pyperclip.paste() or "") == content:
-                            logger.info("内容已在剪贴板中，跳过弹窗: %s", content[:30])
-                            return
-                    except Exception:
-                        pass
+                # 判重只看「这条记录本身是不是刚刚处理过的那一份」，不能拿本机
+                # 剪贴板的内容来判：服务端和客户端装在同一台机器时，服务端收到
+                # 远端文字会先把内容写进本机剪贴板，此时「剪贴板里已经是这份
+                # 内容」恰恰说明同步刚刚发生，拿它判重会把本该出现的弹窗吞掉。
+                if not self._should_announce(source, content if ctype == 'text' else ctype):
+                    logger.info(
+                        "同一份内容刚刚提醒过，跳过弹窗: %s",
+                        str(content)[:30],
+                    )
+                    return
 
                 if ctype == 'text':
                     preview = content[:60] + ('…' if len(content) > 60 else '')
