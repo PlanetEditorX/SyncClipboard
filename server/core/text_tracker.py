@@ -11,9 +11,12 @@ import threading
 TEXT_LATEST_FILE = BASE_DIR / "latest" / "text_latest.json"
 TEXT_LATEST_FILE.parent.mkdir(parents=True, exist_ok=True)
 
-# 回音票据的有效期（秒）与数量上限：过期即视为“用户手动复制”放行
-ECHO_TTL_SECONDS = 600
-ECHO_MAX_ENTRIES = 32
+# 投递记录的保鲜期（秒）：投递给某台设备的文字，在这个时间内被原样回传
+# 就算回音；超过这个时间再收到，就当作用户手动重新复制。
+ECHO_TTL_SECONDS = 300
+# 投递记录最多保留多少台设备，以及每台设备保留几条最近投递
+ECHO_MAX_DEVICES = 32
+ECHO_KEEP_PER_DEVICE = 4
 
 class TextTracker:
     """
@@ -22,9 +25,13 @@ class TextTracker:
     - latest_global: 全局最新的文本条目（完整字典）
     - clients: 字典，键为客户端名称，值为该客户端的最新条目
     - global_ids: 列表，按添加顺序存储最近 N 个条目的 ID
-    - echo_guard: 回音票据表，{内容指纹: {origin, pending, at}}，
-      记录“刚刚被广播出去的内容”，用于识别其它客户端把同一份内容
-      原样回传（回音）还是用户手动又复制了一次。
+    - delivered: 投递记录，{设备名: [{key: 内容指纹, at: 时间戳}, ...]}，
+      记录“这份内容最近被投递给哪些设备”。设备把收到的东西原样回传
+      （回音）时命中记录；用户手动复制的新内容不会命中。
+      注意这里按“最近投递”判断，不做一次性消耗 —— 客户端（尤其是 iOS
+      快捷指令）会每隔一两秒把剪贴板整块 POST 上来，一次性票据很容易被
+      反复回传消耗干净，之后同一段文字的每次轮询都会被当成“新内容”，
+      表现为来源被改成手机、电脑反复弹窗。
     """
     def __init__(self):
         self.lock = threading.Lock()
@@ -35,7 +42,7 @@ class TextTracker:
             "latest_global": None,
             "clients": {},
             "global_ids": [],
-            "echo_guard": {}
+            "delivered": {}
         }
         if os.path.exists(TEXT_LATEST_FILE):
             try:
@@ -45,6 +52,8 @@ class TextTracker:
                 for key in default:
                     if key not in data:
                         data[key] = default[key]
+                # 旧版本的一次性回音票据，已经被 delivered 取代，顺手清掉
+                data.pop("echo_guard", None)
                 return data
             except (json.JSONDecodeError, FileNotFoundError):
                 return default
@@ -69,67 +78,103 @@ class TextTracker:
             content = json.dumps(content, ensure_ascii=False, sort_keys=True)
         return hashlib.sha1(content.encode("utf-8")).hexdigest()
 
-    def _alive_guard(self, guard, now):
-        """清理过期的回音票据。"""
-        return {
-            key: ticket
-            for key, ticket in (guard or {}).items()
-            if isinstance(ticket, dict) and now - float(ticket.get("at", 0)) <= ECHO_TTL_SECONDS
-        }
+    def _alive_delivered(self, delivered, now):
+        """清理过期的投递记录。"""
+        result = {}
+        for device, records in (delivered or {}).items():
+            alive = [
+                record for record in records
+                if isinstance(record, dict)
+                and now - float(record.get("at", 0)) <= ECHO_TTL_SECONDS
+            ]
+            if alive:
+                result[device] = alive
+        return result
 
-    def register_echo(self, content, origin, pending=1):
-        """
-        广播成功后登记回音票据。
+    def _record_delivery_locked(self, device, content):
+        """（调用方已持锁）记录“这份内容刚投递给了这台设备”。"""
+        if not device or content is None:
+            return
+        now = time.time()
+        key = self.content_key(content)
+        delivered = self._alive_delivered(self.data.get("delivered"), now)
+        records = [r for r in delivered.get(device, []) if r.get("key") != key]
+        records.insert(0, {"key": key, "at": now})
+        delivered[device] = records[:ECHO_KEEP_PER_DEVICE]
+        if len(delivered) > ECHO_MAX_DEVICES:
+            oldest = sorted(
+                delivered,
+                key=lambda name: delivered[name][0]["at"],
+            )[: len(delivered) - ECHO_MAX_DEVICES]
+            for name in oldest:
+                delivered.pop(name, None)
+        self.data["delivered"] = delivered
 
-        收到这份内容的其它客户端，很可能会在本地剪贴板变化时把它原样回传一次；
-        每登记一张票据就允许被“吞掉” pending 次回音。票据被消耗完或过期后，
-        再收到同样的内容就视为用户手动复制，正常广播。
-        """
+    def record_delivery(self, device, content):
+        """记录一次向某台设备的文字投递（用于识别该设备的回音）。"""
         with self.lock:
             self.data = self._load()
-            now = time.time()
-            guard = self._alive_guard(self.data.get("echo_guard"), now)
-            guard[self.content_key(content)] = {
-                "origin": origin,
-                "pending": max(1, int(pending)),
-                "at": now,
-            }
-            if len(guard) > ECHO_MAX_ENTRIES:
-                for key in sorted(guard, key=lambda k: guard[k]["at"])[: len(guard) - ECHO_MAX_ENTRIES]:
-                    guard.pop(key, None)
-            self.data["echo_guard"] = guard
+            self._record_delivery_locked(device, content)
             self._save()
 
-    def consume_echo(self, content, source) -> bool:
+    def is_echo_of_delivered(self, content, source) -> bool:
         """
-        判断这次提交是不是“回音”。
+        这份内容最近是否刚好投递给该设备？
 
-        返回 True 表示：这份内容刚由别的客户端首发并广播过，本次提交只是
-        接收方把剪贴板内容原样发回来的噪音，应当丢弃并且不消耗票据以外的状态。
-        返回 False 表示：要么没有票据，要么票据已耗尽/过期（用户手动重新复制），
-        要么提交者就是首发者本人。
+        是 → 本次提交属于“收到后原样回传”的回音，应当忽略；
+        否 → 用户手动复制（或该设备根本没收到过这份内容），正常处理。
         """
+        if not source or content is None:
+            return False
         key = self.content_key(content)
         with self.lock:
             self.data = self._load()
-            raw_guard = self.data.get("echo_guard")
-            guard = self._alive_guard(raw_guard, time.time())
-            ticket = guard.get(key)
-            self.data["echo_guard"] = guard
+            raw = self.data.get("delivered")
+            delivered = self._alive_delivered(raw, time.time())
+            if delivered != raw:
+                self.data["delivered"] = delivered
+                self._save()
+            for record in delivered.get(source, []):
+                if record.get("key") == key:
+                    return True
+        return False
 
-            if not ticket or ticket.get("origin") == source:
-                # 没有票据（=用户手动复制），或提交者本人就是首发者
-                if guard != raw_guard:
-                    self._save()
-                return False
+    def note_client_hold(self, source, content):
+        """
+        记账：某台设备当前持有的内容就是这一份（回音场景）。
 
-            remaining = int(ticket.get("pending", 1)) - 1
-            if remaining > 0:
-                guard[key] = {**ticket, "pending": remaining}
+        把它写进 clients[source] 之后，下一轮轮询里 is_new 直接为 False，
+        不会再次走到“有新内容”的分支 —— 光靠票据判断的话，票据一过期，
+        同一段文字的每次轮询都会被当成新内容重新广播。
+        """
+        if not source or content is None:
+            return
+        with self.lock:
+            self.data = self._load()
+            latest = self.data.get("latest_global") or {}
+            if latest.get("content") == content and latest.get("id"):
+                item = {
+                    "id": latest["id"],
+                    "type": latest.get("type", "text"),
+                    "content": content,
+                    "timestamp": latest.get("timestamp") or datetime.now().isoformat(),
+                    "source": latest.get("source", source),
+                    "pasted": True,
+                }
+                latest["pasted"] = True
+                self.data["latest_global"] = latest
             else:
-                guard.pop(key, None)
+                # 回音的是一份更早的内容：只更新该设备的持有记录，不动全局最新
+                item = {
+                    "id": "echo-" + self.content_key(content)[:12],
+                    "type": "text",
+                    "content": content,
+                    "timestamp": datetime.now().isoformat(),
+                    "source": (self.data.get("latest_global") or {}).get("source", source),
+                    "pasted": True,
+                }
+            self.data["clients"][source] = item
             self._save()
-            return True
 
     def update(self, item: dict, force_latest=False):
         # 写入时加锁，保证原子性
@@ -191,4 +236,6 @@ class TextTracker:
             if latest and latest.get("id") == item["id"]:
                 latest["pasted"] = True
                 self.data["latest_global"] = latest
+            # 这台设备已经拿到这份内容了：登记投递记录，后面它把内容回传时就能认出来
+            self._record_delivery_locked(client_name, item.get("content"))
             self._save()

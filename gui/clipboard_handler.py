@@ -50,6 +50,17 @@ class ClipboardHandler:
                 ctype = latest.get('type', 'text')
                 title = "✂️ 剪贴板更新"
 
+                # 剪贴板里已经是这份内容：说明这条记录只是回传/重复事件，
+                # 不必再弹一次窗（历史上表现为“同一段文字反复弹窗”）。
+                if ctype == 'text' and content:
+                    try:
+                        import pyperclip
+                        if (pyperclip.paste() or "") == content:
+                            logger.info("内容已在剪贴板中，跳过弹窗: %s", content[:30])
+                            return
+                    except Exception:
+                        pass
+
                 if ctype == 'text':
                     preview = content[:60] + ('…' if len(content) > 60 else '')
                     msg = f"来源：{source}\n内容：{preview}"

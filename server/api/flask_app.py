@@ -379,6 +379,11 @@ def notify_clients(_type):
                 and client_last.get("id") == latest["id"]
                 and client_last.get("pasted") is True
             )
+            # 兜底：该设备手上已经是同一份内容（哪怕事件 id 不同）就不再推送。
+            # 回音造成的“来源漂移”以前会把同一段文字反复推给同一台设备，
+            # 表现就是电脑一轮一轮弹“剪贴板更新”。
+            if client_last and client_last.get("content") == latest.get("content"):
+                already_pasted = True
         else:
             # 文件默认未使用，已粘贴的文件会自动清理数据
             already_pasted = False
@@ -407,36 +412,47 @@ def notify_clients(_type):
         except Exception as e:
             logging.error(f"通知客户端 {client['local_name']} 失败: {e}")
 
-def _echo_pending_count(source):
-    """估算这次广播会有多少个客户端可能把内容原样回传（用于发放回音票据）。"""
-    try:
-        names = {
-            c.get("local_name")
-            for c in clients
-            if c.get("local_name")
-        }
-    except Exception:
-        names = set()
-    names.discard(source)
-    names.discard(LOCAL_NAME)
-    return max(1, len(names))
-
-
 def _is_echo_submission(content, source):
     """
-    溯源判断：这次 /text_sync 提交是“用户手动复制”还是“客户端把收到的东西回传”？
+    溯源判断（主动推送型客户端，例如 Windows 客户端）：这次 /text_sync 提交是
+    “用户手动复制”还是“客户端把收到的东西回传”？
 
-    - 全局最新已经是同一份内容：其它设备再发一遍属于回音，忽略；
-      同一设备重复提交同一份内容（重试/重复事件）也忽略，避免重复弹窗。
-    - 命中回音票据：这份内容刚被广播出去、票据还没用完，说明是接收方回传，忽略。
-    - 其余情况（票据已耗尽/过期）视为用户手动又复制了一次，正常广播。
+    这类客户端自己能区分手动复制（剪贴板序列号），所以这里只兜一个确定性的底：
+    全局最新已经是同一份内容时，任何设备再发一遍都没有广播价值，直接忽略。
+    全局最新不是它（比如 A → B 之后用户又复制了 A），照常广播。
     """
+    if not content:
+        return False
     latest = tracker.get_global_latest()
-    same_as_latest = latest is not None and latest.get("content") == content
-    # 无论是否因“与全局最新相同”而忽略，都要消耗票据，避免票据长期挂住，
-    # 把用户后续真正的手动复制误判成回音（首发者本人不会消耗票据）。
-    consumed = tracker.consume_echo(content, source)
-    return same_as_latest or consumed
+    return bool(latest and latest.get("content") == content)
+
+
+def _is_poll_echo(content, source):
+    """
+    溯源判断（轮询型客户端，例如 iOS 快捷指令 / Android）：它们每隔一两秒把
+    本地剪贴板整块 POST 上来，本身无法区分“手动复制”和“回传”，因此两个信号
+    任一命中就按回音处理：
+
+    1. 内容就是全局最新 —— 已经广播过了，没有再次广播的价值；
+    2. 内容最近刚投递给这台设备 —— 它只是把收到的东西原样发回来。
+
+    用“投递记录”而不是“一次性票据”：轮询每 2 秒一发，票据会被反复回传瞬间
+    消耗完，之后同一段文字的每次轮询都会被当成新内容，来源被改成手机、
+    电脑端于是反复收到“新内容”弹窗。
+    """
+    if not content or source == LOCAL_NAME:
+        return False
+    latest = tracker.get_global_latest()
+    if latest is not None and latest.get("content") == content:
+        return True
+    return tracker.is_echo_of_delivered(content, source)
+
+
+def _handle_echo(source, content):
+    """忽略回音时要做的记账：让该设备知道“这份内容我已经有了”。"""
+    if not source or content is None:
+        return
+    tracker.note_client_hold(source, content)
 
 
 # ------------------- 文字同步接口 -------------------
@@ -460,6 +476,7 @@ def text_sync():
 
     # 任意客户端把已广播过的内容原样发回，都属于同步回音；不再改变来源或重新广播。
     if _is_echo_submission(content, source):
+        _handle_echo(source, content)
         return jsonify({"status": "ignored", "message": "忽略重复回传内容"}), 200
 
     item = build_text_item(text=content, source=source, pasted=False)
@@ -471,8 +488,6 @@ def text_sync():
     # 用 force_latest：能走到这里说明已经确认是“用户手动复制”的新内容，
     # 以到达顺序为准，避免客户端时钟偏差导致新内容顶不上来（历史上同样表现为“手机拿不到新文字”）。
     tracker.update(item, force_latest=True)
-    # 发放回音票据：允许接收方把这份内容回传一次而不被当成新内容
-    tracker.register_echo(content, origin=source, pending=_echo_pending_count(source))
     # 在需要时写入剪贴板（仅 Windows 服务器或启用了剪贴板功能时）
     copy_text_to_clipboard(content)
     load_clients_ip()
@@ -497,9 +512,10 @@ def sync():
     is_new = (not client_last) or (client_last.get("content") != content)
 
     # 溯源：这次“新内容”其实是别的设备刚广播过来、被本机剪贴板原样回传吗？
-    is_echo = bool(is_new and content and source != LOCAL_NAME) and tracker.consume_echo(content, source)
+    is_echo = bool(is_new and content) and _is_poll_echo(content, source)
     if is_echo:
         logging.info("忽略客户端 %s 的回音内容: %s", source, str(content)[:30])
+        _handle_echo(source, content)
 
     if is_new and content and source != LOCAL_NAME and not is_echo:
         # 手机有新内容 → 强制更新为自己，并设为全局最新
@@ -507,7 +523,6 @@ def sync():
         copy_text_to_clipboard(content)
         if not tracker.is_duplicate(item["id"]):
             tracker.update(item, force_latest=True)
-            tracker.register_echo(content, origin=source, pending=_echo_pending_count(source))
             load_clients_ip()
             notify_clients("text")
         # latest_global = tracker.get_global_latest()
@@ -601,9 +616,10 @@ def iosSync():
     is_new = (not client_last) or (client_last.get("content") != content)
 
     # 溯源：过滤“收到后原样回传”的回音，但保留用户手动复制的新内容
-    is_echo = bool(is_new and content and source != LOCAL_NAME) and tracker.consume_echo(content, source)
+    is_echo = bool(is_new and content) and _is_poll_echo(content, source)
     if is_echo:
         logging.info("忽略 iOS 客户端 %s 的回音内容: %s", source, str(content)[:30])
+        _handle_echo(source, content)
 
     if is_new and content and source != LOCAL_NAME and not is_echo:
         # 手机有新内容 → 强制更新为自己，并设为全局最新
@@ -611,7 +627,6 @@ def iosSync():
         copy_text_to_clipboard(content)
         if not tracker.is_duplicate(item["id"]):
             tracker.update(item, force_latest=True)
-            tracker.register_echo(content, origin=source, pending=_echo_pending_count(source))
             load_clients_ip()
             notify_clients("text")
         latest_global =  item

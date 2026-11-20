@@ -137,6 +137,16 @@ class SyncClient:
             return False
 
         with self.clipboard_lock:
+            # 剪贴板里已经是这份内容（本地刚复制过，或这是服务器把同一段文字
+            # 又推回来一次的回音）：不重复写入，也不再产生“新内容”提示。
+            current = self.safe_paste() or ""
+            if current == content:
+                self.last_remote_id = item_id
+                self.last_text = content
+                self._last_remote_content = None
+                self._last_clipboard_seq = get_clipboard_sequence()
+                return False
+
             pyperclip.copy(content)
             self.last_remote_id = item_id
             self._last_remote_content = content
