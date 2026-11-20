@@ -1,6 +1,8 @@
 import importlib
+import io
 import json
 import queue
+import sys
 import tempfile
 import threading
 import unittest
@@ -211,6 +213,36 @@ class TestModernUiCompatibility(unittest.TestCase):
             self.assertTrue((release_dir / "bat" / "start.bat").exists())
             for removed in ("dist", "spec", "build_cache", "stale.spec"):
                 self.assertFalse((release_dir / removed).exists(), removed)
+
+    def test_build_steps_survive_non_utf8_console(self):
+        """回归：CI 控制台是 cp1252，print 中文曾直接抛 UnicodeEncodeError。
+
+        GitHub Actions 的 windows runner 上 sys.stdout 编码为 cp1252，
+        _configure_stdout() 过去只在 main() 里调用，测试/脚本直接调各步骤
+        函数时就绕过了它，于是 print("[Clean] …") 直接让发版构建失败。
+        本地 Git Bash 是 UTF-8，永远复现不出来。
+        """
+        build = importlib.import_module("release.build")
+        real_stdout = sys.stdout
+        with tempfile.TemporaryDirectory() as temp_dir:
+            release_dir = Path(temp_dir) / "release"
+            (release_dir / "bat").mkdir(parents=True)
+            (release_dir / "app.manifest").write_text("<assembly/>", encoding="utf-8")
+            (release_dir / "build.py").write_text("# build", encoding="utf-8")
+            (release_dir / "dist").mkdir()
+            (release_dir / "spec").mkdir()
+
+            with patch.object(build, "RELEASE_DIR", release_dir):
+                sys.stdout = io.TextIOWrapper(
+                    io.BytesIO(), encoding="cp1252", errors="strict"
+                )
+                try:
+                    build.clean_release_outputs()
+                finally:
+                    sys.stdout = real_stdout
+
+            self.assertTrue((release_dir / "app.manifest").exists())
+            self.assertFalse((release_dir / "dist").exists())
 
     def test_build_assets_keep_templates_separate_from_runtime_config(self):
         build = importlib.import_module("release.build")

@@ -19,8 +19,33 @@ MANIFEST_FILE = RELEASE_DIR / "app.manifest"
 
 
 def _configure_stdout():
-    if sys.stdout.encoding and sys.stdout.encoding.lower() != "utf-8":
-        sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8")
+    """确保 stdout 能输出中文。
+
+    GitHub Actions 的 PowerShell 控制台默认 cp1252，直接 print 中文会抛
+    UnicodeEncodeError；本地 Git Bash 是 UTF-8，所以本地测不出来。
+    这里把 stdout 重新配置成 UTF-8，已经是 UTF-8 时直接返回。
+
+    幂等且可重复调用：测试会绕过 main() 直接调各个步骤函数，
+    所以每个对外函数都要自己保证输出安全。
+    """
+    stream = sys.stdout
+    if stream is None:
+        return
+    encoding = (getattr(stream, "encoding", "") or "").lower()
+    if encoding.replace("-", "").replace("_", "") in {"utf8", "cp65001"}:
+        return
+    try:
+        stream.reconfigure(encoding="utf-8", errors="replace")
+        return
+    except (AttributeError, ValueError, OSError):
+        pass
+    # 不支持 reconfigure 的对象（部分测试替身 / 重定向流）退回包装 buffer
+    buffer = getattr(stream, "buffer", None)
+    if buffer is not None:
+        try:
+            sys.stdout = io.TextIOWrapper(buffer, encoding="utf-8", errors="replace")
+        except (ValueError, OSError):
+            pass
 
 
 def build_command():
@@ -75,6 +100,7 @@ SOURCE_ARTIFACTS = {"build.py", "bat", "app.manifest"}
 
 
 def clean_release_outputs():
+    _configure_stdout()
     print("[Clean] 清理旧构建输出...")
     for item in RELEASE_DIR.iterdir():
         if item.name in SOURCE_ARTIFACTS:
@@ -88,6 +114,7 @@ def clean_release_outputs():
 
 
 def copy_runtime_assets():
+    _configure_stdout()
     exe_path = APP_DIR / "SyncClipboard.exe"
     if not exe_path.exists():
         raise RuntimeError("未找到生成的 exe，打包可能失败")
@@ -134,6 +161,7 @@ def prune_qt_payload(app_dir=None):
     每一项独立处理：某一项删不掉（文件被占用、权限不足、外部安全策略）
     不能影响其余项，否则体积会悄悄反弹。
     """
+    _configure_stdout()
     internal = Path(app_dir or APP_DIR) / "_internal"
     if not internal.is_dir():
         return 0
