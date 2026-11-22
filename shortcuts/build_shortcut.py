@@ -15,9 +15,11 @@
    Item 是空的（v5 真机现象：内层取 url 得空，报「未指定 URL」）。所以合并
    清单在服务端就把「目录 → 文件」摊平了，快捷指令里只有并列的两段单层循环：
    一段处理普通文件，一段处理目录清单。
-5. 调试开关：配置词典里的「调试」= 开/关。开时**不弹任何中间通知**，而是
-   把每一步写进「下载」里的 `SyncClipboard-调试.log`（固定名，每次覆盖），
-   跑完把那个文件发给电脑端看即可。关时全程静默，只留结尾一条汇总通知。
+5. 运行日志：**不受任何开关控制**，每个节点把累积后的完整日志 POST 到
+   `/ios_log`，服务端覆盖写 `<项目>/log/ios_shortcut.log`。不走 iOS 的
+   「存储到文件」—— 那条路保存纯文本会静默失败（v7 真机：一条日志都没有）。
+   结尾再尽力存一份 `SyncClipboard-调试.log` 到「下载」给自己看，存不上
+   不影响排查。中间不弹任何通知，只留结尾一条汇总通知。
 6. 目录传输不需要等待：清单请求即取，没有打包轮询。
 7. 子路径必须「字面斜杠 + 不带斜杠的 prefix」拼接。iOS 的「存储到文件」
    会对子路径做规范化，变量值结尾的 "/" 会被吃掉：`目录名/` 退化成一个叫
@@ -37,7 +39,7 @@ import uuid
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 REF = os.path.join(HERE, '获取同步-unsigned.plist')          # 仅借用顶层元数据
-OUT = os.path.join(HERE, '获取同步v7-unsigned.plist')
+OUT = os.path.join(HERE, '获取同步v8-unsigned.plist')
 
 OBJ = '\ufffc'          # 文本里变量的占位符
 
@@ -333,15 +335,14 @@ class SC:
 # ------------------------------------------------------------------ 构建流程
 
 b = SC()
-DEBUG = '调试'          # 配置词典里的开关键
 PROTO, HOST, PORT, KEY = '协议', '主机', '端口', '密钥'
 ROOT_SUB = '根子路径'    # 落盘子路径的前缀（见 cfg 里的说明）
 REPEAT_ITEM = 'Repeat Item'
 
-b.comment('SyncClipboard 拉取 v7（逐文件保目录结构）\n'
-          '改配置：编辑下面「配置」词典里的协议/主机/端口/密钥/调试\n'
+b.comment('SyncClipboard 拉取 v8（逐文件保目录结构）\n'
+          '改配置：编辑下面「配置」词典里的协议/主机/端口/密钥\n'
           '目录按清单逐个文件取，目录结构与电脑上完全一致（不再打包/解压）\n'
-          '调试 = 开 时把过程写进「下载/SyncClipboard-调试.log」，不弹窗\n'
+          '过程写进「下载/SyncClipboard-调试.log」，跑完把它发回来即可\n'
           '文件统一存入「下载」，需要换目录请在「存储到文件」动作里重选')
 
 cfg = b.dictionary([
@@ -349,7 +350,6 @@ cfg = b.dictionary([
     (HOST, '192.168.1.24'),
     (PORT, '8000'),
     (KEY, '123456'),
-    (DEBUG, '开'),
     # 落盘路径的前缀。留空即「相对所选的『下载』文件夹」；万一你的 iOS 把
     # 它当成存储根相对路径，文件会落到「下载/下载/项目名/…」，那时把它填成
     # 「下载/」即可，不必重新生成快捷指令。
@@ -370,35 +370,45 @@ b.setvar('来源', b.device_name())    # 只进 JSON body，不做 URL 编码
 
 # ---- 运行日志 -------------------------------------------------------------
 #
-# 调试=开 时**不弹任何中间通知**，而是把每一步攒成一个文本，落进「下载」里的
-# 固定文件。跑完把 SyncClipboard-调试.log 发回来就能定位问题 —— 通知会消失
-# 在通知中心里，日志不会。
-LOG_FILE = 'SyncClipboard-调试.log'
+# 日志**走 HTTP 推给电脑端**（POST /ios_log），由服务端写成
+# `<项目>/log/ios_shortcut.log`。
+#
+# 为什么不用「存储到文件」写进手机「下载」：v7 真机证明那条路会**静默失败**
+# —— 既没有文件，也没有任何提示。日志是排查的唯一抓手，它自己静默丢一次，
+# 人就只能干瞪眼。而 HTTP 通道在 /request_file 上已经跑通无数次，日志直接落
+# 到电脑上，排查时也不用再让用户回传文件。
+#
+# 每次推的都是**累积后的完整日志**，服务端覆盖写同一个文件：崩在哪一步，电脑
+# 上那份就停在哪一步。循环里每处理完一个文件推一次，所以第一条出问题的记录
+# 一定留得住。
+LOG_FILE = 'SyncClipboard-调试.log'      # 同时留一份到手机「下载」，方便自己看
 
-b.setvar('日志', act_out(b.text(['']), '文本'))
+b.setvar('日志', act_out(b.text(['SyncClipboard 同步日志\n']), '文本'))
+b.setvar('日志地址', act_out(b.text([var('服务器'), '/ios_log']), '文本'))
 
 
 def log(parts):
-    """往「日志」变量追加一行（只攒不写盘，写盘交给 log_flush）。"""
+    """往「日志」变量追加一行。"""
     b.setvar('日志', b.text([var('日志'), *parts, '\n']))
 
 
-def log_flush():
-    """调试 = 开 时把整份日志覆盖写进「下载/SyncClipboard-调试.log」。
+def log_push():
+    """把当前完整日志推给电脑端（服务端覆盖写 log/ios_shortcut.log）。
 
-    不用「追加到文件」：那个动作的路径是相对 iCloud 里 Shortcuts 文件夹的，
-    写不进本地「下载」。改用「存储到文件」的覆盖开关（文档里的正式参数），
-    重复写同一个文件只会留一份，不会堆出一串「日志 1/2/3」。
+    用和 /request_file 同一套「获取 URL 内容 + JSON body」，参数已验证过。
+    电脑端是旧版（没有 /ios_log）时只会拿到 404 的内容，不会中断流程。
     """
-    g = b.if_(act_out(cfg, '配置', dkey(DEBUG)), IS, '开')
-    b.save_to_folder(var('日志'), dest=[LOG_FILE])
-    b.endif(g)
+    b.post_json(
+        var('日志地址'),
+        headers=[('key', act_out(cfg, '配置', dkey(KEY)))],
+        body=[('log', var('日志'))],
+    )
 
 
 def dbg(parts):
-    """记一行日志并立刻落盘（崩在下一步也能看到已发生的事）。"""
+    """记一行日志并立刻推给电脑端（崩在下一步也能看到已发生的事）。"""
     log(parts)
-    log_flush()
+    log_push()
 
 
 def save_confirmed(subject, label_parts, dest=None):
@@ -406,7 +416,7 @@ def save_confirmed(subject, label_parts, dest=None):
 
     「存储到文件」拿到空输入时**不报错也不存盘**，直接在后面接一句「已保存」
     就是自欺欺人。这里拿存盘动作自己的输出做判据（它有输出就说明真写了），
-    没有就在日志里写「保存失败」，不再弹窗打扰。
+    没有就在日志里写「保存失败」。
     """
     saved = b.save_to_folder(subject, dest=dest)
     g_ok = b.if_(saved, 100)                # 有任何值 = 确实写入了
@@ -474,7 +484,7 @@ save_confirmed(b.get(f_url), [f_name],
 b.endif(g_is_file)
 b.end_repeat(g_each, each=True)
 
-log_flush()
+log_push()
 b.endif(g_has)
 
 # --- 目录：服务端已把所有目录合并成一张清单，这里同样只有一层循环 ---
@@ -536,7 +546,7 @@ b.else_(g_has_url)
 log(['   跳过（清单条目没有下载地址）：', entry_name])
 b.endif(g_has_url)
 
-log_flush()          # 每处理完一个文件落一次盘，崩在下一个也不会丢记录
+log_push()           # 每处理完一个文件推一次，崩在下一个也不会丢记录
 b.end_repeat(g_each_file, each=True)
 
 dbg(['⑤ 同步结束：', var('清单文件数'), ' 个文件'])
@@ -555,14 +565,38 @@ b.notify(['取不到目录清单：', pick(listing, 'message'),
 b.endif(g_listing_ok)
 
 b.else_(g_has_list)
-# 没拿到合并清单地址，分两种：服务端明确指出合并不了（多台电脑各登记了
-# 目录），或者干脆没给 —— 后者基本就是电脑端版本旧，还只会给单目录清单。
+# 没拿到合并清单地址。**先看这次到底带没带目录**：
+#   0 个目录（复制的是普通文件）→ 本来就该没有清单，什么都不说；
+#   >0 个目录但没给地址 → 才是真问题，分两种提示：
+#       · 服务端明确指出合并不了（多台电脑各登记了目录）；
+#       · 干脆没给 —— 基本就是电脑端版本旧，还只会给单目录清单。
+# v7 少了这层判断，复制普通文件时也弹「没有目录内容可同步」，纯粹是噪音。
+b.setvar('目录数', pick(resp, 'folder_count'))
+g_has_folder = b.if_(var('目录数'), GT, number=0)
+
 g_batch_err = b.if_(pick(resp, 'manifest_batch_error'), 100)
 b.notify([pick(resp, 'manifest_batch_error')])
 b.else_(g_batch_err)
-b.notify(['没有目录内容可同步。若刚复制的是目录，多半是电脑端版本过旧'
-          '（需要 1.12.5 及以上，它会给出目录合并清单）'])
+b.notify(['这次带了目录，但电脑端没给出合并清单 —— 请把电脑端升到 '
+          '1.12.7 及以上再试'])
 b.endif(g_batch_err)
+
+# 老服务端没有 folder_count 字段（1.12.6 以前）：退回用 type 兜底，单目录
+# 时它会是 folder。取不到就是空，两个判断都不成立 → 静默，不会误报。
+# 放在 else 里，避免和上面的 folder_count 分支重复提示。
+b.else_(g_has_folder)
+
+g_has_folder2 = b.if_(var('类型'), IS, 'folder')
+g_batch_err2 = b.if_(pick(resp, 'manifest_batch_error'), 100)
+b.notify([pick(resp, 'manifest_batch_error')])
+b.else_(g_batch_err2)
+b.notify(['这次带了目录，但电脑端没给出合并清单 —— 请把电脑端升到 '
+          '1.12.7 及以上再试'])
+b.endif(g_batch_err2)
+b.endif(g_has_folder2)
+
+b.endif(g_has_folder)
+
 b.endif(g_has_list)
 
 b.else_(g_kind)
@@ -571,9 +605,14 @@ b.endif(g_kind)
 
 b.endif(g_text)
 
+# 结尾：把整份日志再存一份到手机「下载」，方便用户自己翻。
+# 这一步**不校验、不提示**：能存就存，存不上也不影响排查 —— 电脑端的
+# log/ios_shortcut.log 才是权威副本（每个节点都已推过）。
+b.save_to_folder(var('日志'), dest=[LOG_FILE])
+
 b.comment('结束。若某个文件没出现，把「下载/SyncClipboard-调试.log」发回去看：'
           '里面逐条记了清单给到的 dir/prefix 和每次存盘的成功/失败。'
-          '（调试 = 关 时不写日志文件，只留结尾一条通知）')
+          '日志始终写，不受任何开关控制')
 
 # ------------------------------------------------------------------ 输出
 

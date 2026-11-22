@@ -198,6 +198,9 @@ class TestFolderPullContract(_FlaskCase):
             payload["manifest_batch_url"],
             "http://127.0.0.1:9100/manifest/batch?ids=d1")
         self.assertEqual(payload["manifest_count"], 1)
+        # folder_count 让接收端能区分「本来就没目录」和「有目录但没给清单」：
+        # 复制普通文件时不该再弹「没有目录内容可同步」（v7 真机噪音）
+        self.assertEqual(payload["folder_count"], 1)
         # 打包接口已删除，别再下发给客户端
         self.assertNotIn("prepare_url", payload["files"][0])
         self.assertNotIn("prepare_url", payload)
@@ -238,12 +241,15 @@ class TestFolderPullContract(_FlaskCase):
         payload = self._pull()
         self.assertNotIn("manifest_batch_url", payload)
         self.assertIn("manifest_batch_error", payload)
+        self.assertEqual(payload["folder_count"], 2)
 
     def test_plain_files_only_have_no_batch_url(self):
         self._push([{"file_id": "f1", "path": "D:/Downloads/a.txt",
                      "name": "a.txt", "size": 3, "kind": "file"}], port=9100)
         payload = self._pull()
         self.assertNotIn("manifest_batch_url", payload)
+        # 没有目录 → folder_count 为 0，接收端据此保持静默
+        self.assertEqual(payload["folder_count"], 0)
 
 
 class TestShareReannounce(unittest.TestCase):

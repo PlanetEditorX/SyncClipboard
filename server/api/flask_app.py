@@ -1147,6 +1147,43 @@ def clear_latest():
     notify_clients("clear")
     return jsonify({"status": "ok"}), 200
 
+@app.route('/ios_log', methods=['POST'])
+def ios_log():
+    """接收 iOS 快捷指令的运行日志，整份覆盖写进 `log/ios_shortcut.log`。
+
+    为什么不让手机自己存就行：iOS 的「存储到文件」保存纯文本时可能**静默
+    不落盘**（v7 真机现象：调试日志一条都没出现，通知里也什么都没说）。而
+    HTTP 通道在 /request_file 上已经跑通了无数次，日志直接落到电脑上，排查
+    时不用再让用户回传文件。
+
+    每次收到的是**完整日志**（快捷指令侧累积后整份发来），所以这里用覆盖写
+    而不是追加：一次运行对应一个文件，重复请求只是在刷新同一份内容。
+    """
+    key = request.headers.get("key", "")
+    if key != KEY:
+        return jsonify({"status": "error", "message": "密钥错误"}), 403
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict):
+        return jsonify({"status": "error", "message": "无效请求"}), 400
+    text = data.get("log")
+    if not isinstance(text, str) or not text.strip():
+        return jsonify({"status": "error", "message": "空日志"}), 400
+    # 日志是排查用的，宁可留半份也不要把服务打挂
+    if len(text) > 2000000:
+        text = text[:2000000] + "\n…（日志过长，已截断）\n"
+
+    path = os.path.join(BASE_DIR, "log", "ios_shortcut.log")
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w", encoding="utf-8") as handle:
+            handle.write(text)
+    except OSError as exc:
+        logging.error("写入 iOS 快捷指令日志失败: %s", exc)
+        return jsonify({"status": "error", "message": str(exc)}), 500
+    logging.info("收到 iOS 快捷指令日志: %s 字 -> %s", len(text), path)
+    return jsonify({"status": "ok", "bytes": len(text)}), 200
+
+
 @app.route('/request_file', methods=['POST'])
 def request_file():
     """统一拉取接口：有文件则返回所有文件列表并清空记录，无文件则返回最新文本"""
@@ -1217,6 +1254,10 @@ def request_file():
                 "status": "ok",
                 "type": "folder" if is_single_folder else "file_list",
                 "files": file_list,
+                # 这次到底带没带目录。接收端据此决定「拿不到合并清单」要不要
+                # 出声：复制普通文件时本来就没有目录，v7 却照样弹一句「没有
+                # 目录内容可同步」，纯属噪音（真机反馈）。
+                "folder_count": len(folder_origins),
             }
             if is_single_folder:
                 payload["manifest_url"] = file_list[0]["manifest_url"]
