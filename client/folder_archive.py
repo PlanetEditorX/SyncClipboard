@@ -20,9 +20,21 @@ FOLDER_ZIP_COMPRESS_LEVEL = 6
 # 打包进度上报间隔（秒）
 PROGRESS_INTERVAL = 3
 
+# 流式写包时的分块大小：1MB 一块既能及时上报进度，也不至于让 write 调用过密
+ZIP_CHUNK_SIZE = 1024 * 1024
+
 
 class FolderArchiveCancelled(RuntimeError):
     """共享在打包过程中被撤销（换共享 / 过期 / 退出）。"""
+
+
+def _zip_info(full_path, arcname, file_size):
+    """按磁盘元数据构造条目信息，保持 zf.write 那样的时间戳与权限位。"""
+    info = zipfile.ZipInfo.from_file(full_path, arcname)
+    info.compress_type = zipfile.ZIP_DEFLATED
+    # 保留原始大小，zipfile 据此决定是否走 ZIP64
+    info.file_size = file_size
+    return info
 
 
 def format_size(num_bytes):
@@ -57,7 +69,7 @@ def folder_display_name(folder_path):
     )
 
 
-def zip_folder(folder_path, dest_dir, progress=None, cancel_event=None):
+def zip_folder(folder_path, dest_dir, progress=None, cancel_event=None, total_size=None):
     """把 folder_path 压成 dest_dir 里的临时 zip，返回 Path。
 
     包内保留一层同名根目录（解压出来不会散成一堆文件），空目录也写入。
@@ -69,6 +81,9 @@ def zip_folder(folder_path, dest_dir, progress=None, cancel_event=None):
         接收一句可读进度文本，用于 `/prepare` 轮询展示。
     cancel_event : threading.Event | None
         置位后中止打包并删除半成品（共享已被撤销时用）。
+    total_size : int | None
+        目录原始总字节数（共享登记时已统计过）。给了才能算出百分比；
+        不给时只报已处理量。
     """
     folder_path = os.path.normpath(folder_path)
     folder_name = folder_display_name(folder_path)
@@ -84,12 +99,35 @@ def zip_folder(folder_path, dest_dir, progress=None, cancel_event=None):
     started = time.time()
     last_report = started
     file_count = 0
-    raw_size = 0
-    logger.info("开始打包文件夹: %s", folder_path)
+    processed = 0
+    logger.info(
+        "开始打包文件夹: %s%s",
+        folder_path,
+        f"（{format_size(total_size)}）" if total_size else "",
+    )
 
     def _check_cancel():
         if cancel_event is not None and cancel_event.is_set():
             raise FolderArchiveCancelled(folder_path)
+
+    def _progress_text(current_name=""):
+        """当前进度文本，给日志和 `/prepare` 轮询共用。"""
+        if total_size:
+            percent = min(100.0, processed / total_size * 100)
+            text = f"{format_size(processed)}/{format_size(total_size)} ({percent:.0f}%)"
+        else:
+            text = f"已处理 {file_count} 个文件, {format_size(processed)}"
+        if current_name:
+            text += f" · 当前 {current_name}"
+        return text
+
+    def _notify(text):
+        if progress is None:
+            return
+        try:
+            progress(text)
+        except Exception:  # noqa: BLE001 - 进度回调不该影响打包
+            logger.debug("打包进度回调失败", exc_info=True)
 
     try:
         with zipfile.ZipFile(
@@ -111,21 +149,29 @@ def zip_folder(folder_path, dest_dir, progress=None, cancel_event=None):
                     full_path = os.path.join(root, name)
                     arcname = os.path.join(arc_root, name)
                     try:
-                        zf.write(full_path, arcname)
+                        file_size = os.path.getsize(full_path)
+                        # 自己分块写入而不是 zf.write：一个大文件（动辄几 GB 的镜像）
+                        # 的压缩过程要几分钟，只有按块上报才有中间进度，也才能在
+                        # 中途响应共享撤销。
+                        with open(full_path, "rb") as src, \
+                                zf.open(_zip_info(full_path, arcname, file_size), "w") as dst:
+                            while True:
+                                chunk = src.read(ZIP_CHUNK_SIZE)
+                                if not chunk:
+                                    break
+                                dst.write(chunk)
+                                processed += len(chunk)
+                                _check_cancel()
+                                text = _progress_text(name)
+                                # 每块都刷新给 /prepare 的进度，日志按 3 秒节流
+                                if time.time() - last_report >= PROGRESS_INTERVAL:
+                                    last_report = time.time()
+                                    logger.info("打包中: %s %s", folder_name, text)
+                                _notify(text)
                         file_count += 1
-                        raw_size += os.path.getsize(full_path)
                     except OSError as e:
                         # 单个文件被独占/权限不足不应让整包失败
                         logger.warning("打包跳过无法读取的文件: %s, 错误: %s", full_path, e)
-                if time.time() - last_report >= PROGRESS_INTERVAL:
-                    last_report = time.time()
-                    note = f"已处理 {file_count} 个文件, {raw_size / 1048576:.1f} MB"
-                    logger.info("打包中: %s %s", folder_name, note)
-                    if progress is not None:
-                        try:
-                            progress(note)
-                        except Exception:  # noqa: BLE001 - 进度回调不该影响打包
-                            logger.debug("打包进度回调失败", exc_info=True)
     except FolderArchiveCancelled:
         _remove(zip_path)
         raise
@@ -141,7 +187,7 @@ def zip_folder(folder_path, dest_dir, progress=None, cancel_event=None):
     logger.info(
         "打包完成: %s.zip, %s 个文件, %.1f MB -> %.1f MB, 耗时 %.1fs",
         folder_name, file_count,
-        raw_size / 1048576, zip_size / 1048576, time.time() - started,
+        processed / 1048576, zip_size / 1048576, time.time() - started,
     )
     return zip_path
 

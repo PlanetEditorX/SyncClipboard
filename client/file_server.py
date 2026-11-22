@@ -440,6 +440,7 @@ class FileServer:
                     FOLDER_SHARE_TEMP_DIR,
                     progress=lambda note: self._set_pack_progress(job, note),
                     cancel_event=job["cancel"],
+                    total_size=job.get("size") or None,
                 )
             except FolderArchiveCancelled:
                 logger.info("目录打包已取消（共享已撤销）: %s", job["folder"])
