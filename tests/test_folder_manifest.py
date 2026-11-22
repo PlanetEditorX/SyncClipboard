@@ -13,7 +13,6 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from client import file_server as file_server_mod
 from client.file_server import FileServer
 from client.folder_manifest import build_manifest
 
@@ -23,11 +22,6 @@ class _FolderCase(unittest.TestCase):
         self.temp_dir = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp_dir.cleanup)
         self.root = Path(self.temp_dir.name)
-        patcher = patch.object(
-            file_server_mod, "FOLDER_SHARE_TEMP_DIR", self.root / "share"
-        )
-        patcher.start()
-        self.addCleanup(patcher.stop)
 
         self.folder = self.root / "课程"
         (self.folder / "子目录" / "更内层").mkdir(parents=True)
@@ -41,7 +35,7 @@ class _FolderCase(unittest.TestCase):
 
     def _server(self):
         server = FileServer(local_name="client-a", key="secret")
-        server.register_folder("d1", str(self.folder), "课程.zip", size=999)
+        server.register_folder("d1", str(self.folder), size=999)
         return server
 
 
@@ -77,7 +71,7 @@ class ManifestShapeTest(_FolderCase):
         m = build_manifest(str(self.folder), max_entries=1)
         self.assertEqual(m["count"], 1)
         self.assertTrue(m["truncated"])
-        self.assertIn("截断", m["notice"])
+        self.assertIn("只传前", m["notice"])
 
 
 class ManifestHttpTest(_FolderCase):
@@ -135,7 +129,7 @@ class ManifestShareKeptTest(_FolderCase):
         client.get("/file/d1/子目录/a.txt")
         with server._shared_files_lock:
             self.assertIn("d1", server.shared_files)
-            self.assertIn("d1", server._folder_shares)
+            self.assertIn("d1", server.shared_folders)
 
 
 if __name__ == "__main__":

@@ -6,7 +6,6 @@ import threading
 from common import ui_bridge
 from common.utils import (
     post_to_main_thread,
-    post_to_main_thread_no_wait,
     show_message,
     copy_files_to_clipboard,
     parse_filename_from_cd,
@@ -17,13 +16,10 @@ from gui.qt_download_dialog import DownloadProgressDialog
 
 logger = logging.getLogger("gui")
 
-# 下载中断自动重试次数（含首次）。发送端在传输失败时会保留共享与压缩包，
+# 下载中断自动重试次数（含首次）。发送端在传输失败时会保留共享，
 # 所以这里的重试能真正接上；续传用 HTTP Range，不必从头再来。
 MAX_DOWNLOAD_ATTEMPTS = 3
 RETRY_WAIT_SECONDS = 2
-
-# 目录共享的打包等待上限：打包 10GB 级目录在机械盘上可能要十几分钟
-PREPARE_TIMEOUT_SECONDS = 30 * 60
 
 # (连接超时, 读超时)。读超时按「等下一块数据」计，不是总时长。
 CONNECT_TIMEOUT = 10
@@ -150,58 +146,101 @@ class FileHandler:
         finally:
             response.close()
 
-    def _prepare_folder_share(self, download_url, progress_dialog):
-        """目录共享：先让发送端打包，打包完成才真正去取。
+    def _fetch_manifest(self, manifest_url):
+        """取目录清单；失败返回 None（调用方据此放弃这一项）。"""
+        if not manifest_url:
+            show_message("目录不可用", "发送端没有给出目录清单地址，请重新复制一次")
+            return None
+        try:
+            resp = requests.get(
+                manifest_url, timeout=(CONNECT_TIMEOUT, READ_TIMEOUT))
+            data = resp.json() if resp.content else {}
+        except Exception as e:
+            logger.error(f"获取目录清单失败: {e}")
+            show_message("获取目录失败", f"无法从发送端取目录清单: {e}")
+            return None
+        if data.get("status") != "ok":
+            logger.error("目录清单无效: %s", data.get("message"))
+            show_message(
+                "目录不可用",
+                data.get("message") or "发送端返回的目录清单不可用，请重新复制一次",
+            )
+            return None
+        if data.get("notice"):
+            logger.warning("目录清单提示: %s", data["notice"])
+        return data
 
-        发送端是按需打包的（复制时不压缩），大目录压缩可能要好几分钟。
-        直接 GET 会让连接一直等首字节，超过读超时就被掐断；这里先轮询
-        `/prepare/<file_id>` 拿进度，打包好了再下载。
+    def _download_folder(self, file, save_dir, progress_dialog):
+        """目录共享：按清单逐文件下载，在本地重建目录结构。
+
+        目录不再打包 —— 接收端拿到的是清单（相对路径 + 每项的下载地址），
+        这里逐项取回并按 `save_dir/<目录名>/<相对路径>` 落盘。相比整包下载，
+        好处是结构完整、单个文件失败不影响其余文件，也能显示细粒度进度。
+        返回 (是否全部成功, 已下文件数)。
         """
-        marker = "/file/"
-        if marker not in download_url:
-            return True
-        base, file_id = download_url.rsplit(marker, 1)
-        prepare_url = f"{base}/prepare/{file_id}"
-        deadline = time.time() + PREPARE_TIMEOUT_SECONDS
-        last_note = ""
+        data = self._fetch_manifest(file.get("manifest_url"))
+        if data is None:
+            return False, 0
 
-        while time.time() < deadline:
+        entries = data.get("entries") or []
+        root = data.get("root") or file.get("name") or "folder"
+        root_dir = self._target_path(root, save_dir)
+        try:
+            os.makedirs(root_dir, exist_ok=True)
+        except OSError as e:
+            logger.error("无法创建目录: %s, 错误: %s", root_dir, e)
+            show_message("保存失败", f"无法创建目录: {root_dir}\n{e}")
+            return False, 0
+
+        if not entries:
+            logger.info("目录为空，只创建目录: %s", root_dir)
+            if data.get("empty_dirs"):
+                logger.info("清单里还有空目录，接收端不重建: %s",
+                            data["empty_dirs"])
+            return True, 0
+
+        total = len(entries)
+        done = 0
+        for idx, entry in enumerate(entries, 1):
             if progress_dialog is not None and progress_dialog.is_cancelled():
-                logger.info("用户取消，放弃等待发送端打包")
-                return False
-            try:
-                resp = requests.get(prepare_url, timeout=CONNECT_TIMEOUT)
-                data = resp.json() if resp.content else {}
-            except Exception as e:
-                logger.warning(f"查询打包状态失败，稍后重试: {e}")
-                time.sleep(RETRY_WAIT_SECONDS)
+                logger.info("用户取消目录下载: 已完成 %s/%s", done, total)
+                return False, done
+
+            rel = (entry.get("path") or entry.get("name") or "").replace("\\", "/")
+            url = entry.get("url")
+            if not rel or not url:
+                logger.warning("清单项缺路径或地址，跳过: %s", entry)
                 continue
 
-            status = data.get("status")
-            if status == "ready":
-                logger.info("发送端已打包完成，开始下载: %s", file_id)
-                return True
-            if status in ("error", "unknown", "cancelled"):
-                logger.error("发送端打包失败: %s", data.get("message"))
-                show_message(
-                    "目录打包失败",
-                    data.get("message") or "发送端无法打包该目录，请稍后在电脑上重试",
-                )
-                return False
+            parts = [p for p in rel.split("/") if p and p != "."]
+            if not parts or ".." in parts:
+                logger.warning("清单项路径可疑，跳过: %s", rel)
+                continue
 
-            note = data.get("progress") or "正在打包…"
-            if note != last_note:
-                last_note = note
-                logger.info(f"等待发送端打包: {note}")
-                if progress_dialog is not None:
-                    post_to_main_thread_no_wait(
-                        progress_dialog.set_busy, f"发送端正在打包：{note}"
-                    )
-            time.sleep(1)
+            target = os.path.join(root_dir, *parts)
+            try:
+                os.makedirs(os.path.dirname(target), exist_ok=True)
+            except OSError as e:
+                logger.error("创建子目录失败: %s, 错误: %s", target, e)
+                return False, done
 
-        logger.error("等待发送端打包超时")
-        show_message("打包超时", "等待对方打包目录超时，请稍后重试")
-        return False
+            if progress_dialog is not None:
+                progress_dialog.reset(f"[{idx}/{total}] {rel}", 0)
+            try:
+                self._download_with_resume(url, target, progress_dialog)
+            except _DownloadCancelled:
+                logger.info("用户取消下载")
+                self._remove_partial(target)
+                return False, done
+            except Exception as e:
+                logger.error(f"文件下载失败，跳过: {rel} ({e})")
+                self._remove_partial(target)
+                continue
+            done += 1
+
+        logger.info("目录下载完成: %s 共 %s/%s 个文件 -> %s",
+                    root, done, total, root_dir)
+        return done == total, done
 
     def _download_with_resume(self, download_url, file_path, progress_dialog):
         """带断线重试与断点续传的下载；返回 (是否成功, 已收字节数)。"""
@@ -280,14 +319,15 @@ class FileHandler:
         return length + (downloaded if response.status_code == 206 else 0)
 
     def _download_from_url(self, download_url, filename, save_path=None,
-                           progress_dialog=None, announce=False, kind="file"):
+                           progress_dialog=None, announce=False):
         """
         从URL下载文件到下载目录。
         若提供 progress_dialog 则复用该对话框，下载完成后只调用 reset()，
         最后由外部调用 close()。
         announce=True 时下载成功后自动在资源管理器中定位该文件（单文件流程用，
         多文件流程由调用方统一 announce 一次）。
-        kind="folder" 表示这是发送端按需打包的目录，先 prepare 再下载。
+
+        目录共享不走这里，见 `_download_folder`：目录按清单逐文件下载。
         """
         file_path = self._target_path(filename, save_path)
 
@@ -299,11 +339,6 @@ class FileHandler:
 
         progress_dialog.reset(filename, 0)
         try:
-            if kind == "folder":
-                if not self._prepare_folder_share(download_url, progress_dialog):
-                    return False
-                progress_dialog.reset(filename, 0)
-
             downloaded = 0
             try:
                 _, downloaded = self._download_with_resume(
@@ -413,16 +448,15 @@ class FileHandler:
         if data.get("status") == "download" and data.get("type") == "file":
             download_url = data.get("download_url")
             name = data.get("name", suggested_filename)
-            if download_url:
-                self._download_from_url(
-                    download_url, name, announce=True,
-                    kind=data.get("kind", "file"),
-                )
+            if download_url and data.get("kind") == "folder":
+                self._download_folder(data, self.config.save_path, None)
+            elif download_url:
+                self._download_from_url(download_url, name, announce=True)
             return
 
         # 多文件列表：直接存到配置的下载目录，不再先问「保存到哪」
         # 服务端在只共享一个目录时返回 type=folder，结构与 file_list 完全一致，
-        # 这里一并处理；source 路由到同一个下载流程。
+        # 这里一并处理；目录项走清单逐文件下载，普通文件直接取。
         if data.get("type") in ("file_list", "folder"):
             files = data.get("files", [])
             if not files:
@@ -431,7 +465,7 @@ class FileHandler:
             save_dir = self.config.save_path
             progress_dialog = post_to_main_thread(DownloadProgressDialog, "下载进度")
             all_completed = True
-            saved_any = False
+            saved_count = 0
             try:
                 for idx, file in enumerate(files, 1):
                     if progress_dialog.is_cancelled():
@@ -439,6 +473,15 @@ class FileHandler:
                         break
                     name = file.get("name", f"file_{idx}")
                     total = len(files)
+                    if file.get("kind") == "folder":
+                        logger.info(f"({idx}/{total}) 目录: {name}")
+                        ok, done = self._download_folder(
+                            file, save_dir, progress_dialog)
+                        saved_count += done
+                        if not ok:
+                            all_completed = False
+                            break
+                        continue
                     download_url = file.get("download_url")
                     if not download_url:
                         logger.warning(f"文件 {name} 无下载地址，跳过")
@@ -447,23 +490,23 @@ class FileHandler:
                     success = self._download_from_url(
                         download_url, name, save_path=save_dir,
                         progress_dialog=progress_dialog,
-                        kind=file.get("kind", "file"),
                     )
                     if not success:
                         all_completed = False
                         break
-                    saved_any = True
+                    saved_count += 1
             finally:
                 progress_dialog.close()
 
             if all_completed and not progress_dialog.is_cancelled():
                 # 不再弹「下载完成」模态框：直接把资源管理器切到保存目录
-                self._announce_saved(save_dir, count=total)
+                self._announce_saved(save_dir, count=saved_count)
                 self._clear_latest_file(server_host, server_port)
-            elif saved_any:
+            elif saved_count:
                 logger.info(
-                    "部分文件未下载完成。服务端记录已在 request_file 时清空，"
-                    "如需重试请在发送端重新复制一次共享内容"
+                    "部分文件未下载完成（已保存 %s 个）。服务端记录已在 "
+                    "request_file 时清空，如需重试请在发送端重新复制一次共享内容",
+                    saved_count,
                 )
             return
 

@@ -104,12 +104,6 @@ class _ClientFixture(unittest.TestCase):
         self.temp_dir = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp_dir.cleanup)
         self.root = Path(self.temp_dir.name)
-        self.share_dir = self.root / "folder_share"
-        for module in (main_menu_mod, file_server_mod):
-            patcher = patch.object(module, "FOLDER_SHARE_TEMP_DIR", self.share_dir)
-            patcher.start()
-            self.addCleanup(patcher.stop)
-
         self.file_server = FileServer(local_name="client-a", key="secret")
         self._make_client()
 
@@ -179,14 +173,14 @@ class TestFolderSyncGates(_ClientFixture):
         self.assertEqual(folder_size_bytes(self.folder), 2048)
         self.assertIn("MB", format_size(5 * 1024 * 1024))
 
-    def test_folder_sync_disabled_skips_zip(self):
+    def test_folder_sync_disabled_skips_share(self):
         mock_post = self._mock_post()
         client = self._make_client(folder_sync_enabled=False)
 
         client._push_latest_file([str(self.folder)])
 
         mock_post.assert_not_called()
-        self.assertFalse(self.share_dir.exists() and any(self.share_dir.iterdir()))
+        self.assertEqual(self.file_server.shared_folders, {})
 
     def test_large_folder_waits_for_confirmation(self):
         mock_post = self._mock_post()
@@ -198,7 +192,7 @@ class TestFolderSyncGates(_ClientFixture):
 
         ask.assert_called_once()
         mock_post.assert_not_called()
-        self.assertFalse(self.share_dir.exists() and any(self.share_dir.iterdir()))
+        self.assertEqual(self.file_server.shared_folders, {})
 
     def test_large_folder_shared_after_confirmation(self):
         mock_post = self._mock_post()
@@ -210,9 +204,9 @@ class TestFolderSyncGates(_ClientFixture):
 
         mock_post.assert_called_once()
         item = mock_post.call_args.kwargs["json"]["file_list"][0]
-        self.assertEqual(item["name"], "ROM.zip")
+        self.assertEqual(item["name"], "ROM")
         self.assertEqual(item["kind"], "folder")
-        # 确认之后也只登记，压缩留到接收端来取时再做
+        # 确认之后也只是登记，接收端来取时按清单逐文件下载
         self.assertEqual(item["path"], str(self.folder))
 
     def test_small_folder_shared_without_asking(self):
@@ -225,7 +219,7 @@ class TestFolderSyncGates(_ClientFixture):
         ask.assert_not_called()
         mock_post.assert_called_once()
         item = mock_post.call_args.kwargs["json"]["file_list"][0]
-        self.assertEqual(item["name"], "ROM.zip")
+        self.assertEqual(item["name"], "ROM")
         self.assertEqual(item["kind"], "folder")
 
 
@@ -233,10 +227,6 @@ class TestFileShareTtl(unittest.TestCase):
     def setUp(self):
         self.temp_dir = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp_dir.cleanup)
-        self.share_dir = Path(self.temp_dir.name) / "folder_share"
-        patcher = patch.object(file_server_mod, "FOLDER_SHARE_TEMP_DIR", self.share_dir)
-        patcher.start()
-        self.addCleanup(patcher.stop)
 
     def tearDown(self):
         # 全局 TTL 会被修改，测试结束后恢复默认，避免污染其它用例

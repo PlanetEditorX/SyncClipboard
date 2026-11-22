@@ -1,7 +1,6 @@
 import os
 import json
 import time
-import shutil
 import logging
 import threading
 import pyperclip
@@ -10,11 +9,7 @@ from threading import Thread
 from urllib.parse import quote, unquote
 from common.utils import BASE_DIR, reveal_in_explorer
 from common.notification import show_notification_with_click
-from client.folder_archive import (
-    FolderArchiveCancelled,
-    zip_folder,
-)
-from client.folder_manifest import build_manifest
+from client.folder_manifest import build_manifest, folder_display_name
 from server.core.file_latest import (
     get_file_share_ttl_seconds,
     is_file_record_expired,
@@ -25,10 +20,6 @@ from flask import Flask, jsonify, send_file, request
 
 FILE_LATEST_FILE = BASE_DIR / "latest" / "file_latest.json"
 FILE_LATEST_FILE.parent.mkdir(parents=True, exist_ok=True)
-
-# 文件夹共享时生成的临时压缩包目录。压缩包在共享结束（对方下载完 / 取消共享 /
-# 过期 / 程序退出）后立即删除，这里只存放仍在共享中的临时文件。
-FOLDER_SHARE_TEMP_DIR = BASE_DIR / "temp" / "folder_share"
 
 logger = logging.getLogger("client")
 
@@ -58,17 +49,16 @@ class FileServer:
         self.shared_files = {}
         self.shared_file_registered_at = {}
         self._shared_files_lock = threading.RLock()
-        # 由本进程生成的临时文件（文件夹压缩包），共享结束时需要一并删除
-        self._temp_files = set()
-        # file_id -> 目录共享任务（按需打包的状态机，详见 register_folder）
-        self._folder_shares = {}
+        # file_id -> {"path", "name", "size"}：目录共享。
+        # 目录不再打包，接收端拿 /manifest 清单后逐文件来取，这里只存登记信息。
+        self.shared_folders = {}
         # file_id -> 正在进行的下载数：多端同时取同一份文件时，
         # 先下完的一端不能把文件删掉，否则另一端会被截断
         self._active_downloads = {}
         self._remote_text_handler = None
         # 下载中断时用来「重新登记共享」的回调（由 SyncClient 注入）。
         # 服务端的文件记录在 /request_file 返回前就清空了，而这里会为断点
-        # 续传保留压缩包；不重新登记的话，接收端再拉一次只会走文本分支。
+        # 续传保留共享；不重新登记的话，接收端再拉一次只会走文本分支。
         self._reannounce_handler = None
         self.app = Flask(__name__)
         # 关闭 Flask 默认访问日志
@@ -87,9 +77,6 @@ class FileServer:
         self.running = False
         self._server_thread = None
         self._flask_server = None
-        # 上一次异常退出可能留下未删除的临时压缩包（共享信息只存在内存里，
-        # 重启后这些包已无人引用），启动时一律清掉。
-        self._cleanup_stale_temp_files()
 
     def _register_routes(self):
         @self.app.route("/ping", methods=["GET"])
@@ -229,53 +216,16 @@ class FileServer:
             if not path:
                 return jsonify({"status": "error", "message": "file_id不存在"}), 404
 
-            # 目录共享：共享登记的是目录本身，压缩包要等接收端来取时才生成
+            # 目录共享：登记的是目录本身，接收端要按 /manifest 清单逐文件取
             if os.path.isdir(path):
-                logger.info("目录共享待打包: %s -> %s", file_id, path)
-                return jsonify({"status": "ok", "message": "目录共享待打包"}), 200
+                logger.info("目录共享待逐文件传输: %s -> %s", file_id, path)
+                return jsonify({"status": "ok", "message": "目录共享待逐文件传输"}), 200
 
             if not os.path.isfile(path):
                 return jsonify({"status": "error", "message": "文件不存在"}), 404
 
             logger.info("文件正常: %s -> %s", file_id, path)
             return jsonify({"status": "ok", "message": "文件正常"}), 200
-
-        @self.app.route("/prepare/<file_id>", methods=["GET", "POST"])
-        def prepare_file(file_id):
-            """接收端点下载前先调这里：触发后台打包并返回进度。
-
-            按需打包意味着一份大目录可能压缩好几分钟，直接 GET 会让接收端一直
-            等首字节（HTTP 读超时）。接收端先 prepare + 轮询，打包完成再 GET，
-            就不会被超时打断；不认识这个接口的客户端仍可直接 GET（同步打包）。
-            """
-            self._purge_expired_files()
-            with self._shared_files_lock:
-                job = self._folder_shares.get(file_id)
-                if job is None:
-                    return jsonify({
-                        "status": "unknown",
-                        "message": "file_id 不存在或不是目录共享",
-                    }), 404
-                job = dict(job, cancel=None, lock=None)
-                done = bool(job["path"] and os.path.isfile(job["path"]))
-
-            if not done:
-                self._start_folder_pack(file_id)
-                with self._shared_files_lock:
-                    job = dict(self._folder_shares.get(file_id) or job,
-                               cancel=None, lock=None)
-
-            state = "ready" if job.get("path") and os.path.isfile(job["path"]) else job["state"]
-            payload = {
-                "status": state,
-                "file_id": file_id,
-                "name": job["archive_name"],
-                "progress": job.get("progress", ""),
-                "size": job.get("size", 0),
-            }
-            if state == "error":
-                payload["message"] = job.get("error") or "打包失败"
-            return jsonify(payload), 200
 
         @self.app.route("/file/<file_id>", methods=["GET"])
         def download_file(file_id):
@@ -287,16 +237,16 @@ class FileServer:
             if not path:
                 return jsonify({"status": "error", "message": "file_id不存在"}), 404
 
-            # 目录共享：这里同步打包（没走 /prepare 的客户端会走到这条路上），
-            # 同一份共享的并发请求由 job 的锁串行化，不会压两遍。
+            # 目录共享不发整包（v1.12.4 起不再压缩）：整包会丢目录层级，
+            # 也让接收端只能拿到一堆散装文件。这里只指路，让它去取清单。
             if os.path.isdir(path):
-                logger.info("目录共享开始按需打包: %s", file_id)
-                path = self._ensure_archive(file_id)
-                if not path:
-                    return jsonify({
-                        "status": "error",
-                        "message": "目录打包失败或共享已失效",
-                    }), 500
+                return jsonify({
+                    "status": "error",
+                    "file_id": file_id,
+                    "message": "目录共享请先取 /manifest/<file_id> 再逐文件下载",
+                    "manifest_url": "{}/manifest/{}".format(
+                        request.host_url.rstrip("/"), file_id),
+                }), 409
 
             if not os.path.isfile(path):
                 return jsonify({"status": "error", "message": "文件不存在"}), 404
@@ -305,8 +255,7 @@ class FileServer:
 
             response = send_file(path, as_attachment=True)
             # 用生成器把响应体包一层：只有内容真正发送完才取消共享。
-            # 临时压缩包会在取消共享时被删除，若在响应构造阶段就删，下载会被截断；
-            # 而直接依赖 call_on_close 不可行 —— send_file 返回的是
+            # 直接依赖 call_on_close 不可行 —— send_file 返回的是
             # direct_passthrough 响应，Werkzeug 不会回调 Response.close。
             inner = response.response
             sent_all = False
@@ -342,16 +291,14 @@ class FileServer:
 
         @self.app.route("/manifest/<file_id>", methods=["GET"])
         def folder_manifest(file_id):
-            """目录共享的文件清单：逐文件传输时用，不打包、不等打包。
+            """目录共享的文件清单：逐文件传输的唯一入口。
 
-            iOS 的「解压缩」会把包内目录摊平，接收端只能拿到一堆散装文件。
-            走这条路就不必经过压缩包：清单给出每项的相对路径和下载地址，
-            接收端逐项下载并写回子目录，层级由它自己重建。
+            目录不再打包 —— iOS 的「解压缩」会把包内目录摊平，接收端只能拿到
+            一堆散装文件。清单给出每项的相对路径和下载地址，接收端逐项下载并
+            写回子目录，层级由清单承载，不经过任何归档格式。
             """
             self._purge_expired_files()
-            with self._shared_files_lock:
-                job = self._folder_shares.get(file_id)
-                folder = job["folder"] if job else None
+            folder = self._folder_root(file_id)
             if not folder:
                 return jsonify({
                     "status": "error",
@@ -388,9 +335,7 @@ class FileServer:
             （或到期清理）。
             """
             self._purge_expired_files()
-            with self._shared_files_lock:
-                job = self._folder_shares.get(file_id)
-                folder = job["folder"] if job else None
+            folder = self._folder_root(file_id)
             if not folder:
                 return jsonify({
                     "status": "error",
@@ -416,6 +361,12 @@ class FileServer:
             return send_file(target, as_attachment=True,
                              download_name=os.path.basename(target))
 
+    def _folder_root(self, file_id):
+        """目录共享的本地根路径；不是目录共享则返回 None。"""
+        with self._shared_files_lock:
+            info = self.shared_folders.get(file_id)
+        return info["path"] if info else None
+
     def _begin_download(self, file_id):
         with self._shared_files_lock:
             self._active_downloads[file_id] = self._active_downloads.get(file_id, 0) + 1
@@ -435,20 +386,16 @@ class FileServer:
         """下载中途失败：保留共享，等对方重试，到期由清理逻辑兜底。
 
         之前这里不分成功失败一律取消共享，结果是手机端传到一半断网、进程被杀，
-        压缩包当场被删，对方再点一次只剩 404，只能回电脑重新复制一遍。
+        共享当场被撤，对方再点一次只剩 404，只能回电脑重新复制一遍。
         """
         with self._shared_files_lock:
             registered_at = self.shared_file_registered_at.get(file_id)
-            keep_temp = path in self._temp_files
         if registered_at is None:
             return
         remaining = int(max(0, get_file_share_ttl_seconds() - (time.time() - registered_at)))
         logger.warning(
-            "文件传输中断，保留共享以便重试: %s -> %s（剩余 %ss%s）",
-            file_id,
-            path,
-            remaining,
-            "，压缩包到期后删除" if keep_temp else "",
+            "文件传输中断，保留共享以便重试: %s -> %s（剩余 %ss）",
+            file_id, path, remaining,
         )
         # 光保留没用：服务端的文件记录在 /request_file 返回前就清空了，
         # 接收端再拉一次只会拿到文本分支。这里通知上层重新登记一次共享。
@@ -474,22 +421,21 @@ class FileServer:
     def share_entries(self):
         """把当前仍持有的共享整理成 `/file_sync` 需要的 file_list。
 
-        用于下载中断后的重新登记：目录仍按 kind=folder 上报（压缩包是否已经
-        打好由接收端 /prepare 判定），普通文件按路径现取体积。
+        用于下载中断后的重新登记：目录按 kind=folder 上报真实目录名与体积
+        （接收端据此取 /manifest 清单），普通文件按路径现取体积。
         """
         entries = []
         with self._shared_files_lock:
             shared = dict(self.shared_files)
-            jobs = {fid: dict(job) for fid, job in self._folder_shares.items()}
+            folders = {fid: dict(info) for fid, info in self.shared_folders.items()}
         for file_id, path in shared.items():
-            job = jobs.get(file_id)
-            if job is not None:
+            info = folders.get(file_id)
+            if info is not None:
                 entries.append({
                     "file_id": file_id,
-                    # 上报原始目录路径，而不是临时压缩包路径
-                    "path": job.get("folder") or path,
-                    "name": job.get("archive_name") or os.path.basename(path),
-                    "size": job.get("size") or 0,
+                    "path": info["path"],
+                    "name": info["name"],
+                    "size": info.get("size") or 0,
                     "kind": "folder",
                 })
                 continue
@@ -510,153 +456,41 @@ class FileServer:
         """将远程文字交给剪贴板监听器统一处理，避免接收后再次上传。"""
         self._remote_text_handler = handler
 
-    def register_folder(self, file_id, folder_path, archive_name, size=0):
-        """登记一个目录共享，按需打包。
+    def register_folder(self, file_id, folder_path, name=None, size=0):
+        """登记一个目录共享。
 
-        复制文件夹时只登记、不压缩：压缩要等接收端 `/prepare` 或直接 GET 时
-        才做。这样本地只是复制大目录、并不需要传给别的设备时，不会白耗 CPU
-        和临时磁盘；超限确认、体积统计仍在复制时就完成，用户能当场看到结果。
+        只登记路径与体积，不碰文件内容：接收端来取时按 /manifest 清单逐文件
+        下载。这里既不做压缩也不做预览扫描，本地复制一个大目录但根本不传输时
+        不会有任何额外开销；超限确认与体积统计在复制时就已完成，用户能当场
+        看到结果。
         """
-        job = {
-            "folder": folder_path,
-            "archive_name": archive_name,
+        info = {
+            "path": folder_path,
+            "name": name or folder_display_name(folder_path),
             "size": size,
-            "path": None,
-            "state": "idle",
-            "error": None,
-            "progress": "",
-            "cancel": threading.Event(),
-            "lock": threading.RLock(),
         }
         with self._shared_files_lock:
             self.shared_files[file_id] = folder_path
             self.shared_file_registered_at[file_id] = time.time()
-            self._folder_shares[file_id] = job
-        logger.info("注册共享目录(待打包): %s -> %s", file_id, folder_path)
+            self.shared_folders[file_id] = info
+        logger.info("注册共享目录(逐文件传输): %s -> %s", file_id, folder_path)
 
-    def _start_folder_pack(self, file_id):
-        """后台线程打包；已在打包或已完成时不重复启动。"""
-        with self._shared_files_lock:
-            job = self._folder_shares.get(file_id)
-            if job is None:
-                return False
-            if job["state"] in ("packing", "ready") or (
-                job["path"] and os.path.isfile(job["path"])
-            ):
-                return False
-        Thread(
-            target=self._ensure_archive, args=(file_id,),
-            name=f"folder-pack-{file_id[:8]}", daemon=True,
-        ).start()
-        return True
-
-    def _ensure_archive(self, file_id):
-        """确保该目录共享已有压缩包，返回压缩包路径；失败返回 None。
-
-        同一份共享的并发调用由 job 上的锁串行化：后到的请求等前一个压完直接
-        复用结果，不会同时压两遍。
-        """
-        with self._shared_files_lock:
-            job = self._folder_shares.get(file_id)
-        if job is None:
-            logger.info("目录共享已失效，放弃打包: %s", file_id)
-            return None
-
-        with job["lock"]:
-            with self._shared_files_lock:
-                if job["path"] and os.path.isfile(job["path"]):
-                    return job["path"]
-                job["state"] = "packing"
-                job["error"] = None
-                job["progress"] = "准备打包…"
-
-            try:
-                zip_path = zip_folder(
-                    job["folder"],
-                    FOLDER_SHARE_TEMP_DIR,
-                    progress=lambda note: self._set_pack_progress(job, note),
-                    cancel_event=job["cancel"],
-                    total_size=job.get("size") or None,
-                )
-            except FolderArchiveCancelled:
-                logger.info("目录打包已取消（共享已撤销）: %s", job["folder"])
-                with self._shared_files_lock:
-                    job["state"] = "cancelled"
-                return None
-            except OSError as e:
-                logger.error("目录打包失败: %s", e)
-                with self._shared_files_lock:
-                    job["state"] = "error"
-                    job["error"] = str(e)
-                return None
-
-            with self._shared_files_lock:
-                still_shared = self._folder_shares.get(file_id) is job
-                if still_shared:
-                    job["path"] = str(zip_path)
-                    job["state"] = "ready"
-                    job["progress"] = "打包完成"
-                    self.shared_files[file_id] = str(zip_path)
-                    self._temp_files.add(str(zip_path))
-
-            if not still_shared:
-                # 打包期间共享被撤销/被新内容替换：这份包没人要，直接删掉
-                logger.info("共享已变更，丢弃刚打好的压缩包: %s", zip_path)
-                self._remove_temp_file(str(zip_path))
-                return None
-            logger.info("目录已打包完成: %s -> %s", file_id, zip_path)
-            return str(zip_path)
-
-    @staticmethod
-    def _set_pack_progress(job, note):
-        job["progress"] = note
-
-    def register_file(self, file_id, path, temporary=False):
-        """
-        注册共享文件
-        Parameters
-        ----------
-        file_id : str
-            文件唯一ID
-        path : str
-            本地文件路径
-        temporary : bool
-            是否为本次共享临时生成的文件（例如文件夹压缩包），
-            取消共享时需要删除
-        """
+    def register_file(self, file_id, path):
+        """注册共享文件。"""
         with self._shared_files_lock:
             self.shared_files[file_id] = path
             self.shared_file_registered_at[file_id] = time.time()
-            if temporary:
-                self._temp_files.add(path)
-        if temporary:
-            logger.info("注册共享文件(临时包): %s -> %s", file_id, path)
-        else:
-            logger.info("注册共享文件: %s -> %s", file_id, path)
+        logger.info("注册共享文件: %s -> %s", file_id, path)
 
     def _release_file(self, file_id, reason="取消共享"):
-        """移除一条共享记录；若它是临时文件/临时压缩包则顺手删除。"""
-        temp_paths = []
-        job = None
+        """移除一条共享记录。"""
         with self._shared_files_lock:
             path = self.shared_files.pop(file_id, None)
             self.shared_file_registered_at.pop(file_id, None)
-            job = self._folder_shares.pop(file_id, None)
-            candidates = [path]
-            if job is not None:
-                candidates.append(job.get("path"))
-            for candidate in candidates:
-                if candidate and candidate in self._temp_files:
-                    self._temp_files.discard(candidate)
-                    temp_paths.append(candidate)
-        if job is not None:
-            # 还在打包的目录共享：让它尽快停下来，别继续占着 CPU 写一个没人要的包
-            job["cancel"].set()
-        if path is None and job is None:
+            self.shared_folders.pop(file_id, None)
+        if path is None:
             return
-        logger.info("%s文件: %s -> %s", reason, file_id, path)
-        for temp_path in temp_paths:
-            self._remove_temp_file(temp_path)
+        logger.info("%s: %s -> %s", reason, file_id, path)
 
     def unregister_file(self, file_id):
         """
@@ -669,17 +503,10 @@ class FileServer:
         清空共享列表
         """
         with self._shared_files_lock:
-            jobs = list(self._folder_shares.values())
-            temp_paths = list(self._temp_files)
             self.shared_files.clear()
             self.shared_file_registered_at.clear()
-            self._temp_files.clear()
-            self._folder_shares.clear()
-        for job in jobs:
-            job["cancel"].set()
+            self.shared_folders.clear()
         logger.info("共享文件列表已清空")
-        for path in temp_paths:
-            self._remove_temp_file(path)
 
     def _purge_expired_files(self, now=None):
         """从本机文件服务中移除已超过共享期限的文件/目录共享。"""
@@ -694,24 +521,6 @@ class FileServer:
         for file_id in expired_ids:
             self._release_file(file_id, "共享已过期")
         return len(expired_ids)
-
-    def _remove_temp_file(self, path):
-        """删除本进程生成的临时文件（压缩包），失败只记日志。"""
-        try:
-            if os.path.isfile(path):
-                os.remove(path)
-                logger.info("已删除临时压缩包: %s", path)
-        except OSError as e:
-            logger.warning("删除临时压缩包失败: %s, 错误: %s", path, e)
-
-    def _cleanup_stale_temp_files(self):
-        """清空临时压缩包目录（仅供启动时清理历史残留）。"""
-        try:
-            if FOLDER_SHARE_TEMP_DIR.exists():
-                shutil.rmtree(FOLDER_SHARE_TEMP_DIR, ignore_errors=True)
-                logger.info("已清理残留的临时压缩包目录: %s", FOLDER_SHARE_TEMP_DIR)
-        except OSError as e:
-            logger.warning("清理临时压缩包目录失败: %s", e)
 
     def get_file_path(self, file_id):
         """

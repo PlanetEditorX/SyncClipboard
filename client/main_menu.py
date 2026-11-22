@@ -14,9 +14,7 @@ import win32clipboard
 from pathlib import Path
 from datetime import datetime
 from common.utils import SAFE_POST
-# 仅为兼容既有测试/外部引用保留（打包目录现在由 FileServer 使用）
-from client.file_server import FOLDER_SHARE_TEMP_DIR  # noqa: F401
-from client.folder_archive import (
+from client.folder_manifest import (
     folder_display_name,
     folder_size_bytes,
     format_size,
@@ -366,8 +364,8 @@ class SyncClient:
                 logger.warning(f"文件不存在，跳过: {sanitized}")
                 skipped.append(sanitized)
 
-        # 目录不在这里压缩：只登记 + 报体积，等接收端真正来取时再由
-        # FileServer 按需打包（见 FileServer.register_folder）。
+        # 目录不打包：只登记路径 + 报体积，接收端来取时按 /manifest 清单
+        # 逐文件下载并重建目录结构（见 FileServer.register_folder）。
         entries = []  # [(本地路径, 展示名, 类型, 字节数)]
         for path in files:
             try:
@@ -379,12 +377,12 @@ class SyncClient:
 
         folder_skipped = 0
         for folder in folders:
-            ok, size = self._folder_ready_for_zip(folder)
+            ok, size = self._folder_ready_for_transfer(folder)
             if not ok:
                 folder_skipped += 1
                 continue
             folder_name = folder_display_name(folder)
-            entries.append((folder, f"{folder_name}.zip", "folder", size))
+            entries.append((folder, folder_name, "folder", size))
 
         if not entries:
             # 整批都无效：不发请求，也不清空共享列表。
@@ -396,7 +394,7 @@ class SyncClient:
             return
 
         file_list = []
-        # 推送前先清空之前的共享（上一批的临时压缩包也会一起删掉）
+        # 推送前先清空之前的共享
         if hasattr(self, 'file_server') and self.file_server:
             self.file_server.clear_files()
 
@@ -494,11 +492,11 @@ class SyncClient:
         except Exception as e:
             logger.warning(f"重新登记共享失败: {e}")
 
-    def _folder_ready_for_zip(self, folder_path):
+    def _folder_ready_for_transfer(self, folder_path):
         """判断这个目录要不要共享，并返回 (是否共享, 原始总字节数)。
 
-        这里只做体积统计（遍历元数据，不读文件内容）和超限确认；真正的压缩
-        挪到接收端来取的时候，避免本地复制大目录却根本不传输也要压一遍。
+        这里只做体积统计（遍历元数据，不读文件内容）和超限确认；不做任何
+        打包 —— 目录始终按原始文件逐个传，接收端按清单重建结构。
         """
         if not self.folder_sync_enabled:
             logger.warning(f"目录同步已关闭，跳过: {folder_path}")
@@ -516,13 +514,13 @@ class SyncClient:
             )
             approved = confirm_large_folder(folder_name, size_text, limit_gb)
             logger.info(
-                f"目录超限确认结果: {'同意压缩传输' if approved else '用户取消，本次不传输'}"
+                f"目录超限确认结果: {'同意继续共享' if approved else '用户取消，本次不传输'}"
             )
             return approved, size
 
         logger.info(
             f"目录 {folder_path} 体积 {size_text}，在限额内，已登记共享"
-            f"（等接收端来取时再打包）"
+            f"（接收端来取时按清单逐文件下载）"
         )
         return True, size
 

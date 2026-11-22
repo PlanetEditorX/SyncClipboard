@@ -104,8 +104,8 @@ class FileLatestTracker:
         """
         插入或更新一条文件记录（根据 file_id 去重）
 
-        kind 用来区分普通文件和目录共享（kind="folder"）：目录的压缩包由发送端
-        在接收端来取时才生成，接收端需要先调 /prepare 触发打包。
+        kind 用来区分普通文件和目录共享（kind="folder"）：目录不打包，接收端
+        先取发送端的 /manifest/<file_id> 清单，再逐文件下载并重建目录结构。
         """
         if not file_id:
             raise ValueError("file_id cannot be empty")

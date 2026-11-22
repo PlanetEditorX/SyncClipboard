@@ -1,4 +1,4 @@
-"""接收端：等待发送端打包、断线重试与断点续传、默认保存目录。"""
+"""接收端：目录清单逐文件下载、断线重试与断点续传、默认保存目录。"""
 
 import os
 import tempfile
@@ -107,7 +107,9 @@ class TestDownloadResume(_HandlerFixture):
         self.assertEqual(target.read_bytes(), b"xyzw")
 
 
-class TestPrepareFolder(_HandlerFixture):
+class TestFolderManifestDownload(_HandlerFixture):
+    """目录共享：取清单 → 逐文件下载 → 按相对路径重建目录结构。"""
+
     def _resp(self, payload, status_code=200):
         resp = MagicMock()
         resp.status_code = status_code
@@ -115,39 +117,121 @@ class TestPrepareFolder(_HandlerFixture):
         resp.json.return_value = payload
         return resp
 
-    def test_ready_returns_true(self):
-        with patch.object(fh_mod.requests, "get",
-                          return_value=self._resp({"status": "ready"})):
-            self.assertTrue(
-                self.handler._prepare_folder_share("http://1.2.3.4:8899/file/abc", self._dialog())
-            )
+    def _manifest(self, entries, root="课程"):
+        return {
+            "status": "ok",
+            "root": root,
+            "count": len(entries),
+            "empty_dirs": [],
+            "notice": "",
+            "entries": entries,
+        }
 
-    def test_waits_until_ready(self):
-        packing = self._resp({"status": "packing", "progress": "已处理 10 个文件"})
-        ready = self._resp({"status": "ready"})
-        with patch.object(fh_mod.requests, "get", side_effect=[packing, ready]), \
-             patch("gui.file_handler.post_to_main_thread_no_wait") as post, \
-             patch.object(fh_mod.time, "sleep") as sleep:
-            self.assertTrue(
-                self.handler._prepare_folder_share("http://1.2.3.4:8899/file/abc", self._dialog())
-            )
-        self.assertTrue(sleep.called)
-        # 进度文本要投递到主线程更新对话框
-        self.assertTrue(post.called)
+    def _serve(self, manifest, files):
+        """按 URL 分派：清单走 JSON，文件走 _FakeResponse。"""
+        def fake_get(url, *args, **kwargs):
+            if url.endswith("/manifest/d1"):
+                return self._resp(manifest)
+            name = url.rsplit("/", 1)[-1]
+            if name in files:
+                data = files[name]
+                chunks = [data[i:i + 4] for i in range(0, len(data), 4)]
+                return _FakeResponse(headers={"content-length": str(len(data))},
+                                     chunks=chunks)
+            raise ConnectionError("404")
+        return fake_get
 
-    def test_error_returns_false_with_message(self):
+    def test_files_land_in_rebuilt_structure(self):
+        manifest = self._manifest([
+            {"path": "readme.md", "dir": "", "name": "readme.md", "size": 5,
+             "url": "http://1.2.3.4:8899/file/d1/readme.md"},
+            {"path": "模块/a.txt", "dir": "模块/", "name": "a.txt", "size": 9,
+             "url": "http://1.2.3.4:8899/file/d1/模块/a.txt"},
+        ])
         with patch.object(fh_mod.requests, "get",
-                          return_value=self._resp({"status": "error", "message": "磁盘已满"})), \
+                          side_effect=self._serve(manifest, {"readme.md": b"hello",
+                                                             "a.txt": b"content-a"})):
+            ok, done = self.handler._download_folder(
+                {"manifest_url": "http://1.2.3.4:8899/manifest/d1",
+                 "name": "课程", "kind": "folder"},
+                str(self.root), self._dialog())
+
+        self.assertTrue(ok)
+        self.assertEqual(done, 2)
+        root_dir = self.root / "课程"
+        self.assertEqual((root_dir / "readme.md").read_bytes(), b"hello")
+        # 关键：子目录必须被重建，而不是平铺在根下
+        self.assertEqual((root_dir / "模块" / "a.txt").read_bytes(), b"content-a")
+
+    def test_failed_file_does_not_abort_the_rest(self):
+        manifest = self._manifest([
+            {"path": "a.txt", "dir": "", "name": "a.txt", "size": 1,
+             "url": "http://1.2.3.4:8899/file/d1/a.txt"},
+            {"path": "b.txt", "dir": "", "name": "b.txt", "size": 1,
+             "url": "http://1.2.3.4:8899/file/d1/b.txt"},
+        ])
+        served = {"b.txt": b"B"}
+        with patch.object(fh_mod.requests, "get",
+                          side_effect=self._serve(manifest, served)), \
+             patch.object(fh_mod, "MAX_DOWNLOAD_ATTEMPTS", 1), \
+             patch.object(fh_mod.time, "sleep"):
+            ok, done = self.handler._download_folder(
+                {"manifest_url": "http://1.2.3.4:8899/manifest/d1", "name": "课程"},
+                str(self.root), self._dialog())
+
+        # a.txt 取不到 → 整体不算成功，但 b.txt 仍然落盘
+        self.assertFalse(ok)
+        self.assertEqual(done, 1)
+        self.assertEqual((self.root / "课程" / "b.txt").read_bytes(), b"B")
+        self.assertFalse((self.root / "课程" / "a.txt").exists())
+
+    def test_manifest_error_status_reports_and_gives_up(self):
+        with patch.object(fh_mod.requests, "get",
+                          return_value=self._resp({"status": "error",
+                                                   "message": "目录已不存在"},
+                                                  status_code=404)), \
              patch("gui.file_handler.show_message") as show_message:
-            self.assertFalse(
-                self.handler._prepare_folder_share("http://1.2.3.4:8899/file/abc", self._dialog())
-            )
-        self.assertIn("磁盘已满", show_message.call_args.args[1])
+            ok, done = self.handler._download_folder(
+                {"manifest_url": "http://1.2.3.4:8899/manifest/d1"},
+                str(self.root), self._dialog())
 
-    def test_url_without_file_marker_is_skipped(self):
-        with patch.object(fh_mod.requests, "get") as get:
-            self.assertTrue(self.handler._prepare_folder_share("http://x/download/1", None))
+        self.assertFalse(ok)
+        self.assertEqual(done, 0)
+        self.assertIn("目录已不存在", show_message.call_args.args[1])
+
+    def test_missing_manifest_url_is_refused_locally(self):
+        with patch.object(fh_mod.requests, "get") as get, \
+             patch("gui.file_handler.show_message"):
+            ok, done = self.handler._download_folder(
+                {"download_url": "http://1.2.3.4:8899/file/d1"}, str(self.root), None)
+
+        self.assertFalse(ok)
         get.assert_not_called()
+
+    def test_path_traversal_entries_are_skipped(self):
+        manifest = self._manifest([
+            {"path": "../逃出去.txt", "dir": "", "name": "逃出去.txt", "size": 1,
+             "url": "http://1.2.3.4:8899/file/d1/x"},
+        ])
+        with patch.object(fh_mod.requests, "get", side_effect=self._serve(manifest, {})):
+            ok, done = self.handler._download_folder(
+                {"manifest_url": "http://1.2.3.4:8899/manifest/d1", "name": "课程"},
+                str(self.root), self._dialog())
+
+        self.assertFalse(ok)
+        self.assertEqual(done, 0)
+        self.assertFalse((self.root / "逃出去.txt").exists())
+
+    def test_empty_folder_creates_root_only(self):
+        manifest = self._manifest([])
+        with patch.object(fh_mod.requests, "get", side_effect=self._serve(manifest, {})):
+            ok, done = self.handler._download_folder(
+                {"manifest_url": "http://1.2.3.4:8899/manifest/d1", "name": "课程"},
+                str(self.root), self._dialog())
+
+        self.assertTrue(ok)
+        self.assertEqual(done, 0)
+        self.assertTrue((self.root / "课程").is_dir())
 
 
 class TestTargetPath(_HandlerFixture):

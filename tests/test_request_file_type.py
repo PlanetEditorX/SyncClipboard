@@ -64,7 +64,7 @@ class RequestFileTypeTest(unittest.TestCase):
     # ---------- 核心：目录用 folder ----------
 
     def test_single_folder_returns_folder_type(self):
-        response, fake = self._pull([_record("bb8d0d3c", "课程.zip", "folder")])
+        response, fake = self._pull([_record("bb8d0d3c", "课程", "folder")])
         self.assertEqual(response.status_code, 200)
         payload = response.get_json()
         self.assertEqual(payload["type"], "folder")
@@ -73,19 +73,22 @@ class RequestFileTypeTest(unittest.TestCase):
         self.assertEqual(payload["files"][0]["kind"], "folder")
         self.assertEqual(payload["files"][0]["download_url"],
                          "http://192.168.1.24:8899/file/bb8d0d3c")
-        # 目录要等发送端打包，顶层直接给出 prepare 地址，手机端不必自己拼
-        self.assertEqual(payload["prepare_url"],
-                         "http://192.168.1.24:8899/prepare/bb8d0d3c")
-        self.assertEqual(payload["files"][0]["prepare_url"],
-                         "http://192.168.1.24:8899/prepare/bb8d0d3c")
+        # 目录走清单逐文件传输，顶层直接给出 manifest 地址，手机端不必自己拼
+        self.assertEqual(payload["manifest_url"],
+                         "http://192.168.1.24:8899/manifest/bb8d0d3c")
+        self.assertEqual(payload["files"][0]["manifest_url"],
+                         "http://192.168.1.24:8899/manifest/bb8d0d3c")
+        # 打包接口已移除，不能再下发
+        self.assertNotIn("prepare_url", payload)
+        self.assertNotIn("prepare_url", payload["files"][0])
         self.assertEqual(fake.clear_calls, 1)
 
     def test_single_file_stays_file_list(self):
         response, _ = self._pull([_record("aaa", "photo.jpg", "file")])
         payload = response.get_json()
         self.assertEqual(payload["type"], "file_list")
-        self.assertNotIn("prepare_url", payload["files"][0])
-        self.assertNotIn("prepare_url", payload)
+        self.assertNotIn("manifest_url", payload["files"][0])
+        self.assertNotIn("manifest_url", payload)
 
     def test_multiple_files_stay_file_list(self):
         response, _ = self._pull([
@@ -97,7 +100,7 @@ class RequestFileTypeTest(unittest.TestCase):
     def test_folder_mixed_with_file_is_file_list(self):
         """多选里既有目录又有文件时，顶层不能用 folder，避免手机端漏掉文件。"""
         response, _ = self._pull([
-            _record("aaa", "课程.zip", "folder"),
+            _record("aaa", "课程", "folder"),
             _record("bbb", "note.txt", "file"),
         ])
         payload = response.get_json()

@@ -10,7 +10,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 from common import utils as utils_mod
 from common.utils import reveal_in_explorer
@@ -139,7 +139,9 @@ class TestAnnounceSaved(unittest.TestCase):
              patch.object(handler, "_clear_latest_file"), \
              patch("gui.file_handler.show_message") as show_message, \
              patch("gui.file_handler.threading.current_thread",
-                   return_value=object()):  # 非主线程 → 原地执行，不再另起线程
+                   # 不能返回裸 object：logging 会读它的 name（AttributeError）。
+                   # 也不能返回真主线程，否则 fetch 会改成异步跑。
+                   return_value=MagicMock(name="worker")):  # 非主线程 → 原地执行，不再另起线程
             dialog = dialog_cls.return_value
             dialog.is_cancelled.return_value = False
             post.return_value = dialog
@@ -152,8 +154,8 @@ class TestAnnounceSaved(unittest.TestCase):
         # 不再询问保存位置：直接落到配置里的下载目录
         self.assertEqual(download.call_args.kwargs["save_path"], str(self.root))
 
-    def test_folder_type_is_handled_like_file_list(self):
-        """服务端只共享一个目录时返回 type=folder，接收端必须照样下载。"""
+    def test_folder_type_goes_through_manifest(self):
+        """服务端只共享一个目录时返回 type=folder，接收端走清单逐文件下载。"""
         import gui.file_handler as fh
 
         handler = FileHandler.__new__(FileHandler)
@@ -171,28 +173,32 @@ class TestAnnounceSaved(unittest.TestCase):
             "json": lambda self: {
                 "type": "folder",
                 "files": [{
-                    "name": "课程.zip",
+                    "name": "课程",
                     "kind": "folder",
-                    "download_url": "http://x/file/9",
+                    "manifest_url": "http://x/manifest/9",
                 }],
             },
             "close": lambda self: None,
         })()
 
         with patch.object(fh.requests, "post", return_value=response), \
-             patch.object(handler, "_download_from_url", return_value=True) as download, \
+             patch.object(handler, "_download_folder", return_value=(True, 3)) as folder, \
              patch("gui.file_handler.post_to_main_thread") as post, \
              patch("gui.file_handler.DownloadProgressDialog") as dialog_cls, \
              patch.object(handler, "_announce_saved") as announce, \
              patch.object(handler, "_clear_latest_file"), \
              patch("gui.file_handler.threading.current_thread",
-                   return_value=object()):
+                   # 不能返回裸 object：logging 会读它的 name（AttributeError）。
+                   # 也不能返回真主线程，否则 fetch 会改成异步跑。
+                   return_value=MagicMock(name="worker")):
             dialog = dialog_cls.return_value
             dialog.is_cancelled.return_value = False
             post.return_value = dialog
 
             handler.fetch_file_with_progress()
 
-        download.assert_called_once()
-        self.assertEqual(download.call_args.kwargs["kind"], "folder")
+        folder.assert_called_once()
+        self.assertEqual(folder.call_args.args[0]["manifest_url"], "http://x/manifest/9")
         announce.assert_called_once()
+        # 目录里 3 个文件 → 计数按文件算，不按「1 个目录」算
+        self.assertEqual(announce.call_args.kwargs.get("count"), 3)

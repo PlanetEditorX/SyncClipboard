@@ -7,15 +7,13 @@
 2. 结构收敛：type == text 走文本分支，否则走文件分支；文件分支内按
    Repeat Item.kind 判断目录/文件，因此「单目录」「多文件」「目录+文件混合」
    三种情况共用同一段下载循环。
-3. 目录默认走「逐文件」：先取 /manifest 清单，再按清单逐项下载、按清单给的
-   相对路径写进对应子目录。**不打包** —— iOS 的「解压缩」会把包内目录摊平，
-   走压缩包必然丢层级（v3 的真机现象：所有文件都躺在「下载」根下）。
-   配置里「目录传输」设成「压缩包」时仍走老路子，留作对照/应急。
+3. 目录只走「逐文件」：先取 /manifest 清单，再按清单逐项下载、按清单给的
+   相对路径写进对应子目录。**没有任何打包/解压环节** —— iOS 的「解压缩」会
+   把包内目录摊平，走归档必然丢层级（v3 的真机现象：所有文件都躺在「下载」
+   根下）。v5 起压缩包模式已从代码里彻底移除，不留回退开关。
 4. 调试开关：配置词典里的「调试」= 开/关。开时每个步骤弹一条静音通知
    （进入通知中心可回看），关时全程静默，只留结束提示。
-5. 打包轮询（仅压缩包模式）：内层 15 次 × 2 秒 ≈ 30 秒，外层 40 轮 ≈ 最长
-   20 分钟；上限定在 20 分钟是因为客户端「共享存活」默认 30 分钟，超时要能
-   先于它触发。逐文件模式不需要等待，请求即取。
+5. 目录传输不需要等待：清单请求即取，没有打包轮询。
 
 用法
 ----
@@ -29,7 +27,7 @@ import uuid
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 REF = os.path.join(HERE, '获取同步-unsigned.plist')          # 仅借用顶层元数据
-OUT = os.path.join(HERE, '获取同步v4-unsigned.plist')
+OUT = os.path.join(HERE, '获取同步v5-unsigned.plist')
 
 OBJ = '\ufffc'          # 文本里变量的占位符
 
@@ -212,9 +210,6 @@ class SC:
         })
         return act_out(uid, 'URL的内容')
 
-    def wait(self, seconds):
-        self._add('is.workflow.actions.delay', {'WFDelayTime': float(seconds)})
-
     def notify(self, parts, sound=False):
         """先造一条文本（供通知标题用），再弹通知。"""
         t = self.text(parts)
@@ -233,19 +228,6 @@ class SC:
         self._add('is.workflow.actions.exit', {})
 
     # -- 文件 ------------------------------------------------------------
-    def unzip(self, archive):
-        """解压缩。
-
-        归档是**具名参数** `WFArchive`，不是隐式输入。这一点踩过坑：早先按
-        「系统动作隐式取上一步输出」写成无参，结果动作拿到空输入、什么都不解，
-        下游「存储到文件」也跟着拿到空输入静默不存盘，全程不报错 —— 通知还是
-        我们自己的文案，于是显示「已保存」而磁盘上什么都没有。
-        """
-        uid = U()
-        self._add('is.workflow.actions.unzip',
-                  {'UUID': uid, 'WFArchive': att(archive)})
-        return act_out(uid, 'Files')
-
     def save_to_folder(self, subject, subpath=None):
         """存储到文件。
 
@@ -317,14 +299,6 @@ class SC:
         self._add('is.workflow.actions.conditional',
                   {'GroupingIdentifier': g, 'UUID': U(), 'WFControlFlowMode': 2})
 
-    def repeat(self, n):
-        g = U()
-        self._add('is.workflow.actions.repeat.count', {
-            'GroupingIdentifier': g, 'UUID': U(), 'WFControlFlowMode': 0,
-            'WFRepeatCount': float(n),
-        })
-        return g
-
     def repeat_each(self, subject):
         g = U()
         self._add('is.workflow.actions.repeat.each', {
@@ -345,14 +319,12 @@ class SC:
 b = SC()
 DEBUG = '调试'          # 配置词典里的开关键
 PROTO, HOST, PORT, KEY = '协议', '主机', '端口', '密钥'
-MODE = '目录传输'        # 目录走「逐文件」还是「压缩包」
-ROOT_SUB = '根子路径'    # 逐文件落盘的路径前缀（见 cfg 里的说明）
+ROOT_SUB = '根子路径'    # 落盘子路径的前缀（见 cfg 里的说明）
 REPEAT_ITEM = 'Repeat Item'
 
-b.comment('SyncClipboard 拉取 v4（逐文件保目录结构）\n'
+b.comment('SyncClipboard 拉取 v5（逐文件保目录结构）\n'
           '改配置：编辑下面「配置」词典里的协议/主机/端口/密钥/调试\n'
-          '目录传输 = 逐文件：按清单一个个取文件，目录结构与电脑上一致\n'
-          '目录传输 = 压缩包：老路子（等电脑打包 → 下载 → 解压），会丢层级\n'
+          '目录按清单逐个文件取，目录结构与电脑上完全一致（不再打包/解压）\n'
           '调试 = 开 时每个步骤弹一条静音通知，跑完可在通知中心回看\n'
           '文件统一存入「下载」，需要换目录请在「存储到文件」动作里重选')
 
@@ -362,11 +334,9 @@ cfg = b.dictionary([
     (PORT, '8000'),
     (KEY, '123456'),
     (DEBUG, '开'),
-    # 逐文件模式的两档：传输方式，以及落盘子路径的前缀。
-    # 前缀留空即「子路径相对所选文件夹（下载）」；万一你的 iOS 把它当成
-    # 存储根相对路径，文件会落到「下载/下载/项目名/…」，那时把它填成
-    # 「下载/」即可，不必重新生成快捷指令。
-    (MODE, '逐文件'),
+    # 落盘子路径的前缀。留空即「子路径相对所选文件夹（下载）」；万一你的
+    # iOS 把它当成存储根相对路径，文件会落到「下载/下载/项目名/…」，那时
+    # 把它填成「下载/」即可，不必重新生成快捷指令。
     (ROOT_SUB, ''),
 ], out_name='配置')
 
@@ -432,8 +402,8 @@ b.endif(g_has_text)
 b.else_(g_text)
 
 # ---- 5 分支：文件 ---------------------------------------------------------
-b.comment('5. 文件分支：type 为 file_list 时逐个下载；为 folder 时同一段逻辑'
-          '按 kind 判断，先等发送端打包再下载并解压')
+b.comment('5. 文件分支：type 为 file_list 时逐个下载；目录项按 kind 判断，'
+          '取清单后逐文件下载并重建目录结构')
 
 g_kind = b.if_any(var('类型'), ['file_list', 'folder'])
 
@@ -454,68 +424,13 @@ dbg(['   · 开始下载 ', item_name, '（', item_kind, '）'])
 
 g_is_folder = b.if_(item_kind, IS, 'folder')
 
-# 「目录传输」= 压缩包 时走老路子，否则逐文件（默认）。
-g_zip_mode = b.if_(act_out(cfg, '配置', dkey(MODE)), IS, '压缩包')
-
-# --- 目录 / 压缩包：先等打包完成 ---
-b.comment('打包轮询：内层 15 次 × 2 秒 ≈ 30 秒，外层 40 轮 ≈ 最长 20 分钟；\n'
-          '外层每轮输出一条进度，避免每 2 秒刷一条通知。\n'
-          '上限必须小于客户端「共享存活」（默认 30 分钟），否则超时前共享已被清掉')
-b.setvar('打包地址', var(REPEAT_ITEM, dkey('prepare_url')))
-b.setvar('打包状态', act_out(b.text(['idle']), '文本'))
-
-# 外层 40 轮 × 30 秒 = 20 分钟。客户端共享存活默认 30 分钟（自电脑复制那一刻
-# 起算，打包 + 下载都算在内），这里必须比它短，否则「打包超时」永远走不到 ——
-# 中途就已被客户端清掉共享、/prepare 变 404。
-g_outer = b.repeat(40)
-g_outer_body = b.if_(var('打包状态'), IS_NOT, 'ready')
-
-g_inner = b.repeat(15)
-g_inner_body = b.if_(var('打包状态'), IS_NOT, 'ready')
-
-pack = b.get(var('打包地址'))
-b.setvar('打包进度', pack)
-b.setvar('打包状态', pick(pack, 'status'))
-
-g_bad = b.if_any(var('打包状态'), ['error', 'unknown', 'cancelled'])
-b.notify(['打包失败（', var('打包状态'), '），请回电脑重新复制'])
-b.exit()
-b.endif(g_bad)
-
-b.wait(2)
-b.endif(g_inner_body)
-b.end_repeat(g_inner, each=False)
-
-dbg(['   打包 ', var('打包状态'), ' ', var('打包进度', dkey('progress'))])
-
-b.endif(g_outer_body)
-b.end_repeat(g_outer, each=False)
-
-g_timeout = b.if_(var('打包状态'), IS_NOT, 'ready')
-b.notify(['打包超时（已等待约 20 分钟）：', item_name])
-b.exit()
-b.endif(g_timeout)
-
-zip_item = b.get(item_url)
-b.setvar('压缩包', zip_item)
-
-extracted = b.unzip(zip_item)
-g_unzipped = b.if_(extracted, 100)          # 有任何值 = 确实解出了东西
-save_confirmed(extracted, item_name)
-b.else_(g_unzipped)
-# 解不出来就至少把压缩包存下去，别让这一项彻底消失
-dbg(['   解压无输出，改存压缩包 ', item_name])
-save_confirmed(var('压缩包'), item_name)
-b.endif(g_unzipped)
-
-b.else_(g_zip_mode)
-
-# --- 目录 / 逐文件：按清单一项项取，路径由清单给 ---
+# --- 目录：按清单一项项取，路径由清单给 ---
 #
-# 为什么不再打包：iOS 的「解压缩」会把包内文件摊平，目录层级在解压那一刻
-# 就没了，全堆进同一个文件夹。改成逐文件后每项单独下载、单独写子路径，
-# 层级由我们自己按清单重建，顺带还能跳过单个坏文件。
-b.comment('逐文件：清单 → 逐个下载 → 按 dir 写进「下载/目录名/dir」')
+# 目录**不打包**。以前走「等电脑打包 → 下载 zip → 解压缩 → 存进下载」，真机
+# 结果是所有文件平铺在「下载」根目录：iOS 的「解压缩」会把包内文件摊平，
+# 层级在解压那一刻就没了，包内再规整也没用。现在每项单独下载、单独写子路径，
+# 层级按清单重建，顺带还能跳过单个坏文件。
+b.comment('目录：清单 → 逐个下载 → 按 dir 写进「下载/目录名/dir」')
 b.setvar('清单地址', var(REPEAT_ITEM, dkey('manifest_url')))
 listing = b.get(var('清单地址'))
 b.setvar('清单', listing)
@@ -562,8 +477,6 @@ b.else_(g_listing_ok)
 b.notify(['取不到目录清单：', pick(listing, 'message'),
           '\n（共享可能已过期，请回电脑重新复制）'])
 b.endif(g_listing_ok)
-
-b.endif(g_zip_mode)
 
 b.else_(g_is_folder)
 

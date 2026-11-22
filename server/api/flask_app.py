@@ -1193,11 +1193,9 @@ def request_file():
                     "download_url": f"http://{ip}:{port}/file/{file_id}",
                 }
                 if kind == "folder":
-                    # 目录由发送端按需打包。prepare 地址一并给出，手机端（含 iOS
-                    # 快捷指令）不必自己拼 URL 就能「先等打包完成再下载」。
-                    entry["prepare_url"] = f"http://{ip}:{port}/prepare/{file_id}"
-                    # 逐文件清单：不打包，直接按目录结构一项项取。手机端
-                    # 「解压缩」会摊平层级，走这条路才能保住目录结构。
+                    # 目录走逐文件传输：接收端先取清单，再按相对路径一项项
+                    # 下载。整包（无论 zip 还是别的归档）在 iOS 上解压会丢掉
+                    # 目录层级，所以这里不再给打包地址。
                     entry["manifest_url"] = f"http://{ip}:{port}/manifest/{file_id}"
                 file_list.append(entry)
             else:
@@ -1207,9 +1205,9 @@ def request_file():
         latest_file.clear()
 
         if file_list:
-            # 只共享了一个目录时用 type=folder：手机端（含 iOS 快捷指令）据此走
-            # 「先等发送端打包完成再下载」的分支，避免直接 GET 大目录读超时。
-            # 单个/多个普通文件仍统一返回 file_list，老客户端无需改动。
+            # 只共享了一个目录时用 type=folder：接收端据此知道这是一次完整的
+            # 目录传输（走清单逐文件下载）。单个/多个普通文件仍统一返回
+            # file_list，老客户端无需改动。
             is_single_folder = len(file_list) == 1 and file_list[0].get("kind") == "folder"
             payload = {
                 "status": "ok",
@@ -1217,8 +1215,7 @@ def request_file():
                 "files": file_list,
             }
             if is_single_folder:
-                payload["prepare_url"] = file_list[0]["prepare_url"]
-                payload["manifest_url"] = file_list[0].get("manifest_url")
+                payload["manifest_url"] = file_list[0]["manifest_url"]
             return jsonify(payload), 200
         # 如果列表为空（所有记录均无效），继续执行文本逻辑
 

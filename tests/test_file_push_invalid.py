@@ -1,31 +1,23 @@
-import time
 import tempfile
 import unittest
-import zipfile
 from pathlib import Path
 from unittest.mock import MagicMock, patch
+from urllib.parse import unquote
 
 from client import file_server as file_server_mod
-from client import folder_archive as folder_archive_mod
-from client import main_menu as main_menu_mod
+from client import folder_manifest as folder_manifest_mod
 from client.file_server import FileServer
 from client.main_menu import SyncClient
 from server.core.file_latest import FILE_SHARE_TTL_SECONDS
 
 
 class _TempDirMixin(unittest.TestCase):
-    """把临时压缩包目录指到测试用临时目录，避免污染仓库。"""
+    """每个用例一个临时目录，被共享的目录建在里面。"""
 
     def setUp(self):
         self.temp_dir = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp_dir.cleanup)
         self.root = Path(self.temp_dir.name)
-        self.share_dir = self.root / "folder_share"
-
-        for module in (main_menu_mod, file_server_mod):
-            patcher = patch.object(module, "FOLDER_SHARE_TEMP_DIR", self.share_dir)
-            patcher.start()
-            self.addCleanup(patcher.stop)
 
 
 class TestPushLatestFileInvalidPaths(_TempDirMixin):
@@ -99,8 +91,8 @@ class TestPushLatestFileInvalidPaths(_TempDirMixin):
         self.assertEqual(self.file_server.shared_files, {})
 
 
-class TestFolderShareLazyPack(_TempDirMixin):
-    """文件夹共享：复制时只登记，接收端来取（prepare / GET）时才打包。"""
+class TestFolderShareManifest(_TempDirMixin):
+    """文件夹共享：只登记路径，接收端拿清单逐文件取（不打包、不压缩）。"""
 
     def setUp(self):
         super().setUp()
@@ -136,143 +128,69 @@ class TestFolderShareLazyPack(_TempDirMixin):
         mock_post = self._mock_post()
         item = self._push_folder(mock_post)
 
-        self.assertEqual(item["name"], "magisk.zip")
+        # 目录名就是目录名，不再挂 .zip 后缀
+        self.assertEqual(item["name"], "magisk")
         self.assertEqual(item["kind"], "folder")
-        # 共享的是目录本身，不是临时压缩包
         self.assertEqual(item["path"], str(self.folder))
         self.assertEqual(self.file_server.shared_files[item["file_id"]], str(self.folder))
+        self.assertEqual(
+            self.file_server.shared_folders[item["file_id"]]["path"], str(self.folder))
 
-        # 关键：复制时不应在磁盘上留下任何压缩包
-        self.assertEqual(list(self.share_dir.glob("*.zip")), [])
-        self.assertEqual(self.file_server._temp_files, set())
-
-    def test_prepare_packs_folder(self):
+    def test_manifest_lists_structure(self):
         mock_post = self._mock_post()
         item = self._push_folder(mock_post)
 
-        zip_path = Path(self.file_server._ensure_archive(item["file_id"]))
-        self.assertTrue(zip_path.is_file())
-        self.assertEqual(zip_path.parent, self.share_dir)
+        body = self.file_server.app.test_client().get(
+            f"/manifest/{item['file_id']}").get_json()
+        self.assertEqual(body["status"], "ok")
+        self.assertEqual(body["root"], "magisk")
+        self.assertEqual(body["count"], 2)
+        by_path = {e["path"]: e for e in body["entries"]}
+        self.assertEqual(by_path["readme.md"]["dir"], "")
+        self.assertEqual(by_path["模块/a.txt"]["dir"], "模块/")
+        # 路径按段百分号编码后再拼进 URL，中文目录同样要编码
+        self.assertTrue(unquote(by_path["模块/a.txt"]["url"]).endswith(
+            "/file/%s/模块/a.txt" % item["file_id"]))
 
-        # 包内保留文件夹名作为根目录，解压后不会散落成一堆文件
-        with zipfile.ZipFile(zip_path) as zf:
-            names = {n.replace("\\", "/") for n in zf.namelist()}
-        self.assertIn("magisk/readme.md", names)
-        self.assertIn("magisk/模块/a.txt", names)
-
-        # 压缩包登记为临时文件，共享结束时要删
-        self.assertIn(str(zip_path), self.file_server._temp_files)
-
-    def test_prepare_endpoint_reports_progress(self):
+    def test_zip_route_on_folder_points_at_manifest(self):
         mock_post = self._mock_post()
         item = self._push_folder(mock_post)
-        self.file_server._ensure_archive(item["file_id"])
 
-        resp = self.file_server.app.test_client().get(f"/prepare/{item['file_id']}")
-        self.assertEqual(resp.status_code, 200)
+        resp = self.file_server.app.test_client().get(f"/file/{item['file_id']}")
+        self.assertEqual(resp.status_code, 409)
         body = resp.get_json()
-        self.assertEqual(body["status"], "ready")
-        self.assertEqual(body["name"], "magisk.zip")
+        self.assertIn("manifest", body["message"])
+        self.assertTrue(body["manifest_url"].endswith(f"/manifest/{item['file_id']}"))
 
-    def test_prepare_endpoint_starts_background_pack(self):
-        """接收端先 prepare：发一次就该在后台开始打包，之后轮询到 ready。"""
+    def test_member_download_keeps_share(self):
         mock_post = self._mock_post()
         item = self._push_folder(mock_post)
         client = self.file_server.app.test_client()
 
-        first = client.get(f"/prepare/{item['file_id']}").get_json()
-        self.assertIn(first["status"], ("idle", "packing", "ready"))
+        resp = client.get(f"/file/{item['file_id']}/模块/a.txt")
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.get_data(), b"content-a")
+        resp.close()
+        self.assertIn(item["file_id"], self.file_server.shared_folders)
 
-        deadline = time.time() + 5
-        status = first["status"]
-        while time.time() < deadline:
-            status = client.get(f"/prepare/{item['file_id']}").get_json()["status"]
-            if status == "ready":
-                break
-            time.sleep(0.05)
-        self.assertEqual(status, "ready")
-        self.assertTrue(Path(self.file_server._folder_shares[item["file_id"]]["path"]).is_file())
-
-    def test_prepare_unknown_file_id(self):
-        resp = self.file_server.app.test_client().get("/prepare/not-exist")
-        self.assertEqual(resp.status_code, 404)
-        self.assertEqual(resp.get_json()["status"], "unknown")
-
-    def test_download_packs_on_demand_then_deletes(self):
+    def test_manifest_skips_unreadable_file(self):
+        """单个文件读不到体积只跳过它，其余条目照常给。"""
         mock_post = self._mock_post()
         item = self._push_folder(mock_post)
 
-        response = self.file_server.app.test_client().get(f"/file/{item['file_id']}")
-        self.assertEqual(response.status_code, 200)
-        content = response.get_data()
-        response.close()
+        real_getsize = folder_manifest_mod.os.path.getsize
 
-        # 内容必须是合法 zip（说明是现场打包出来的）
-        self.assertTrue(content.startswith(b"PK"))
-        self.assertEqual(list(self.share_dir.glob("*.zip")), [],
-                         "下载完成后临时压缩包应被删除")
-        self.assertEqual(self.file_server.shared_files, {})
-        self.assertEqual(self.file_server._temp_files, set())
+        def fake_getsize(path, *args, **kwargs):
+            if str(path).endswith("readme.md"):
+                raise OSError("locked")
+            return real_getsize(path, *args, **kwargs)
 
-    def test_interrupted_download_keeps_zip_for_retry(self):
-        """传输到一半断开时不能删包：压缩包要留着给下一次重试。"""
-        mock_post = self._mock_post()
-        item = self._push_folder(mock_post)
-        zip_path = Path(self.file_server._ensure_archive(item["file_id"]))
-        expected = zip_path.read_bytes()
+        with patch.object(folder_manifest_mod.os.path, "getsize", fake_getsize):
+            body = self.file_server.app.test_client().get(
+                f"/manifest/{item['file_id']}").get_json()
 
-        response = self.file_server.app.test_client().get(
-            f"/file/{item['file_id']}", buffered=False
-        )
-        self.assertEqual(response.status_code, 200)
-        iterator = iter(response.response)
-        next(iterator)          # 只取第一块就当作连接中断
-        response.close()
-
-        self.assertTrue(zip_path.exists(), "中断后压缩包应保留，方便对方重试")
-        self.assertIn(item["file_id"], self.file_server.shared_files)
-
-        # 重试成功之后才允许删除（第二次不会再打包）
-        retry = self.file_server.app.test_client().get(f"/file/{item['file_id']}")
-        self.assertEqual(retry.status_code, 200)
-        self.assertEqual(retry.get_data(), expected)
-        retry.close()
-        self.assertFalse(zip_path.exists(), "重试成功后才删除压缩包")
-
-    def test_concurrent_downloads_keep_file_until_last_finishes(self):
-        """两端同时取同一份目录：先下完的一端不能把压缩包删掉。"""
-        mock_post = self._mock_post()
-        item = self._push_folder(mock_post)
-        zip_path = Path(self.file_server._ensure_archive(item["file_id"]))
-        client = self.file_server.app.test_client()
-
-        first = client.get(f"/file/{item['file_id']}", buffered=False)
-        first_iter = iter(first.response)
-        next(first_iter)
-        second = client.get(f"/file/{item['file_id']}", buffered=False)
-
-        list(first_iter)          # 第一路取完
-        first.close()
-        self.assertTrue(zip_path.exists(), "另一路还在下载，压缩包不能被删")
-        self.assertIn(item["file_id"], self.file_server.shared_files)
-
-        list(iter(second.response))   # 第二路取完
-        second.close()
-        self.assertFalse(zip_path.exists(), "最后一路取完后才删除")
-
-    def test_new_share_discards_previous_archive(self):
-        mock_post = self._mock_post()
-        item = self._push_folder(mock_post)
-        first_zip = Path(self.file_server._ensure_archive(item["file_id"]))
-        self.assertTrue(first_zip.exists())
-
-        other = self.root / "other"
-        other.mkdir()
-        (other / "b.txt").write_text("b", encoding="utf-8")
-        self.sync_client._push_latest_file([str(other)])
-
-        self.assertFalse(first_zip.exists(), "换共享时上一批压缩包应被删除")
-        self.assertNotIn(item["file_id"], self.file_server._folder_shares)
+        self.assertEqual(body["count"], 1)
+        self.assertEqual([e["path"] for e in body["entries"]], ["模块/a.txt"])
 
     def test_push_failure_clears_registration(self):
         self._mock_post(status_code=400, text="file_list 为空")
@@ -280,13 +198,11 @@ class TestFolderShareLazyPack(_TempDirMixin):
             self.sync_client._push_latest_file([str(self.folder)])
 
         self.assertEqual(self.file_server.shared_files, {})
-        self.assertEqual(self.file_server._folder_shares, {})
-        self.assertEqual(list(self.share_dir.glob("*.zip")), [])
+        self.assertEqual(self.file_server.shared_folders, {})
 
-    def test_expired_share_deletes_archive(self):
+    def test_expired_share_is_dropped(self):
         mock_post = self._mock_post()
         item = self._push_folder(mock_post)
-        zip_path = Path(self.file_server._ensure_archive(item["file_id"]))
         registered_at = self.file_server.shared_file_registered_at[item["file_id"]]
 
         with patch.object(
@@ -296,52 +212,23 @@ class TestFolderShareLazyPack(_TempDirMixin):
         ):
             self.assertIsNone(self.file_server.get_file_path(item["file_id"]))
 
-        self.assertFalse(zip_path.exists(), "过期的共享应删除临时压缩包")
-        self.assertEqual(self.file_server._folder_shares, {})
+        self.assertEqual(self.file_server.shared_folders, {})
+        # 目录本身当然还在（我们从不碰用户文件）
+        self.assertTrue(self.folder.is_dir())
 
-    def test_clear_files_deletes_archive(self):
+    def test_clear_files_clears_registration(self):
         mock_post = self._mock_post()
         item = self._push_folder(mock_post)
-        zip_path = Path(self.file_server._ensure_archive(item["file_id"]))
 
         self.file_server.clear_files()
 
-        self.assertFalse(zip_path.exists())
-
-    def test_stale_temp_files_cleaned_on_startup(self):
-        self.share_dir.mkdir(parents=True, exist_ok=True)
-        stale = self.share_dir / "leftover.zip"
-        stale.write_bytes(b"old")
-
-        FileServer(local_name="client-b", key="secret")
-
-        self.assertFalse(stale.exists(), "启动时应清理上次残留的压缩包")
-
-    def test_cancel_during_pack_discards_archive(self):
-        """打包途中共享被撤销：停止压缩并清掉半成品。"""
-        mock_post = self._mock_post()
-        item = self._push_folder(mock_post)
-        self.file_server._folder_shares[item["file_id"]]["cancel"].set()
-
-        self.assertIsNone(self.file_server._ensure_archive(item["file_id"]))
-        self.assertEqual(list(self.share_dir.glob("*.zip")), [])
-
-    def test_unreadable_file_does_not_break_archive(self):
-        """单个文件读不了只跳过，不影响整包。"""
-        mock_post = self._mock_post()
-        item = self._push_folder(mock_post)
-
-        with patch.object(
-            folder_archive_mod.zipfile.ZipFile, "write", side_effect=OSError("locked")
-        ):
-            zip_path = self.file_server._ensure_archive(item["file_id"])
-
-        self.assertIsNotNone(zip_path)
-        self.assertTrue(Path(zip_path).is_file())
+        self.assertEqual(self.file_server.shared_folders, {})
+        self.assertNotIn(item["file_id"], self.file_server.shared_files)
+        self.assertTrue(self.folder.is_dir(), "清空共享不能动用户的目录")
 
 
 class TestFilePushQueue(_TempDirMixin):
-    """文件夹打包耗时长，推送必须走后台队列且只保留最新一批。"""
+    """推送走后台队列且只保留最新一批（避免连点复制时堆积）。"""
 
     def setUp(self):
         super().setUp()

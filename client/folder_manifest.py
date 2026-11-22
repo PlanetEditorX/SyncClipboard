@@ -1,14 +1,14 @@
-"""目录清单：逐文件传输时，把目录树摊平成「相对路径 + 体积」列表。
+"""目录共享的基础工具与清单：逐文件传输时把目录树摊平成「相对路径 + 体积」。
 
 为什么需要它
 ------------
 iOS 快捷指令的「解压缩」把压缩包还原成一串**平铺**的文件，包内目录层级
 在解压那一步就丢了 —— 接收端看到的是一堆散装文件，全落进同一个目录。
-只要还经过压缩包这一层，无论包内多规整都没用。
+所以这里根本不打包：服务端给出清单（相对路径 + 每项的下载地址），接收端
+按清单逐项下载，写回对应子目录。层级由清单承载，不依赖任何归档格式。
 
-逐文件传输干脆不打包：服务端先给一份清单（相对路径 + 每项的下载地址），
-接收端按清单逐项下载，并用「存储到文件」的子路径参数写回对应子目录。
-代价是请求数变多，换来的是目录结构、空目录位置、单文件失败可续传。
+本模块同时放目录共享要用的小工具（体积统计、展示名、体积格式化）。V1.12.4
+起彻底不再压缩目录，原先的 `folder_archive.py`（zip 打包 + 进度上报）已删除。
 
 设计约定
 --------
@@ -19,8 +19,40 @@ iOS 快捷指令的「解压缩」把压缩包还原成一串**平铺**的文件
 import os
 
 # 清单条数上限。逐文件传输的耗时随文件数线性增长，上万个文件在手机上
-# 逐个下载已经不现实，超出部分截断并置 truncated，让接收端提示改用压缩包。
+# 逐个下载已经不现实，超出部分截断并置 truncated，让接收端提示用户。
 MANIFEST_MAX_ENTRIES = 20000
+
+
+def format_size(num_bytes):
+    """把字节数变成便于阅读的 GB/MB 文本。"""
+    size = float(num_bytes)
+    for unit in ("B", "KB", "MB", "GB", "TB"):
+        if size < 1024 or unit == "TB":
+            return f"{size:.0f} {unit}" if unit in ("B", "KB") else f"{size:.1f} {unit}"
+        size /= 1024
+    return f"{size:.1f} TB"
+
+
+def folder_size_bytes(folder_path):
+    """统计目录内所有文件的总字节数（读不到的文件按 0 计）。"""
+    total = 0
+    for root, _dirs, names in os.walk(folder_path):
+        for name in names:
+            try:
+                total += os.path.getsize(os.path.join(root, name))
+            except OSError:
+                continue
+    return total
+
+
+def folder_display_name(folder_path):
+    """目录名；复制盘符根目录时退回用盘符当名字。"""
+    folder_path = os.path.normpath(folder_path)
+    return (
+        os.path.basename(folder_path)
+        or os.path.splitdrive(folder_path)[0].rstrip(":\\/")
+        or "folder"
+    )
 
 
 def _posix(path):
@@ -52,8 +84,7 @@ def build_manifest(folder_path, max_entries=MANIFEST_MAX_ENTRIES):
     if not os.path.isdir(folder_path):
         return None
 
-    root_name = os.path.basename(folder_path) or os.path.splitdrive(folder_path)[0] \
-        .rstrip(":\\/") or "folder"
+    root_name = folder_display_name(folder_path)
 
     entries = []
     dirs = []
@@ -105,7 +136,7 @@ def build_manifest(folder_path, max_entries=MANIFEST_MAX_ENTRIES):
         "truncated": truncated,
         # 需要用户知道的问题，直接给成一句空/非空文本：接收端（快捷指令）
         # 判断「有任何值」比判断 JSON 布尔值可靠得多。
-        "notice": (f"目录文件超过 {max_entries} 个，清单已截断，"
-                   f"请改用压缩包方式整包传输") if truncated else "",
+        "notice": (f"目录文件超过 {max_entries} 个，只传前 {max_entries} 个；"
+                   f"请把这个目录拆小后再共享") if truncated else "",
         "entries": entries,
     }

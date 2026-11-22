@@ -8,7 +8,7 @@
         ↑ 手机端扮演者（requests）
 
 一天里最容易坏、又最不容易被单测发现的是「接到一起才不对」：注册的
-file_id 和下载路由对不上、prepare 轮询永远停在 packing、手机拿到的 URL
+file_id 和下载路由对不上、清单里的地址在真机上打不开、手机拿到的 URL
 指向一个没监听的端口。这些只有真跑一遍才会露出来。
 
 跑通的标准（也是用户视角）：
@@ -21,8 +21,6 @@ import struct
 import threading
 import time
 import unittest
-import zipfile
-from io import BytesIO
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 from urllib.parse import urlparse
@@ -97,12 +95,10 @@ class _SmokeCase(unittest.TestCase):
         self.root = Path(self._tmp.name)
 
         # 各种临时目录都挪到 tmp 里，别碰真实的 latest/ 和共享缓存
-        for patcher in (
-            patch.object(file_latest_mod, "FILE_LATEST_FILE", self.root / "file_latest.json"),
-            patch.object(file_server_mod, "FOLDER_SHARE_TEMP_DIR", self.root / "share"),
-        ):
-            patcher.start()
-            self.addCleanup(patcher.stop)
+        patcher = patch.object(
+            file_latest_mod, "FILE_LATEST_FILE", self.root / "file_latest.json")
+        patcher.start()
+        self.addCleanup(patcher.stop)
 
         self.latest_file = file_latest_mod.FileLatestTracker()
         self.tracker = _FakeTracker()
@@ -160,19 +156,20 @@ class _SmokeCase(unittest.TestCase):
         )
         return resp
 
-    def _wait_archive_ready(self, prepare_url, timeout=30):
-        """模拟快捷指令的打包轮询。"""
-        deadline = time.time() + timeout
-        state = None
-        while time.time() < deadline:
-            resp = requests.get(prepare_url, timeout=5)
-            if resp.status_code != 200:
-                return resp.status_code, None
-            state = resp.json()
-            if state["status"] in ("ready", "error", "cancelled"):
-                return 200, state
-            time.sleep(0.1)
-        return 200, state
+    def _manifest(self, manifest_url):
+        """模拟快捷指令取目录清单。"""
+        resp = requests.get(manifest_url, timeout=10)
+        self.assertEqual(resp.status_code, 200, f"清单取不到: {manifest_url}")
+        return resp.json()
+
+    def _download_folder(self, manifest):
+        """按清单逐文件下载，返回 {相对路径: 字节}（这层结构就是目录层级）。"""
+        got = {}
+        for entry in manifest["entries"]:
+            resp, data = self._download(entry["url"])
+            self.assertEqual(resp.status_code, 200, entry["path"])
+            got[entry["path"]] = data
+        return got
 
     def _download(self, url, chunk_size=65536, max_bytes=None):
         resp = requests.get(url, timeout=60, stream=True)
@@ -194,9 +191,7 @@ class TestFolderRoundTrip(_SmokeCase):
         (self.folder / "子目录").mkdir(parents=True)
         (self.folder / "讲义.txt").write_text("第一章", encoding="utf-8")
         (self.folder / "子目录" / "作业.txt").write_text("第一题", encoding="utf-8")
-        self.file_server.register_folder(
-            "d1", str(self.folder), "课程资料.zip", size=64,
-        )
+        self.file_server.register_folder("d1", str(self.folder), size=64)
 
     def test_folder_end_to_end(self):
         entries = self.file_server.share_entries()
@@ -207,25 +202,24 @@ class TestFolderRoundTrip(_SmokeCase):
         self.assertEqual(len(payload["files"]), 1)
         entry = payload["files"][0]
         self.assertEqual(entry["kind"], "folder")
-        self.assertEqual(entry["name"], "课程资料.zip")
-        self.assertEqual(payload["prepare_url"], entry["prepare_url"])
+        self.assertEqual(entry["name"], "课程资料")
+        self.assertEqual(payload["manifest_url"], entry["manifest_url"])
 
-        # 下载地址必须指向真实在监听的端口，否则手机端就是在打空气
-        parsed = urlparse(entry["download_url"])
+        # 清单地址必须指向真实在监听的端口，否则手机端就是在打空气
+        parsed = urlparse(entry["manifest_url"])
         self.assertEqual(parsed.hostname, "127.0.0.1")
         self.assertEqual(parsed.port, self.file_server.port)
 
-        status, state = self._wait_archive_ready(entry["prepare_url"])
-        self.assertEqual(status, 200)
-        self.assertEqual(state["status"], "ready", f"打包没完成: {state}")
+        manifest = self._manifest(entry["manifest_url"])
+        self.assertEqual(manifest["status"], "ok")
+        self.assertEqual(manifest["root"], "课程资料")
+        self.assertEqual(manifest["count"], 2)
+        self.assertIn("子目录/", manifest["dirs"])
 
-        resp, data = self._download(entry["download_url"])
-        self.assertEqual(resp.status_code, 200)
-        self.assertGreater(len(data), 0)
-
-        names = zipfile.ZipFile(BytesIO(data)).namelist()
-        self.assertTrue(any(n.endswith("讲义.txt") for n in names), names)
-        self.assertTrue(any(n.endswith("作业.txt") for n in names), names)
+        files = self._download_folder(manifest)
+        # 相对路径就是目录层级：子目录里的文件必须带前缀，不能和根目录混在一起
+        self.assertEqual(files["讲义.txt"].decode("utf-8"), "第一章")
+        self.assertEqual(files["子目录/作业.txt"].decode("utf-8"), "第一题")
 
         # 一次性消费：再拉一次只剩文本分支
         self.assertEqual(self._request_file().json()["type"], "text")
@@ -238,7 +232,7 @@ class TestFolderRoundTrip(_SmokeCase):
         payload = self._request_file().json() if self._push(
             self.file_server.share_entries()).ok else None
         self.assertIsNotNone(payload)
-        # 混合场景不能报成 folder，否则手机端会拿顶层 prepare_url 去轮询文件
+        # 混合场景不能报成 folder：顶层只有一份清单地址，混进普通文件会漏掉
         self.assertEqual(payload["type"], "file_list")
         kinds = {item["file_id"]: item["kind"] for item in payload["files"]}
         self.assertEqual(kinds, {"d1": "folder", "f1": "file"})
@@ -248,11 +242,10 @@ class TestFolderRoundTrip(_SmokeCase):
         _, raw = self._download(by_id["f1"]["download_url"])
         self.assertEqual(raw.decode("utf-8"), "记得交作业")
 
-        # 目录先等打包
-        _, state = self._wait_archive_ready(by_id["d1"]["prepare_url"])
-        self.assertEqual(state["status"], "ready")
-        _, zipped = self._download(by_id["d1"]["download_url"])
-        self.assertTrue(zipfile.ZipFile(BytesIO(zipped)).namelist())
+        # 目录按清单逐文件取
+        manifest = self._manifest(by_id["d1"]["manifest_url"])
+        self.assertEqual(manifest["count"], 2)
+        self.assertEqual(len(self._download_folder(manifest)), 2)
 
 
 class TestInterruptedDownloadRetry(_SmokeCase):
@@ -266,7 +259,7 @@ class TestInterruptedDownloadRetry(_SmokeCase):
         # 把内容整个写出去了，造不出真正的断流。
         for i in range(40):
             (self.folder / f"part{i}.txt").write_text("x" * 100_000, encoding="utf-8")
-        self.file_server.register_folder("d1", str(self.folder), "大目录.zip", size=4_000_000)
+        self.file_server.register_folder("d1", str(self.folder), size=4_000_000)
 
     def test_keep_for_retry_reannounces(self):
         client = SyncClient({
@@ -310,19 +303,19 @@ class TestInterruptedDownloadRetry(_SmokeCase):
         self.assertNotEqual(payload["type"], "text", "重登记之后仍然拉不到文件")
         self.assertEqual(payload["files"][0]["file_id"], "d1")
 
-        # 重试这次要能真下完
-        _, state = self._wait_archive_ready(payload["files"][0]["prepare_url"])
-        self.assertEqual(state["status"], "ready")
-        _, data = self._download(payload["files"][0]["download_url"])
-        names = zipfile.ZipFile(BytesIO(data)).namelist()
-        self.assertEqual(len([n for n in names if n.endswith(".txt")]), 40, names)
+        # 重试这次要能真下完（清单还在，逐文件全取到）
+        manifest = self._manifest(payload["files"][0]["manifest_url"])
+        self.assertEqual(manifest["count"], 40)
+        files = self._download_folder(manifest)
+        self.assertEqual(len(files), 40)
+        self.assertTrue(all(name.endswith(".txt") for name in files))
 
     def test_abrupt_client_close_keeps_share(self):
         """真断流：下到一半就掐，共享不能被当成「已下完」删掉。
 
-        这里刻意用**不可压缩的大文件**而不是目录：目录走 zip，40 个
-        `"x" * 100000` 压完只剩几十 KB，服务端一次 write 就全进 socket 缓冲，
-        客户端怎么断都断不出失败来（实测三次两次不触发）。
+        这里刻意用**单个大文件**而不是目录：目录现在是逐文件清单，单次响应
+        只有一个小文件，8MB 的整块响应才够大 —— 小响应在客户端 close 之前
+        就全进了 socket 缓冲，根本造不出失败（实测三次两次不触发）。
         """
         big = self.root / "big.bin"
         big.write_bytes(os.urandom(8 * 1024 * 1024))
@@ -383,90 +376,65 @@ class TestTextOnly(_SmokeCase):
 
 
 class TestShortcutArtifact(_SmokeCase):
-    """快捷指令交付物本身也要能通过冒烟：容器完好、时序自洽。"""
+    """快捷指令交付物本身也要能通过冒烟：容器完好、且不含已废弃的打包链路。"""
+
+    UNSIGNED = ROOT / "shortcuts" / "获取同步v5-unsigned.plist"
+    SIGNED = ROOT / "shortcuts" / "获取同步v5.shortcut"
+
+    def _actions(self):
+        import plistlib
+        if not self.UNSIGNED.exists():
+            self.skipTest("还没生成未签名 plist")
+        with open(self.UNSIGNED, "rb") as handle:
+            return plistlib.load(handle)["WFWorkflowActions"]
 
     def test_signed_bundle_is_valid(self):
-        path = ROOT / "shortcuts" / "获取同步v3.shortcut"
-        if not path.exists():
+        if not self.SIGNED.exists():
             self.skipTest("还没生成签名产物")
-        data = path.read_bytes()
+        data = self.SIGNED.read_bytes()
         self.assertGreater(len(data), 10_000)
         self.assertEqual(data[:4], b"AEA1", "不是 apple 归档容器")
         self.assertGreater(data.find(b"bvx2"), 0, "缺少 LZFSE 数据段")
 
-    def test_polling_budget_fits_share_ttl(self):
-        """轮询最长时间必须短于共享存活，否则「打包超时」永远走不到。"""
-        import plistlib
-        path = ROOT / "shortcuts" / "获取同步v3-unsigned.plist"
-        if not path.exists():
-            self.skipTest("还没生成未签名 plist")
-        with open(path, "rb") as handle:
-            actions = plistlib.load(handle)["WFWorkflowActions"]
+    def test_no_archive_or_polling_left(self):
+        """打包/解压/轮询已彻底移除：出现任何一个动作都说明退回了老设计。"""
+        actions = self._actions()
+        idents = [a["WFWorkflowActionIdentifier"] for a in actions]
+        for gone in ("is.workflow.actions.unzip",        # 解压必然摊平目录
+                     "is.workflow.actions.delay",         # 只在打包轮询里用过
+                     "is.workflow.actions.repeat.count"):
+            self.assertNotIn(gone, idents, f"{gone} 不该再出现")
+        # 目录必须走清单：有取清单的下载动作，且引用的是 manifest_url
+        self.assertIn("manifest_url", str(actions), "没有引用 manifest_url")
 
-        repeats = [
-            int(a["WFWorkflowActionParameters"]["WFRepeatCount"])
-            for a in actions
-            if a["WFWorkflowActionIdentifier"] == "is.workflow.actions.repeat.count"
-            and a["WFWorkflowActionParameters"].get("WFControlFlowMode") == 0
-        ]
-        # 外层先出现（40 轮 × 内层 15 次 × 2 秒）
-        self.assertEqual(repeats, [40, 15], f"轮询结构变了: {repeats}")
+    def test_every_save_has_input_folder_and_subpath(self):
+        """「存储到文件」缺任何一项都会静默出问题。
 
-        delays = [
-            float(a["WFWorkflowActionParameters"]["WFDelayTime"])
-            for a in actions
-            if a["WFWorkflowActionIdentifier"] == "is.workflow.actions.delay"
-        ]
-        self.assertEqual(set(delays), {2.0})
-
-        budget = repeats[0] * repeats[1] * delays[0]     # 40×15×2 = 1200s
-        ttl = file_latest_mod.get_file_share_ttl_seconds()
-        self.assertLess(budget, ttl, f"轮询 {budget}s 超过共享存活 {ttl}s")
-        self.assertGreater(ttl - budget, 300, "给下载留的余量不足 5 分钟")
-
-
-    def test_no_action_runs_without_its_input(self):
-        """每个动作都必须真的拿到输入 —— 这一类失败是**静默**的。
-
-        「解压缩」的归档是具名参数 `WFArchive`；空着不会报错，只会拿到空输入、
-        什么都不解，然后下游「存储到文件」也跟着拿到空输入、同样不写盘。整条链
-        全程无异常，通知还照样弹「已保存」。真机上就这样丢过一次数据，这里用
-        静态检查把它钉死。
+        没有输入 → 不写盘还不报错；没有目标目录 → 写到默认位置；没有子路径
+        （或子路径不以 "/" 结尾）→ iOS 会把路径当文件名，目录层级全平。
         """
-        import plistlib
-        path = ROOT / "shortcuts" / "获取同步v3-unsigned.plist"
-        if not path.exists():
-            self.skipTest("还没生成未签名 plist")
-        with open(path, "rb") as handle:
-            actions = plistlib.load(handle)["WFWorkflowActions"]
-
-        for i, action in enumerate(actions):
-            ident = action["WFWorkflowActionIdentifier"]
-            params = action.get("WFWorkflowActionParameters") or {}
-
-            if ident == "is.workflow.actions.unzip":
-                self.assertIn("WFArchive", params,
-                              f"[{i}] 解压缩没有 WFArchive，会拿到空输入")
-                self.assertTrue(params["WFArchive"].get("Value"),
-                              f"[{i}] WFArchive 是空的")
-
-            if ident == "is.workflow.actions.documentpicker.save":
-                self.assertTrue((params.get("WFInput") or {}).get("Value"),
-                                f"[{i}] 存储到文件没有输入，会静默不写盘")
-                self.assertTrue(params.get("WFFolder"),
-                                f"[{i}] 存储到文件没指定目标目录")
-
-        # 解压缩的归档必须指向它前面那次下载，而不是更早/更晚的某个动作
-        downloads = [i for i, a in enumerate(actions)
-                     if a["WFWorkflowActionIdentifier"] == "is.workflow.actions.downloadurl"]
-        for i, action in enumerate(actions):
-            if action["WFWorkflowActionIdentifier"] != "is.workflow.actions.unzip":
+        for i, action in enumerate(self._actions()):
+            if action["WFWorkflowActionIdentifier"] != "is.workflow.actions.documentpicker.save":
                 continue
-            archive_uuid = action["WFWorkflowActionParameters"]["WFArchive"]["Value"]["OutputUUID"]
-            source = [k for k in downloads
-                      if (actions[k].get("WFWorkflowActionParameters") or {}).get("UUID") == archive_uuid]
-            self.assertTrue(source, f"[{i}] 解压缩的归档不来自任何下载动作")
-            self.assertLess(source[0], i, f"[{i}] 解压缩引用了后面的动作")
+            params = action.get("WFWorkflowActionParameters") or {}
+            self.assertTrue((params.get("WFInput") or {}).get("Value"),
+                            f"[{i}] 存储到文件没有输入，会静默不写盘")
+            self.assertTrue(params.get("WFFolder"),
+                            f"[{i}] 存储到文件没指定目标目录")
+
+        # 目录分支那个「存储到文件」必须带子路径，且拼进去的字符串以 "/" 收尾
+        subpaths = [
+            (a["WFWorkflowActionParameters"] or {}).get("WFFileDestinationPath")
+            for a in self._actions()
+            if a["WFWorkflowActionIdentifier"] == "is.workflow.actions.documentpicker.save"
+        ]
+        subpaths = [s for s in subpaths if s]
+        self.assertTrue(subpaths, "目录分支缺少子路径，写文件会全平在下载根下")
+        for token in subpaths:
+            text = token["Value"]["string"]
+            self.assertIn("/", text)
+            self.assertIn("dir", token["Value"]["attachmentsByRange"].__str__()
+                          + str(text), "子路径没有接上清单里的 dir")
 
 if __name__ == "__main__":
     unittest.main()

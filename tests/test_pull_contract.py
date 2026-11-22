@@ -18,7 +18,6 @@ import unittest
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-from client import file_server as file_server_mod
 from client.file_server import FileServer
 from client.main_menu import SyncClient
 from server.api import flask_app
@@ -177,25 +176,24 @@ class TestFileSyncPortFallback(_FlaskCase):
 
 
 class TestFolderPullContract(_FlaskCase):
-    """目录共享必须同时给出两条路：打包（prepare）与逐文件（manifest）。"""
+    """目录共享只给一条路：manifest 清单（打包/解压已彻底移除）。"""
 
     def _folder_record(self):
-        return {"file_id": "d1", "path": "D:/Downloads/课程", "name": "课程.zip",
+        return {"file_id": "d1", "path": "D:/Downloads/课程", "name": "课程",
                 "size": 999, "kind": "folder"}
 
-    def test_single_folder_has_both_urls(self):
+    def test_single_folder_carries_manifest_url(self):
         self._push([self._folder_record()], port=9100)
         payload = self._pull()
         self.assertEqual(payload["type"], "folder")
-        self.assertEqual(
-            payload["files"][0]["prepare_url"], "http://127.0.0.1:9100/prepare/d1")
-        # 逐文件模式靠这个地址取清单；缺了它，快捷指令只能回退到压缩包，
-        # 而压缩包在 iOS 上解压必然摊平目录结构。
         self.assertEqual(
             payload["files"][0]["manifest_url"],
             "http://127.0.0.1:9100/manifest/d1")
         self.assertEqual(payload["manifest_url"],
                          "http://127.0.0.1:9100/manifest/d1")
+        # 打包接口已删除，别再下发给客户端
+        self.assertNotIn("prepare_url", payload["files"][0])
+        self.assertNotIn("prepare_url", payload)
 
     def test_mixed_list_keeps_manifest_url_per_entry(self):
         self._push([self._folder_record(),
@@ -217,11 +215,6 @@ class TestShareReannounce(unittest.TestCase):
         self.temp_dir = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp_dir.cleanup)
         self.root = Path(self.temp_dir.name)
-        patcher = patch.object(
-            file_server_mod, "FOLDER_SHARE_TEMP_DIR", self.root / "share"
-        )
-        patcher.start()
-        self.addCleanup(patcher.stop)
         self.folder = self.root / "课程"
         self.folder.mkdir()
         (self.folder / "a.txt").write_text("x", encoding="utf-8")
@@ -234,14 +227,14 @@ class TestShareReannounce(unittest.TestCase):
     def test_share_entries_cover_file_and_folder(self):
         server = self._server()
         server.register_file("f1", str(self.file_path))
-        server.register_folder("d1", str(self.folder), "课程.zip", size=123)
+        server.register_folder("d1", str(self.folder), size=123)
 
         entries = {item["file_id"]: item for item in server.share_entries()}
         self.assertEqual(entries["f1"]["kind"], "file")
         self.assertEqual(entries["f1"]["name"], "note.txt")
         self.assertEqual(entries["f1"]["size"], 5)
         self.assertEqual(entries["d1"]["kind"], "folder")
-        self.assertEqual(entries["d1"]["name"], "课程.zip")
+        self.assertEqual(entries["d1"]["name"], "课程")
         self.assertEqual(entries["d1"]["size"], 123)
         # 目录上报原始路径，不能把临时压缩包路径泄给服务端
         self.assertEqual(entries["d1"]["path"], str(self.folder))
