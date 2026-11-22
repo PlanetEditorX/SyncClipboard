@@ -341,6 +341,15 @@ class FileServer:
                     # dir 补上根目录名：接收端拿到就能直接当子路径用，
                     # 多个目录混在一起也不会撞车。
                     entry["dir"] = prefix + entry["dir"]
+                    # prefix 是同一路径**去掉末尾斜杠**的版本，专供快捷指令
+                    # 拼「prefix + "/" + 文件名」：斜杠必须是字面字符，不能
+                    # 指望变量值自带的尾斜杠 —— iOS 的「存储到文件」会对子
+                    # 路径做规范化，变量结尾的 "/" 会被吃掉，于是 `目录名/`
+                    # 退化成 `目录名` 并被当成**文件名**，一阵覆盖之后「下载」
+                    # 里只剩一个叫「目录名」的无扩展名文件（v6 真机现象）。
+                    # 根目录下的文件原来 dir 为空串，这里靠根名兜住，保证
+                    # prefix 永远非空，拼出来不会出现前导 "/"。
+                    entry["prefix"] = entry["dir"].rstrip("/")
                     entry["url"] = "{}/file/{}/{}".format(
                         base, file_id, quote(entry["path"], safe="/"))
                     entries.append(entry)

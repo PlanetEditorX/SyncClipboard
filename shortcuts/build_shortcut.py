@@ -15,9 +15,15 @@
    Item 是空的（v5 真机现象：内层取 url 得空，报「未指定 URL」）。所以合并
    清单在服务端就把「目录 → 文件」摊平了，快捷指令里只有并列的两段单层循环：
    一段处理普通文件，一段处理目录清单。
-5. 调试开关：配置词典里的「调试」= 开/关。开时每个步骤弹一条静音通知
-   （进入通知中心可回看），关时全程静默，只留结束提示。
+5. 调试开关：配置词典里的「调试」= 开/关。开时**不弹任何中间通知**，而是
+   把每一步写进「下载」里的 `SyncClipboard-调试.log`（固定名，每次覆盖），
+   跑完把那个文件发给电脑端看即可。关时全程静默，只留结尾一条汇总通知。
 6. 目录传输不需要等待：清单请求即取，没有打包轮询。
+7. 子路径必须「字面斜杠 + 不带斜杠的 prefix」拼接。iOS 的「存储到文件」
+   会对子路径做规范化，变量值结尾的 "/" 会被吃掉：`目录名/` 退化成一个叫
+   `目录名` 的文件名，配合覆盖开关就变成「只剩一个叫目录名的文件」（v6
+   真机现象）。所以服务端多给一个去掉尾斜杠的 `prefix`，斜杠由字面文本
+   提供，不依赖变量值的末尾字符。
 
 用法
 ----
@@ -31,7 +37,7 @@ import uuid
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 REF = os.path.join(HERE, '获取同步-unsigned.plist')          # 仅借用顶层元数据
-OUT = os.path.join(HERE, '获取同步v6-unsigned.plist')
+OUT = os.path.join(HERE, '获取同步v7-unsigned.plist')
 
 OBJ = '\ufffc'          # 文本里变量的占位符
 
@@ -232,14 +238,20 @@ class SC:
         self._add('is.workflow.actions.exit', {})
 
     # -- 文件 ------------------------------------------------------------
-    def save_to_folder(self, subject, subpath=None):
+    def save_to_folder(self, subject, dest=None):
         """存储到文件。
 
-        subpath 是「子路径」（parts 列表），用来在目标文件夹里重建目录层级：
-        iOS 的实现是 `WFFileDestinationPath`，**必须以 "/" 结尾**才被当成
-        目录，否则它会拿这个字符串去改文件名 —— 这也是包内层级丢失后一个
-        常见的坑。`WFDestinationPath` 是旧版键名，一并写上去，多写的键
-        iOS 会忽略，少写则整段子路径都失效。
+        dest 是「完整目标路径」的 parts 列表，**含文件名**，例如
+        `[根子路径, 目录名, '/', 子目录, '/', 文件名]`。
+
+        这个参数（`WFFileDestinationPath`，UI 上叫 Subpath）的语义是**路径
+        本身**，不是「目录前缀」：末尾带 "/" 时最后一段才被当成目录，否则整
+        串直接被拿去当文件名。而且 iOS 会先对路径做一遍规范化 —— 变量值末尾
+        的 "/" 靠不住，实测会丢，于是 `目录名/` 变成 `目录名` 并成为文件名
+        （v6 真机：每个文件都用目录名当名字、互相覆盖，最后只剩一个）。
+        所以斜杠一律用**字面文本**给出，绝不依赖变量内容的末尾字符。
+
+        `WFDestinationPath` 是旧版键名，一并写上去；多写的键 iOS 会忽略。
         """
         uid = U()
         p = {
@@ -248,9 +260,9 @@ class SC:
             'WFFolder': FOLDER_DOWNLOAD,
             'WFInput': att(subject),
         }
-        if subpath is not None:
-            p['WFFileDestinationPath'] = tok(subpath)
-            p['WFDestinationPath'] = tok(subpath)
+        if dest is not None:
+            p['WFFileDestinationPath'] = tok(dest)
+            p['WFDestinationPath'] = tok(dest)
             # 同一个文件重复同步时覆盖，否则 iOS 会存成「a 1.txt」
             p['WFSaveFileOverwrite'] = True
             p['WFOverwriteFile'] = True
@@ -326,10 +338,10 @@ PROTO, HOST, PORT, KEY = '协议', '主机', '端口', '密钥'
 ROOT_SUB = '根子路径'    # 落盘子路径的前缀（见 cfg 里的说明）
 REPEAT_ITEM = 'Repeat Item'
 
-b.comment('SyncClipboard 拉取 v6（逐文件保目录结构）\n'
+b.comment('SyncClipboard 拉取 v7（逐文件保目录结构）\n'
           '改配置：编辑下面「配置」词典里的协议/主机/端口/密钥/调试\n'
           '目录按清单逐个文件取，目录结构与电脑上完全一致（不再打包/解压）\n'
-          '调试 = 开 时每个步骤弹一条静音通知，跑完可在通知中心回看\n'
+          '调试 = 开 时把过程写进「下载/SyncClipboard-调试.log」，不弹窗\n'
           '文件统一存入「下载」，需要换目录请在「存储到文件」动作里重选')
 
 cfg = b.dictionary([
@@ -338,9 +350,9 @@ cfg = b.dictionary([
     (PORT, '8000'),
     (KEY, '123456'),
     (DEBUG, '开'),
-    # 落盘子路径的前缀。留空即「子路径相对所选文件夹（下载）」；万一你的
-    # iOS 把它当成存储根相对路径，文件会落到「下载/下载/项目名/…」，那时
-    # 把它填成「下载/」即可，不必重新生成快捷指令。
+    # 落盘路径的前缀。留空即「相对所选的『下载』文件夹」；万一你的 iOS 把
+    # 它当成存储根相对路径，文件会落到「下载/下载/项目名/…」，那时把它填成
+    # 「下载/」即可，不必重新生成快捷指令。
     (ROOT_SUB, ''),
 ], out_name='配置')
 
@@ -356,28 +368,54 @@ b.setvar('请求地址', act_out(b.text([var('服务器'), '/request_file']), '�
 b.comment('2. 设备来源（随请求带上，便于服务端区分设备）')
 b.setvar('来源', b.device_name())    # 只进 JSON body，不做 URL 编码
 
-def dbg(parts):
-    """调试输出：只有「配置.调试」= 开 时才弹通知。"""
+# ---- 运行日志 -------------------------------------------------------------
+#
+# 调试=开 时**不弹任何中间通知**，而是把每一步攒成一个文本，落进「下载」里的
+# 固定文件。跑完把 SyncClipboard-调试.log 发回来就能定位问题 —— 通知会消失
+# 在通知中心里，日志不会。
+LOG_FILE = 'SyncClipboard-调试.log'
+
+b.setvar('日志', act_out(b.text(['']), '文本'))
+
+
+def log(parts):
+    """往「日志」变量追加一行（只攒不写盘，写盘交给 log_flush）。"""
+    b.setvar('日志', b.text([var('日志'), *parts, '\n']))
+
+
+def log_flush():
+    """调试 = 开 时把整份日志覆盖写进「下载/SyncClipboard-调试.log」。
+
+    不用「追加到文件」：那个动作的路径是相对 iCloud 里 Shortcuts 文件夹的，
+    写不进本地「下载」。改用「存储到文件」的覆盖开关（文档里的正式参数），
+    重复写同一个文件只会留一份，不会堆出一串「日志 1/2/3」。
+    """
     g = b.if_(act_out(cfg, '配置', dkey(DEBUG)), IS, '开')
-    b.notify(parts)
+    b.save_to_folder(var('日志'), dest=[LOG_FILE])
     b.endif(g)
 
 
-def save_confirmed(subject, label, subpath=None):
-    """存盘并核对真的落了盘。
+def dbg(parts):
+    """记一行日志并立刻落盘（崩在下一步也能看到已发生的事）。"""
+    log(parts)
+    log_flush()
+
+
+def save_confirmed(subject, label_parts, dest=None):
+    """存盘并核对真的落了盘，结果只进日志。
 
     「存储到文件」拿到空输入时**不报错也不存盘**，直接在后面接一句「已保存」
-    就是自欺欺人 —— 之前那版正是这样：解压缩没拿到归档、输出为空，于是什么都
-    没写进「下载」，通知却显示成功。这里拿存盘动作自己的输出做判据（它有输出
-    就说明真写了文件），没有就明确报错，把问题暴露在用户面前而不是日志里。
+    就是自欺欺人。这里拿存盘动作自己的输出做判据（它有输出就说明真写了），
+    没有就在日志里写「保存失败」，不再弹窗打扰。
     """
-    saved = b.save_to_folder(subject, subpath=subpath)
+    saved = b.save_to_folder(subject, dest=dest)
     g_ok = b.if_(saved, 100)                # 有任何值 = 确实写入了
-    dbg(['   已保存 ', label])
+    log(['   OK 写入 ', *label_parts])
     b.else_(g_ok)
-    b.notify(['保存失败：', label, ' 没写进「下载」'])
+    log(['   !! 保存失败（动作输出为空，文件没落地）', *label_parts])
     b.endif(g_ok)
 
+dbg(['=== SyncClipboard 同步开始 ==='])
 dbg(['① 服务器 ', var('服务器'), ' ｜ 设备 ', var('来源')])
 
 # ---- 3 拉取 ---------------------------------------------------------------
@@ -426,11 +464,17 @@ g_has = b.if_(var('文件数量'), GT, number=0)
 g_each = b.repeat_each(var('文件列表'))
 item_kind = var(REPEAT_ITEM, dkey('kind'))
 g_is_file = b.if_(item_kind, IS, 'file')
-save_confirmed(b.get(var(REPEAT_ITEM, dkey('download_url'))),
-               var(REPEAT_ITEM, dkey('name')))
+f_url = var(REPEAT_ITEM, dkey('download_url'))
+f_name = var(REPEAT_ITEM, dkey('name'))
+log(['· 文件 ', f_name])
+# 普通文件没有子目录，dest 就是「根子路径 + 文件名」；根子路径留空时只剩
+# 文件名，所以这里不额外塞字面 "/"，避免拼出前导斜杠。
+save_confirmed(b.get(f_url), [f_name],
+               dest=[act_out(cfg, '配置', dkey(ROOT_SUB)), f_name])
 b.endif(g_is_file)
 b.end_repeat(g_each, each=True)
 
+log_flush()
 b.endif(g_has)
 
 # --- 目录：服务端已把所有目录合并成一张清单，这里同样只有一层循环 ---
@@ -460,21 +504,42 @@ g_has_files = b.if_(var('清单文件数'), GT, number=0)
 g_each_file = b.repeat_each(pick(listing, 'entries'))
 
 entry_dir = var(REPEAT_ITEM, dkey('dir'))
+entry_prefix = var(REPEAT_ITEM, dkey('prefix'))
 entry_name = var(REPEAT_ITEM, dkey('name'))
 entry_url = var(REPEAT_ITEM, dkey('url'))
-dbg(['   · ', entry_dir, entry_name])
+log(['· ', entry_name, ' ｜ dir=', entry_dir, ' ｜ prefix=', entry_prefix])
 
 g_has_url = b.if_(entry_url, 100)
-# 子路径直接用清单给的 dir：它已含「目录名/」前缀，且末尾带 "/" —— iOS 见到
-# 斜杠才当目录，否则会拿这串去改文件名。前面再挂配置里的「根子路径」。
-save_confirmed(b.get(entry_url), [entry_dir, entry_name],
-               subpath=[act_out(cfg, '配置', dkey(ROOT_SUB)), entry_dir])
+
+# ---- 核心：dest = 根子路径 + prefix + "/" + 文件名 ----
+#
+# prefix 是服务端给的**去掉末尾斜杠**的相对目录（含根目录名），斜杠由这里的
+# 字面 "/" 提供。不能反过来依赖 prefix 自带的尾斜杠 —— iOS 会对子路径做规范
+# 化，变量结尾的 "/" 会被吃掉，`目录名/` 于是变成文件名 `目录名`，所有文件
+# 互相覆盖，最后「下载」里只剩一个叫目录名的文件（v6 真机现象）。
+g_has_prefix = b.if_(entry_prefix, 100)
+save_confirmed(
+    b.get(entry_url), [entry_prefix, '/', entry_name],
+    dest=[act_out(cfg, '配置', dkey(ROOT_SUB)),
+          entry_prefix, '/', entry_name])
+
+b.else_(g_has_prefix)
+# 电脑端还是 1.12.5 及更早（清单里没有 prefix）：退回用 dir 拼。dir 末尾
+# 自带 "/"，多出来的那一个斜杠 iOS 会自己合并，层级仍然对。
+save_confirmed(
+    b.get(entry_url), [entry_dir, entry_name],
+    dest=[act_out(cfg, '配置', dkey(ROOT_SUB)),
+          entry_dir, '/', entry_name])
+b.endif(g_has_prefix)
+
 b.else_(g_has_url)
-b.notify(['跳过（清单条目没有下载地址）：', entry_name])
+log(['   跳过（清单条目没有下载地址）：', entry_name])
 b.endif(g_has_url)
 
+log_flush()          # 每处理完一个文件落一次盘，崩在下一个也不会丢记录
 b.end_repeat(g_each_file, each=True)
 
+dbg(['⑤ 同步结束：', var('清单文件数'), ' 个文件'])
 b.notify(['同步完成：', var('清单文件数'), ' 个文件已存入「下载」'])
 g_has_empty = b.if_(var('空目录数'), GT, number=0)
 b.notify([var('空目录数'), ' 个空目录没有文件可写，未能重建（其余结构已保留）'])
@@ -506,8 +571,9 @@ b.endif(g_kind)
 
 b.endif(g_text)
 
-b.comment('结束。若某个文件没出现，先看「调试」通知里 ② ③ 的输出，'
-          '再看服务端日志是否收到 /request_file')
+b.comment('结束。若某个文件没出现，把「下载/SyncClipboard-调试.log」发回去看：'
+          '里面逐条记了清单给到的 dir/prefix 和每次存盘的成功/失败。'
+          '（调试 = 关 时不写日志文件，只留结尾一条通知）')
 
 # ------------------------------------------------------------------ 输出
 

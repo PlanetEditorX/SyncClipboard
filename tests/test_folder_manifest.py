@@ -174,6 +174,25 @@ class BatchManifestTest(_FolderCase):
         for dir_value in dirs.values():
             self.assertTrue(dir_value.endswith("/"), dir_value)
 
+    def test_prefix_is_dir_without_trailing_slash(self):
+        """prefix 是 dir 去掉末尾斜杠的版本，供快捷指令拼「prefix/文件名」。
+
+        iOS 的「存储到文件」会对子路径做规范化，变量值结尾的 "/" 保不住 ——
+        v6 真机就是因此把 `目录名/` 当成文件名，所有文件互相覆盖，最后只剩
+        一个叫目录名的文件。所以斜杠必须由快捷指令里的字面文本提供。
+        """
+        body = self._two_servers().app.test_client().get(
+            "/manifest/batch?ids=d1,d2").get_json()
+        for entry in body["entries"]:
+            prefix = entry["prefix"]
+            self.assertTrue(prefix, entry)
+            self.assertFalse(prefix.endswith("/"), prefix)
+            self.assertEqual(prefix, entry["dir"].rstrip("/"), entry)
+            # prefix + "/" + name 必须正好是「根名/相对路径」
+            root = prefix.split("/")[0]
+            self.assertEqual(f"{prefix}/{entry['name']}",
+                             f"{root}/{entry['path']}", entry)
+
     def test_empty_dirs_keep_prefix(self):
         body = self._two_servers().app.test_client().get(
             "/manifest/batch?ids=d1").get_json()
