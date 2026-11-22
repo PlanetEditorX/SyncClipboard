@@ -421,7 +421,9 @@ class FileHandler:
             return
 
         # 多文件列表：直接存到配置的下载目录，不再先问「保存到哪」
-        if data.get("type") == "file_list":
+        # 服务端在只共享一个目录时返回 type=folder，结构与 file_list 完全一致，
+        # 这里一并处理；source 路由到同一个下载流程。
+        if data.get("type") in ("file_list", "folder"):
             files = data.get("files", [])
             if not files:
                 return

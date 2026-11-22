@@ -151,3 +151,48 @@ class TestAnnounceSaved(unittest.TestCase):
         self.assertEqual(announce.call_args.kwargs.get("count"), 1)
         # 不再询问保存位置：直接落到配置里的下载目录
         self.assertEqual(download.call_args.kwargs["save_path"], str(self.root))
+
+    def test_folder_type_is_handled_like_file_list(self):
+        """服务端只共享一个目录时返回 type=folder，接收端必须照样下载。"""
+        import gui.file_handler as fh
+
+        handler = FileHandler.__new__(FileHandler)
+        handler.config = type("C", (), {
+            "save_path": str(self.root),
+            "server_host": "127.0.0.1",
+            "server_port": 8000,
+            "key": "secret",
+            "local_name": "PC-A",
+        })()
+
+        response = type("R", (), {
+            "headers": {"Content-Type": "application/json"},
+            "status_code": 200,
+            "json": lambda self: {
+                "type": "folder",
+                "files": [{
+                    "name": "课程.zip",
+                    "kind": "folder",
+                    "download_url": "http://x/file/9",
+                }],
+            },
+            "close": lambda self: None,
+        })()
+
+        with patch.object(fh.requests, "post", return_value=response), \
+             patch.object(handler, "_download_from_url", return_value=True) as download, \
+             patch("gui.file_handler.post_to_main_thread") as post, \
+             patch("gui.file_handler.DownloadProgressDialog") as dialog_cls, \
+             patch.object(handler, "_announce_saved") as announce, \
+             patch.object(handler, "_clear_latest_file"), \
+             patch("gui.file_handler.threading.current_thread",
+                   return_value=object()):
+            dialog = dialog_cls.return_value
+            dialog.is_cancelled.return_value = False
+            post.return_value = dialog
+
+            handler.fetch_file_with_progress()
+
+        download.assert_called_once()
+        self.assertEqual(download.call_args.kwargs["kind"], "folder")
+        announce.assert_called_once()

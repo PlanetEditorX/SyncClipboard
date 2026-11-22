@@ -1135,15 +1135,20 @@ def request_file():
             src = info.get("source")
             # 必须有 ip/port/file_id 才能构建下载地址
             if file_id and ip and port:
-                download_url = f"http://{ip}:{port}/file/{file_id}"
-                file_list.append({
+                kind = info.get("kind", "file")
+                entry = {
                     "file_id": file_id,
                     "name": name,
                     "size": size,
                     "source": src,
-                    "kind": info.get("kind", "file"),
-                    "download_url": download_url
-                })
+                    "kind": kind,
+                    "download_url": f"http://{ip}:{port}/file/{file_id}",
+                }
+                if kind == "folder":
+                    # 目录由发送端按需打包。prepare 地址一并给出，手机端（含 iOS
+                    # 快捷指令）不必自己拼 URL 就能「先等打包完成再下载」。
+                    entry["prepare_url"] = f"http://{ip}:{port}/prepare/{file_id}"
+                file_list.append(entry)
             else:
                 logging.warning(f"跳过无效文件记录: {info}")
 
@@ -1151,11 +1156,18 @@ def request_file():
         latest_file.clear()
 
         if file_list:
-            return jsonify({
+            # 只共享了一个目录时用 type=folder：手机端（含 iOS 快捷指令）据此走
+            # 「先等发送端打包完成再下载」的分支，避免直接 GET 大目录读超时。
+            # 单个/多个普通文件仍统一返回 file_list，老客户端无需改动。
+            is_single_folder = len(file_list) == 1 and file_list[0].get("kind") == "folder"
+            payload = {
                 "status": "ok",
-                "type": "file_list",
-                "files": file_list
-            }), 200
+                "type": "folder" if is_single_folder else "file_list",
+                "files": file_list,
+            }
+            if is_single_folder:
+                payload["prepare_url"] = file_list[0]["prepare_url"]
+            return jsonify(payload), 200
         # 如果列表为空（所有记录均无效），继续执行文本逻辑
 
     # 2. 无文件时，执行原有的文本拉取逻辑
