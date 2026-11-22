@@ -1067,6 +1067,7 @@ def file_sync():
         path = file_info.get("path")
         name = file_info.get("name")
         size = file_info.get("size", 0)
+        kind = file_info.get("kind", "file")
 
         if not file_id or not name or not path:
             errors.append(f"{name or '未知文件'} 参数不完整")
@@ -1081,7 +1082,8 @@ def file_sync():
                 source=source,
                 ip=client_ip,
                 port=port,
-                save=False
+                save=False,
+                kind=kind
             )
             success_count += 1
             logging.info(f"文件已记录: {name} ({size} bytes), 来源: {source}")
@@ -1139,6 +1141,7 @@ def request_file():
                     "name": name,
                     "size": size,
                     "source": src,
+                    "kind": info.get("kind", "file"),
                     "download_url": download_url
                 })
             else:

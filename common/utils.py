@@ -146,6 +146,52 @@ def copy_files_to_clipboard(file_paths: List[str]) -> bool:
         except:
             pass
 
+def reveal_in_explorer(path: str) -> bool:
+    """
+    在文件管理器中定位并选中 path（Windows 下为资源管理器）。
+    Python 与 Tk 都没有原生的「定位到文件」能力，只能交给系统外壳:
+    Windows 用 `explorer /select,<path>`，其他平台退化为打开所在目录。
+
+    参数:
+        path: 要定位的文件或目录；不存在时自动退化为打开其所在目录
+    返回:
+        bool: 已发起打开动作返回 True
+    """
+    if not path:
+        return False
+
+    target = os.path.abspath(path)
+    if not os.path.exists(target):
+        # 文件被移动/删除（例如临时压缩包已被清理）时退化为打开它的直接上级目录。
+        # 只退一层：再往上翻到磁盘根目录对用户没有意义。
+        folder = os.path.dirname(target)
+        if not folder or not os.path.isdir(folder):
+            logger.warning(f"定位失败，路径不存在: {target}")
+            return False
+        target = folder
+
+    try:
+        if sys.platform == "win32":
+            if os.path.isdir(target):
+                os.startfile(target)  # noqa: S606 —— 打开目录本身
+            else:
+                # 必须是单个参数「/select,<path>」，explorer 才能选中该文件
+                import subprocess
+
+                subprocess.Popen(f'explorer /select,"{target}"')
+            return True
+
+        import subprocess
+
+        opener = "open" if sys.platform == "darwin" else "xdg-open"
+        folder = target if os.path.isdir(target) else os.path.dirname(target)
+        subprocess.Popen([opener, folder])
+        return True
+    except Exception as e:
+        logger.error(f"打开所在目录失败: {target}, 错误: {e}")
+        return False
+
+
 def parse_filename_from_cd(content_disposition: Optional[str]) -> Optional[str]:
     """
     从 Content-Disposition 头中解析文件名。

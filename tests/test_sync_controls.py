@@ -199,7 +199,7 @@ class TestFolderSyncGates(_ClientFixture):
         mock_post.assert_not_called()
         self.assertFalse(self.share_dir.exists() and any(self.share_dir.iterdir()))
 
-    def test_large_folder_zipped_after_confirmation(self):
+    def test_large_folder_shared_after_confirmation(self):
         mock_post = self._mock_post()
         client = self._make_client()
         client.folder_zip_confirm_bytes = 1024
@@ -210,9 +210,11 @@ class TestFolderSyncGates(_ClientFixture):
         mock_post.assert_called_once()
         item = mock_post.call_args.kwargs["json"]["file_list"][0]
         self.assertEqual(item["name"], "ROM.zip")
-        self.assertTrue(Path(item["path"]).is_file())
+        self.assertEqual(item["kind"], "folder")
+        # 确认之后也只登记，压缩留到接收端来取时再做
+        self.assertEqual(item["path"], str(self.folder))
 
-    def test_small_folder_is_zipped_without_asking(self):
+    def test_small_folder_shared_without_asking(self):
         mock_post = self._mock_post()
         client = self._make_client()  # 默认 10GB，2048 字节远小于上限
 
@@ -223,6 +225,7 @@ class TestFolderSyncGates(_ClientFixture):
         mock_post.assert_called_once()
         item = mock_post.call_args.kwargs["json"]["file_list"][0]
         self.assertEqual(item["name"], "ROM.zip")
+        self.assertEqual(item["kind"], "folder")
 
 
 class TestFileShareTtl(unittest.TestCase):

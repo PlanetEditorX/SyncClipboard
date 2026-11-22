@@ -5,7 +5,6 @@ import uuid
 import time
 import json
 import logging
-import zipfile
 import requests
 import threading
 import pyperclip
@@ -15,7 +14,13 @@ import win32clipboard
 from pathlib import Path
 from datetime import datetime
 from common.utils import SAFE_POST
-from client.file_server import FOLDER_SHARE_TEMP_DIR
+# 仅为兼容既有测试/外部引用保留（打包目录现在由 FileServer 使用）
+from client.file_server import FOLDER_SHARE_TEMP_DIR  # noqa: F401
+from client.folder_archive import (
+    folder_display_name,
+    folder_size_bytes,
+    format_size,
+)
 from common.sync_modes import (
     MODE_BOTH,
     describe_mode,
@@ -27,9 +32,6 @@ from gui.main_window import DEFAULT_FOLDER_ZIP_CONFIRM_GB
 from server.core.text_tracker import TextTracker
 
 logger = logging.getLogger("client")
-
-# 压缩级别：1~9。文件夹里多是已压缩过的镜像/APK，用中等档位换取速度。
-FOLDER_ZIP_COMPRESS_LEVEL = 6
 
 
 def _as_bool(value, default):
@@ -45,28 +47,6 @@ def _as_float(value, default):
         return float(value)
     except (TypeError, ValueError):
         return float(default)
-
-
-def format_size(num_bytes):
-    """把字节数变成便于阅读的 GB/MB 文本。"""
-    size = float(num_bytes)
-    for unit in ("B", "KB", "MB", "GB", "TB"):
-        if size < 1024 or unit == "TB":
-            return f"{size:.0f} {unit}" if unit in ("B", "KB") else f"{size:.1f} {unit}"
-        size /= 1024
-    return f"{size:.1f} TB"
-
-
-def folder_size_bytes(folder_path):
-    """统计目录内所有文件的总字节数（读不到的文件按 0 计）。"""
-    total = 0
-    for root, _dirs, names in os.walk(folder_path):
-        for name in names:
-            try:
-                total += os.path.getsize(os.path.join(root, name))
-            except OSError:
-                continue
-    return total
 
 
 def confirm_large_folder(folder_name, size_text, limit_gb):
@@ -371,28 +351,32 @@ class SyncClient:
                 logger.warning(f"文件不存在，跳过: {sanitized}")
                 skipped.append(sanitized)
 
-        # 文件夹没有直接共享的能力，先打包成 zip（多个文件夹各自一个包）
-        entries = []  # [(本地路径, 展示名, 是否临时文件)]
+        # 目录不在这里压缩：只登记 + 报体积，等接收端真正来取时再由
+        # FileServer 按需打包（见 FileServer.register_folder）。
+        entries = []  # [(本地路径, 展示名, 类型, 字节数)]
         for path in files:
-            entries.append((path, os.path.basename(path), False))
+            try:
+                size = os.path.getsize(path)
+            except OSError as e:
+                logger.warning(f"读取文件大小失败，跳过: {path}, 错误: {e}")
+                continue
+            entries.append((path, os.path.basename(path), "file", size))
+
         folder_skipped = 0
         for folder in folders:
-            if not self._folder_ready_for_zip(folder):
+            ok, size = self._folder_ready_for_zip(folder)
+            if not ok:
                 folder_skipped += 1
                 continue
-            zip_path = self._zip_folder(folder)
-            if zip_path is None:
-                folder_skipped += 1
-                continue
-            folder_name = os.path.basename(os.path.normpath(folder)) or "folder"
-            entries.append((str(zip_path), f"{folder_name}.zip", True))
+            folder_name = folder_display_name(folder)
+            entries.append((folder, f"{folder_name}.zip", "folder", size))
 
         if not entries:
             # 整批都无效：不发请求，也不清空共享列表。
             # 服务端对空 file_list 一律返回 400，本机共享列表也没必要跟着清。
             logger.warning(
                 f"剪贴板中没有可共享的内容，本次不推送"
-                f"（跳过 {len(skipped)} 项，{folder_skipped} 个文件夹未打包）"
+                f"（跳过 {len(skipped)} 项，{folder_skipped} 个文件夹未共享）"
             )
             return
 
@@ -401,21 +385,19 @@ class SyncClient:
         if hasattr(self, 'file_server') and self.file_server:
             self.file_server.clear_files()
 
-        for path, name, is_temp in entries:
-            try:
-                size = os.path.getsize(path)
-            except OSError as e:
-                logger.warning(f"读取文件大小失败，跳过: {name}, 错误: {e}")
-                continue
+        for path, name, kind, size in entries:
             file_id = str(uuid.uuid4())
-            # 注册到 FileServer
             if hasattr(self, 'file_server') and self.file_server:
-                self.file_server.register_file(file_id, path, temporary=is_temp)
+                if kind == "folder":
+                    self.file_server.register_folder(file_id, path, name, size=size)
+                else:
+                    self.file_server.register_file(file_id, path)
             file_list.append({
                 "file_id": file_id,
                 "path": path,
                 "name": name,
-                "size": size
+                "size": size,
+                "kind": kind,
             })
 
         if not file_list:
@@ -453,10 +435,14 @@ class SyncClient:
                 self.file_server.unregister_file(item["file_id"])
 
     def _folder_ready_for_zip(self, folder_path):
-        """判断这个目录要不要打包上传：关闭 / 超限未确认都返回 False。"""
+        """判断这个目录要不要共享，并返回 (是否共享, 原始总字节数)。
+
+        这里只做体积统计（遍历元数据，不读文件内容）和超限确认；真正的压缩
+        挪到接收端来取的时候，避免本地复制大目录却根本不传输也要压一遍。
+        """
         if not self.folder_sync_enabled:
             logger.warning(f"目录同步已关闭，跳过: {folder_path}")
-            return False
+            return False, 0
 
         size = folder_size_bytes(folder_path)
         size_text = format_size(size)
@@ -464,7 +450,7 @@ class SyncClient:
         limit_gb = limit_bytes / 1024 ** 3
 
         if limit_bytes > 0 and size > limit_bytes:
-            folder_name = os.path.basename(os.path.normpath(folder_path)) or "文件夹"
+            folder_name = folder_display_name(folder_path)
             logger.info(
                 f"目录 {folder_name} 体积 {size_text}，超过上限 {limit_gb:g} GB，等待用户确认"
             )
@@ -472,94 +458,13 @@ class SyncClient:
             logger.info(
                 f"目录超限确认结果: {'同意压缩传输' if approved else '用户取消，本次不传输'}"
             )
-            return approved
-
-        logger.info(f"目录 {folder_path} 体积 {size_text}，在限额内，开始自动打包")
-        return True
-
-    def _zip_folder(self, folder_path):
-        """把文件夹打包成临时 zip，返回压缩包路径；失败返回 None。
-
-        压缩包放在 FOLDER_SHARE_TEMP_DIR，并登记到 FileServer 的临时文件集合，
-        共享结束（对方下载完 / 取消共享 / 过期 / 退出）时由 FileServer 删除。
-        """
-        folder_path = os.path.normpath(folder_path)
-        # 复制整个盘符根目录时 basename 为空，退回用盘符当目录名
-        folder_name = (
-            os.path.basename(folder_path)
-            or os.path.splitdrive(folder_path)[0].rstrip(":\\/")
-            or "folder"
-        )
-        archive_name = f"{uuid.uuid4().hex[:12]}_{folder_name}.zip"
-
-        try:
-            FOLDER_SHARE_TEMP_DIR.mkdir(parents=True, exist_ok=True)
-            zip_path = FOLDER_SHARE_TEMP_DIR / archive_name
-        except OSError as e:
-            logger.error(f"无法创建压缩包目录: {FOLDER_SHARE_TEMP_DIR}, 错误: {e}")
-            return None
-
-        started = time.time()
-        last_report = started
-        file_count = 0
-        raw_size = 0
-        logger.info(f"开始打包文件夹: {folder_path}")
-
-        try:
-            with zipfile.ZipFile(
-                zip_path, "w", zipfile.ZIP_DEFLATED,
-                compresslevel=FOLDER_ZIP_COMPRESS_LEVEL,
-            ) as zf:
-                for root, _dirs, names in os.walk(folder_path):
-                    # 相对被复制目录自身计算，包内统一保留一层同名根目录
-                    rel = os.path.relpath(root, folder_path)
-                    arc_root = folder_name if rel == "." else os.path.join(folder_name, rel)
-                    # 目录条目一并写入，保留空目录结构
-                    try:
-                        zf.write(root, arc_root + os.sep)
-                    except OSError as e:
-                        logger.warning(f"打包跳过无法读取的目录: {root}, 错误: {e}")
-                    for name in names:
-                        full_path = os.path.join(root, name)
-                        arcname = os.path.join(arc_root, name)
-                        try:
-                            zf.write(full_path, arcname)
-                            file_count += 1
-                            raw_size += os.path.getsize(full_path)
-                        except OSError as e:
-                            # 单个文件被独占/权限不足不应让整包失败
-                            logger.warning(f"打包跳过无法读取的文件: {full_path}, 错误: {e}")
-                    if time.time() - last_report >= 3:
-                        logger.info(
-                            f"打包中: {folder_name} 已处理 {file_count} 个文件, "
-                            f"{raw_size / 1048576:.1f} MB"
-                        )
-                        last_report = time.time()
-        except Exception as e:
-            logger.error(f"文件夹打包失败: {folder_path}, 错误: {e}")
-            self._remove_temp_zip(zip_path)
-            return None
-
-        try:
-            zip_size = zip_path.stat().st_size
-        except OSError:
-            zip_size = 0
+            return approved, size
 
         logger.info(
-            f"打包完成: {folder_name}.zip, {file_count} 个文件, "
-            f"{raw_size / 1048576:.1f} MB -> {zip_size / 1048576:.1f} MB, "
-            f"耗时 {time.time() - started:.1f}s"
+            f"目录 {folder_path} 体积 {size_text}，在限额内，已登记共享"
+            f"（等接收端来取时再打包）"
         )
-        return zip_path
-
-    def _remove_temp_zip(self, zip_path):
-        """删除打包失败时残留的压缩包。"""
-        try:
-            if os.path.isfile(zip_path):
-                os.remove(zip_path)
-                logger.info(f"已清理未完成的压缩包: {zip_path}")
-        except OSError as e:
-            logger.warning(f"清理压缩包失败: {zip_path}, 错误: {e}")
+        return True, size
 
     def _pull_loop(self):
         while self.running:

@@ -1,3 +1,4 @@
+import time
 import tempfile
 import unittest
 import zipfile
@@ -5,6 +6,7 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 from client import file_server as file_server_mod
+from client import folder_archive as folder_archive_mod
 from client import main_menu as main_menu_mod
 from client.file_server import FileServer
 from client.main_menu import SyncClient
@@ -97,8 +99,8 @@ class TestPushLatestFileInvalidPaths(_TempDirMixin):
         self.assertEqual(self.file_server.shared_files, {})
 
 
-class TestFolderZipShare(_TempDirMixin):
-    """文件夹 → 临时 zip → 共享 → 共享结束删除压缩包。"""
+class TestFolderShareLazyPack(_TempDirMixin):
+    """文件夹共享：复制时只登记，接收端来取（prepare / GET）时才打包。"""
 
     def setUp(self):
         super().setUp()
@@ -126,22 +128,31 @@ class TestFolderZipShare(_TempDirMixin):
         mock_post.return_value = MagicMock(status_code=status_code, text=text)
         return mock_post
 
-    def test_folder_is_zipped_then_shared(self):
-        mock_post = self._mock_post()
-
+    def _push_folder(self, mock_post):
         self.sync_client._push_latest_file([str(self.folder)])
+        return mock_post.call_args.kwargs["json"]["file_list"][0]
 
-        payload = mock_post.call_args.kwargs["json"]
-        self.assertEqual(len(payload["file_list"]), 1)
-        item = payload["file_list"][0]
+    def test_folder_registered_without_packing(self):
+        mock_post = self._mock_post()
+        item = self._push_folder(mock_post)
+
         self.assertEqual(item["name"], "magisk.zip")
+        self.assertEqual(item["kind"], "folder")
+        # 共享的是目录本身，不是临时压缩包
+        self.assertEqual(item["path"], str(self.folder))
+        self.assertEqual(self.file_server.shared_files[item["file_id"]], str(self.folder))
 
-        zip_path = Path(item["path"])
+        # 关键：复制时不应在磁盘上留下任何压缩包
+        self.assertEqual(list(self.share_dir.glob("*.zip")), [])
+        self.assertEqual(self.file_server._temp_files, set())
+
+    def test_prepare_packs_folder(self):
+        mock_post = self._mock_post()
+        item = self._push_folder(mock_post)
+
+        zip_path = Path(self.file_server._ensure_archive(item["file_id"]))
         self.assertTrue(zip_path.is_file())
         self.assertEqual(zip_path.parent, self.share_dir)
-        self.assertEqual(item["size"], zip_path.stat().st_size)
-        # 压缩包是临时产物，必须登记为 temporary，共享结束才会被删
-        self.assertIn(str(zip_path), self.file_server._temp_files)
 
         # 包内保留文件夹名作为根目录，解压后不会散落成一堆文件
         with zipfile.ZipFile(zip_path) as zf:
@@ -149,39 +160,111 @@ class TestFolderZipShare(_TempDirMixin):
         self.assertIn("magisk/readme.md", names)
         self.assertIn("magisk/模块/a.txt", names)
 
-    def test_folder_and_files_share_together(self):
+        # 压缩包登记为临时文件，共享结束时要删
+        self.assertIn(str(zip_path), self.file_server._temp_files)
+
+    def test_prepare_endpoint_reports_progress(self):
         mock_post = self._mock_post()
-        loose = self.root / "note.txt"
-        loose.write_text("x", encoding="utf-8")
+        item = self._push_folder(mock_post)
+        self.file_server._ensure_archive(item["file_id"])
 
-        self.sync_client._push_latest_file([str(loose), str(self.folder)])
+        resp = self.file_server.app.test_client().get(f"/prepare/{item['file_id']}")
+        self.assertEqual(resp.status_code, 200)
+        body = resp.get_json()
+        self.assertEqual(body["status"], "ready")
+        self.assertEqual(body["name"], "magisk.zip")
 
-        payload = mock_post.call_args.kwargs["json"]
-        names = sorted(item["name"] for item in payload["file_list"])
-        self.assertEqual(names, ["magisk.zip", "note.txt"])
-
-    def test_download_deletes_temp_zip(self):
+    def test_prepare_endpoint_starts_background_pack(self):
+        """接收端先 prepare：发一次就该在后台开始打包，之后轮询到 ready。"""
         mock_post = self._mock_post()
-        self.sync_client._push_latest_file([str(self.folder)])
-        item = mock_post.call_args.kwargs["json"]["file_list"][0]
-        zip_path = Path(item["path"])
-        self.assertTrue(zip_path.exists())
+        item = self._push_folder(mock_post)
+        client = self.file_server.app.test_client()
+
+        first = client.get(f"/prepare/{item['file_id']}").get_json()
+        self.assertIn(first["status"], ("idle", "packing", "ready"))
+
+        deadline = time.time() + 5
+        status = first["status"]
+        while time.time() < deadline:
+            status = client.get(f"/prepare/{item['file_id']}").get_json()["status"]
+            if status == "ready":
+                break
+            time.sleep(0.05)
+        self.assertEqual(status, "ready")
+        self.assertTrue(Path(self.file_server._folder_shares[item["file_id"]]["path"]).is_file())
+
+    def test_prepare_unknown_file_id(self):
+        resp = self.file_server.app.test_client().get("/prepare/not-exist")
+        self.assertEqual(resp.status_code, 404)
+        self.assertEqual(resp.get_json()["status"], "unknown")
+
+    def test_download_packs_on_demand_then_deletes(self):
+        mock_post = self._mock_post()
+        item = self._push_folder(mock_post)
 
         response = self.file_server.app.test_client().get(f"/file/{item['file_id']}")
         self.assertEqual(response.status_code, 200)
-        expected = zip_path.read_bytes()
-        # 包装层必须原样转发内容（不能截断）
-        self.assertEqual(response.get_data(), expected)
+        content = response.get_data()
         response.close()
 
-        self.assertFalse(zip_path.exists(), "下载完成后临时压缩包应被删除")
+        # 内容必须是合法 zip（说明是现场打包出来的）
+        self.assertTrue(content.startswith(b"PK"))
+        self.assertEqual(list(self.share_dir.glob("*.zip")), [],
+                         "下载完成后临时压缩包应被删除")
         self.assertEqual(self.file_server.shared_files, {})
         self.assertEqual(self.file_server._temp_files, set())
 
-    def test_new_share_clears_previous_temp_zip(self):
+    def test_interrupted_download_keeps_zip_for_retry(self):
+        """传输到一半断开时不能删包：压缩包要留着给下一次重试。"""
         mock_post = self._mock_post()
-        self.sync_client._push_latest_file([str(self.folder)])
-        first_zip = Path(mock_post.call_args.kwargs["json"]["file_list"][0]["path"])
+        item = self._push_folder(mock_post)
+        zip_path = Path(self.file_server._ensure_archive(item["file_id"]))
+        expected = zip_path.read_bytes()
+
+        response = self.file_server.app.test_client().get(
+            f"/file/{item['file_id']}", buffered=False
+        )
+        self.assertEqual(response.status_code, 200)
+        iterator = iter(response.response)
+        next(iterator)          # 只取第一块就当作连接中断
+        response.close()
+
+        self.assertTrue(zip_path.exists(), "中断后压缩包应保留，方便对方重试")
+        self.assertIn(item["file_id"], self.file_server.shared_files)
+
+        # 重试成功之后才允许删除（第二次不会再打包）
+        retry = self.file_server.app.test_client().get(f"/file/{item['file_id']}")
+        self.assertEqual(retry.status_code, 200)
+        self.assertEqual(retry.get_data(), expected)
+        retry.close()
+        self.assertFalse(zip_path.exists(), "重试成功后才删除压缩包")
+
+    def test_concurrent_downloads_keep_file_until_last_finishes(self):
+        """两端同时取同一份目录：先下完的一端不能把压缩包删掉。"""
+        mock_post = self._mock_post()
+        item = self._push_folder(mock_post)
+        zip_path = Path(self.file_server._ensure_archive(item["file_id"]))
+        client = self.file_server.app.test_client()
+
+        first = client.get(f"/file/{item['file_id']}", buffered=False)
+        first_iter = iter(first.response)
+        next(first_iter)
+        second = client.get(f"/file/{item['file_id']}", buffered=False)
+
+        list(first_iter)          # 第一路取完
+        first.close()
+        self.assertTrue(zip_path.exists(), "另一路还在下载，压缩包不能被删")
+        self.assertIn(item["file_id"], self.file_server.shared_files)
+
+        list(iter(second.response))   # 第二路取完
+        second.close()
+        self.assertFalse(zip_path.exists(), "最后一路取完后才删除")
+
+    def test_new_share_discards_previous_archive(self):
+        mock_post = self._mock_post()
+        item = self._push_folder(mock_post)
+        first_zip = Path(self.file_server._ensure_archive(item["file_id"]))
+        self.assertTrue(first_zip.exists())
 
         other = self.root / "other"
         other.mkdir()
@@ -189,23 +272,21 @@ class TestFolderZipShare(_TempDirMixin):
         self.sync_client._push_latest_file([str(other)])
 
         self.assertFalse(first_zip.exists(), "换共享时上一批压缩包应被删除")
-        second_zip = Path(mock_post.call_args.kwargs["json"]["file_list"][0]["path"])
-        self.assertTrue(second_zip.exists())
-        self.assertNotEqual(first_zip, second_zip)
+        self.assertNotIn(item["file_id"], self.file_server._folder_shares)
 
-    def test_push_failure_removes_temp_zip(self):
+    def test_push_failure_clears_registration(self):
         self._mock_post(status_code=400, text="file_list 为空")
         with self.assertLogs("client", level="ERROR"):
             self.sync_client._push_latest_file([str(self.folder)])
 
-        self.assertEqual(list(self.share_dir.glob("*.zip")), [])
         self.assertEqual(self.file_server.shared_files, {})
+        self.assertEqual(self.file_server._folder_shares, {})
+        self.assertEqual(list(self.share_dir.glob("*.zip")), [])
 
-    def test_expired_share_deletes_temp_zip(self):
+    def test_expired_share_deletes_archive(self):
         mock_post = self._mock_post()
-        self.sync_client._push_latest_file([str(self.folder)])
-        item = mock_post.call_args.kwargs["json"]["file_list"][0]
-        zip_path = Path(item["path"])
+        item = self._push_folder(mock_post)
+        zip_path = Path(self.file_server._ensure_archive(item["file_id"]))
         registered_at = self.file_server.shared_file_registered_at[item["file_id"]]
 
         with patch.object(
@@ -216,11 +297,12 @@ class TestFolderZipShare(_TempDirMixin):
             self.assertIsNone(self.file_server.get_file_path(item["file_id"]))
 
         self.assertFalse(zip_path.exists(), "过期的共享应删除临时压缩包")
+        self.assertEqual(self.file_server._folder_shares, {})
 
-    def test_clear_files_deletes_temp_zip(self):
+    def test_clear_files_deletes_archive(self):
         mock_post = self._mock_post()
-        self.sync_client._push_latest_file([str(self.folder)])
-        zip_path = Path(mock_post.call_args.kwargs["json"]["file_list"][0]["path"])
+        item = self._push_folder(mock_post)
+        zip_path = Path(self.file_server._ensure_archive(item["file_id"]))
 
         self.file_server.clear_files()
 
@@ -235,19 +317,27 @@ class TestFolderZipShare(_TempDirMixin):
 
         self.assertFalse(stale.exists(), "启动时应清理上次残留的压缩包")
 
+    def test_cancel_during_pack_discards_archive(self):
+        """打包途中共享被撤销：停止压缩并清掉半成品。"""
+        mock_post = self._mock_post()
+        item = self._push_folder(mock_post)
+        self.file_server._folder_shares[item["file_id"]]["cancel"].set()
+
+        self.assertIsNone(self.file_server._ensure_archive(item["file_id"]))
+        self.assertEqual(list(self.share_dir.glob("*.zip")), [])
+
     def test_unreadable_file_does_not_break_archive(self):
         """单个文件读不了只跳过，不影响整包。"""
         mock_post = self._mock_post()
+        item = self._push_folder(mock_post)
 
         with patch.object(
-            main_menu_mod.zipfile.ZipFile, "write", side_effect=OSError("locked")
+            folder_archive_mod.zipfile.ZipFile, "write", side_effect=OSError("locked")
         ):
-            self.sync_client._push_latest_file([str(self.folder)])
+            zip_path = self.file_server._ensure_archive(item["file_id"])
 
-        mock_post.assert_called_once()
-        item = mock_post.call_args.kwargs["json"]["file_list"][0]
-        self.assertEqual(item["name"], "magisk.zip")
-        self.assertTrue(Path(item["path"]).is_file())
+        self.assertIsNotNone(zip_path)
+        self.assertTrue(Path(zip_path).is_file())
 
 
 class TestFilePushQueue(_TempDirMixin):

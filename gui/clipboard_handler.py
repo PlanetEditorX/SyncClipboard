@@ -161,7 +161,7 @@ class ClipboardHandler:
                     ).start()
 
                 show_notification_with_click(
-                    "检测到文件发布, 点击保存。",
+                    "检测到文件发布, 点击接收。",
                     msg,
                     download_callback
                 )

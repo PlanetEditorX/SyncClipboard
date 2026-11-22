@@ -97,9 +97,12 @@ class FileLatestTracker:
         with open(FILE_LATEST_FILE, "w", encoding="utf-8") as f:
             json.dump(self.data, f, indent=2, ensure_ascii=False)
 
-    def upsert_file(self, file_id, path, name, size, source, ip, port, save=True):
+    def upsert_file(self, file_id, path, name, size, source, ip, port, save=True, kind="file"):
         """
         插入或更新一条文件记录（根据 file_id 去重）
+
+        kind 用来区分普通文件和目录共享（kind="folder"）：目录的压缩包由发送端
+        在接收端来取时才生成，接收端需要先调 /prepare 触发打包。
         """
         if not file_id:
             raise ValueError("file_id cannot be empty")
@@ -116,6 +119,7 @@ class FileLatestTracker:
                     "source": source,
                     "ip": ip,
                     "port": port,
+                    "kind": kind,
                     "updated_at": now
                 })
                 if save:
@@ -131,6 +135,7 @@ class FileLatestTracker:
             "source": source,
             "ip": ip,
             "port": port,
+            "kind": kind,
             "updated_at": now
         })
         if save:

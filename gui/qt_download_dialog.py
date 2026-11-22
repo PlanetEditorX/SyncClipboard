@@ -87,10 +87,18 @@ class DownloadProgressDialog(QDialog):
         self.cancelled = False
         self._closed = False
         self.title_label.setText(f"正在下载：{filename}")
+        self.progress.setRange(0, 100)
         self.progress.setValue(0)
         self.detail_label.setText("准备下载…")
         self.show()
         self.raise_()
+
+    def set_busy(self, text="正在打包…"):
+        """不确定进度阶段（例如等发送端压缩目录）：进度条走循环动画。"""
+        if self._closed:
+            return
+        self.progress.setRange(0, 0)
+        self.detail_label.setText(text)
 
     def update_progress(self, percentage, downloaded_mb, total_mb):
         if self._closed:
