@@ -4,6 +4,18 @@
 图形库的校验函数，便于在无显示环境下单测。
 """
 
+from common.sync_modes import MODE_BOTH, VALID_MODES
+
+# 目录同步大小上限（GB）：超过就要先问用户
+DEFAULT_FOLDER_ZIP_CONFIRM_GB = 10
+MIN_FOLDER_ZIP_CONFIRM_GB = 0.1
+MAX_FOLDER_ZIP_CONFIRM_GB = 10240
+
+# 共享文件存活时间（分钟）
+DEFAULT_FILE_SHARE_TTL_MINUTES = 10
+MIN_FILE_SHARE_TTL_MINUTES = 1
+MAX_FILE_SHARE_TTL_MINUTES = 24 * 60
+
 
 def validate_client_settings(
     server_host,
@@ -12,6 +24,11 @@ def validate_client_settings(
     file_server_port,
     key,
     save_path,
+    text_sync_mode=MODE_BOTH,
+    file_sync_mode=MODE_BOTH,
+    folder_sync_enabled=True,
+    folder_zip_confirm_gb=DEFAULT_FOLDER_ZIP_CONFIRM_GB,
+    file_share_ttl_minutes=DEFAULT_FILE_SHARE_TTL_MINUTES,
 ):
     """校验并规范化客户端设置；不合法时抛 ValueError。"""
     host = str(server_host or "").strip()
@@ -46,4 +63,50 @@ def validate_client_settings(
         "file_server_port": file_port_value,
         "key": secret,
         "save_path": directory,
+        "text_sync_mode": _normalize_mode(text_sync_mode, "文字同步模式"),
+        "file_sync_mode": _normalize_mode(file_sync_mode, "文件同步模式"),
+        "folder_sync_enabled": _normalize_bool(folder_sync_enabled),
+        "folder_zip_confirm_gb": _normalize_confirm_gb(folder_zip_confirm_gb),
+        "file_share_ttl_minutes": _normalize_ttl(file_share_ttl_minutes),
     }
+
+
+def _normalize_mode(value, field):
+    mode = str(value or "").strip().lower()
+    if mode not in VALID_MODES:
+        raise ValueError(f"{field}只能是双向、只发送或只接收")
+    return mode
+
+
+def _normalize_bool(value):
+    if isinstance(value, str):
+        return value.strip().lower() not in {"false", "0", "no", "off", ""}
+    return bool(value)
+
+
+def _normalize_confirm_gb(value):
+    try:
+        size = float(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("目录大小上限必须是数字（GB）") from exc
+    if not MIN_FOLDER_ZIP_CONFIRM_GB <= size <= MAX_FOLDER_ZIP_CONFIRM_GB:
+        raise ValueError(
+            f"目录大小上限必须在 {MIN_FOLDER_ZIP_CONFIRM_GB:g} 到 "
+            f"{MAX_FOLDER_ZIP_CONFIRM_GB:g} GB 之间"
+        )
+    size = round(size, 1)
+    # 整数不写成 10.0，配置文件里更直观
+    return int(size) if float(size).is_integer() else size
+
+
+def _normalize_ttl(value):
+    try:
+        minutes = int(str(value).strip()) if isinstance(value, str) else int(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("共享存活时间必须是整数分钟") from exc
+    if not MIN_FILE_SHARE_TTL_MINUTES <= minutes <= MAX_FILE_SHARE_TTL_MINUTES:
+        raise ValueError(
+            f"共享存活时间必须在 {MIN_FILE_SHARE_TTL_MINUTES} 到 "
+            f"{MAX_FILE_SHARE_TTL_MINUTES} 分钟之间"
+        )
+    return minutes

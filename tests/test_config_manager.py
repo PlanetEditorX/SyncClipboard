@@ -38,7 +38,8 @@ class TestConfigManager(unittest.TestCase):
             {
                 "key": "123456",
                 "port": 8000,
-                "local_name": manager.local_name
+                "local_name": manager.local_name,
+                "file_share_ttl_minutes": 10
             },
             ANY,
             ensure_ascii=False,
@@ -69,7 +70,12 @@ class TestConfigManager(unittest.TestCase):
                 "key": "123456",
                 "local_name": manager.local_name,
                 "file_server_port": 8899,
-                "save_path": ANY
+                "save_path": ANY,
+                "text_sync_mode": "both",
+                "file_sync_mode": "both",
+                "folder_sync_enabled": True,
+                "folder_zip_confirm_gb": 10,
+                "file_share_ttl_minutes": 10
             },
             ANY,
             ensure_ascii=False,

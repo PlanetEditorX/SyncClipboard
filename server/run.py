@@ -4,6 +4,7 @@ import logging
 from pathlib import Path
 from logging.handlers import RotatingFileHandler
 from server.api.flask_app import app, init_services
+from server.core.file_latest import set_file_share_ttl
 from common.utils import BASE_DIR
 
 # 导入 ConfigManager
@@ -51,6 +52,10 @@ def main():
         logging.critical("加载服务器配置文件失败，服务退出")
         sys.exit(1)
 
+    # 共享文件存活时间：面板写入 server_config，这里生效
+    ttl_minutes = getattr(config_manager, "file_share_ttl_minutes", 10)
+    set_file_share_ttl(ttl_minutes * 60)
+
     # 更新 Flask app 配置
     app.config.update({
         "port": config_manager.server_port,
@@ -62,7 +67,7 @@ def main():
     # 初始化服务（传递配置）
     init_services(config_manager)
 
-    logging.info(f"配置加载完成 | 端口: {config_manager.server_port} | 保存路径: {config_manager.save_path}")
+    logging.info(f"配置加载完成 | 端口: {config_manager.server_port} | 保存路径: {config_manager.save_path} | 共享存活: {ttl_minutes} 分钟")
 
     app.run(
         host="0.0.0.0",

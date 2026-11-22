@@ -11,8 +11,9 @@ from urllib.parse import unquote
 from common.utils import BASE_DIR
 from common.notification import show_notification
 from server.core.file_latest import (
-    FILE_SHARE_TTL_SECONDS,
+    get_file_share_ttl_seconds,
     is_file_record_expired,
+    set_file_share_ttl,
 )
 from server.core.text_tracker import TextTracker
 from flask import Flask, jsonify, send_file, request
@@ -42,7 +43,10 @@ def get_files_latest_file():
 
 class FileServer:
     """客户端网络服务"""
-    def __init__(self, port=8899, center_host="127.0.0.1", center_port=8000, local_name="PC-01", key="123456", save_path="./uploads"):
+    def __init__(self, port=8899, center_host="127.0.0.1", center_port=8000, local_name="PC-01", key="123456", save_path="./uploads", share_ttl_seconds=None):
+        # 共享存活时间：传入则同步到全局，后续所有过期判断都用这个值
+        if share_ttl_seconds is not None:
+            set_file_share_ttl(share_ttl_seconds)
         self.port = port
         self.center_host = center_host
         self.center_port = center_port
@@ -317,12 +321,13 @@ class FileServer:
     def _purge_expired_files(self, now=None):
         """从本机文件服务中移除已超过共享期限的文件。"""
         current_time = time.time() if now is None else now
+        ttl_seconds = get_file_share_ttl_seconds()
         expired_temp_paths = []
         with self._shared_files_lock:
             expired_ids = [
                 file_id
                 for file_id, registered_at in self.shared_file_registered_at.items()
-                if current_time - registered_at >= FILE_SHARE_TTL_SECONDS
+                if current_time - registered_at >= ttl_seconds
             ]
             for file_id in expired_ids:
                 path = self.shared_files.pop(file_id, None)

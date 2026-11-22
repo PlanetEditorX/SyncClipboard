@@ -103,6 +103,38 @@ services:
 
 **多 Windows + 单 iOS 文字同步**：每台电脑使用不同的 `local_name` 即可，任意一端复制文字，其他端自动同步。
 
+### 同步控制（面板）
+
+主界面「同步控制」卡片可以精细控制两端行为，保存后客户端（必要时连同服务器）会自动重启生效：
+
+| 选项 | 说明 | 配置字段 |
+| --- | --- | --- |
+| 文字同步 | 双向 / 只发送 / 只接收。只接收时本机不会再上传剪贴板，只发送时不会写回远端文字 | `text_sync_mode` |
+| 文件同步 | 双向 / 只发送 / 只接收。只发送时不再提示远端发布的文件，只接收时不再共享本地文件 | `file_sync_mode` |
+| 自动打包同步复制的文件夹 | 关闭后复制文件夹不会被传输 | `folder_sync_enabled` |
+| 目录大小上限 | 默认 10 GB。小于上限的目录在复制后自动后台打包传输；超过上限会弹窗确认，确认后才打包 | `folder_zip_confirm_gb` |
+| 共享存活时间 | 默认 10 分钟。到期后自动取消共享、删除临时压缩包，服务器也会丢弃对应记录 | `file_share_ttl_minutes` |
+
+示例 `client_config.json`（旧版本缺少这些字段时会自动补默认值）：
+
+```json
+{
+    "server_host": "127.0.0.1",
+    "server_port": 8000,
+    "key": "123456",
+    "local_name": "PC-01",
+    "file_server_port": 8899,
+    "save_path": "D:/Downloads",
+    "text_sync_mode": "both",
+    "file_sync_mode": "both",
+    "folder_sync_enabled": true,
+    "folder_zip_confirm_gb": 10,
+    "file_share_ttl_minutes": 10
+}
+```
+
+`file_share_ttl_minutes` 会同时写入 `server_config.json`，Docker/Linux 部署可只改服务器配置里的这一项。
+
 ### 手机配置
 
 #### iOS端

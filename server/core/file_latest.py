@@ -6,7 +6,28 @@ from common.utils import BASE_DIR
 
 FILE_LATEST_FILE = BASE_DIR / "latest" / "file_latest.json"
 FILE_LATEST_FILE.parent.mkdir(parents=True, exist_ok=True)
-FILE_SHARE_TTL_SECONDS = 10 * 60
+
+# 共享文件默认存活 10 分钟；面板可改，运行时通过 set_file_share_ttl() 生效
+DEFAULT_FILE_SHARE_TTL_SECONDS = 10 * 60
+FILE_SHARE_TTL_SECONDS = DEFAULT_FILE_SHARE_TTL_SECONDS
+
+
+def set_file_share_ttl(seconds):
+    """运行时设置共享存活时间（秒）；非法值忽略并返回 False。"""
+    global FILE_SHARE_TTL_SECONDS
+    try:
+        value = float(seconds)
+    except (TypeError, ValueError):
+        return False
+    if value <= 0:
+        return False
+    FILE_SHARE_TTL_SECONDS = value
+    return True
+
+
+def get_file_share_ttl_seconds():
+    """当前生效的共享存活时间（秒）。"""
+    return FILE_SHARE_TTL_SECONDS
 
 
 def is_file_record_expired(record, now=None):

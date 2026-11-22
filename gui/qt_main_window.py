@@ -34,6 +34,7 @@ from PySide6.QtWidgets import (
 )
 
 from common.log_files import DEFAULT_SOURCE, LOG_SOURCES
+from common.sync_modes import MODE_BOTH, MODE_LABELS, VALID_MODES
 from common.update_apply import (
     UpdateError,
     ensure_writable,
@@ -45,7 +46,11 @@ from common.update_apply import (
 from common.updater import APP_VERSION, check_for_update, download_file
 from common.utils import BASE_DIR, post_to_main_thread_no_wait
 from gui import qt_dialogs
-from gui.main_window import validate_client_settings
+from gui.main_window import (
+    DEFAULT_FILE_SHARE_TTL_MINUTES,
+    DEFAULT_FOLDER_ZIP_CONFIRM_GB,
+    validate_client_settings,
+)
 from gui.qt_log_view import LogViewer
 from gui.qt_theme import (
     APPEARANCE_LABELS,
@@ -191,6 +196,7 @@ class MainWindow(QMainWindow):
 
         self._build_hero()
         self._build_service_cards()
+        self._build_sync_controls()
         self._build_quick_actions()
         self._build_logs()
         self._build_settings()
@@ -290,6 +296,131 @@ class MainWindow(QMainWindow):
         row.addWidget(self.server_card, 1)
         row.addWidget(self.client_card, 1)
         self.body.addLayout(row)
+
+    def _build_sync_controls(self):
+        """同步控制：文字/文件的收发方向、目录打包开关与上限、共享存活时间。"""
+        card = QFrame()
+        card.setObjectName("Card")
+        lay = QVBoxLayout(card)
+        lay.setContentsMargins(20, 18, 20, 18)
+        lay.setSpacing(14)
+
+        head = QHBoxLayout()
+        head.addWidget(_section_title("同步控制"))
+        head.addStretch(1)
+        hint = QLabel("保存后客户端会自动重启并应用")
+        hint.setObjectName("Hint")
+        head.addWidget(hint)
+        lay.addLayout(head)
+
+        grid = QGridLayout()
+        grid.setHorizontalSpacing(16)
+        grid.setVerticalSpacing(10)
+        grid.setColumnStretch(1, 1)
+
+        text_caption = QLabel("文字同步")
+        text_caption.setObjectName("FieldLabel")
+        self.text_mode_bar, self.text_mode_group, self.text_mode_buttons = (
+            self._sync_mode_selector()
+        )
+        grid.addWidget(text_caption, 0, 0)
+        grid.addWidget(self.text_mode_bar, 0, 1, Qt.AlignLeft)
+
+        file_caption = QLabel("文件同步")
+        file_caption.setObjectName("FieldLabel")
+        self.file_mode_bar, self.file_mode_group, self.file_mode_buttons = (
+            self._sync_mode_selector()
+        )
+        grid.addWidget(file_caption, 1, 0)
+        grid.addWidget(self.file_mode_bar, 1, 1, Qt.AlignLeft)
+        lay.addLayout(grid)
+
+        preference = QFrame()
+        preference.setObjectName("Preference")
+        pref_lay = QHBoxLayout(preference)
+        pref_lay.setContentsMargins(16, 9, 16, 9)
+
+        pref_box = QVBoxLayout()
+        pref_box.setSpacing(2)
+        pref_label = QLabel("自动打包同步复制的文件夹")
+        pref_label.setStyleSheet("font-weight: 600;")
+        pref_hint = QLabel("关闭后复制文件夹不会被传输；开启时超过上限会先弹窗确认")
+        pref_hint.setObjectName("Hint")
+        pref_box.addWidget(pref_label)
+        pref_box.addWidget(pref_hint)
+
+        self.folder_sync_switch = ToggleSwitch(palette=self._palette)
+        self.folder_sync_switch.toggled.connect(self._on_folder_sync_toggled)
+        pref_lay.addLayout(pref_box, 1)
+        pref_lay.addWidget(self.folder_sync_switch, 0, Qt.AlignVCenter)
+        lay.addWidget(preference)
+
+        numbers = QHBoxLayout()
+        numbers.setSpacing(24)
+        limit_box, self.folder_limit_edit = self._number_input("目录大小上限", "GB")
+        ttl_box, self.share_ttl_edit = self._number_input("共享存活时间", "分钟")
+        numbers.addWidget(limit_box)
+        numbers.addWidget(ttl_box)
+        numbers.addStretch(1)
+        lay.addLayout(numbers)
+
+        tip = QLabel(
+            "目录超过上限时先弹窗询问，确认后才打包；共享到期后自动取消共享并删除临时压缩包。"
+        )
+        tip.setObjectName("Hint")
+        tip.setWordWrap(True)
+        lay.addWidget(tip)
+
+        self.body.addWidget(card)
+
+    def _sync_mode_selector(self):
+        """三段式选择：双向 / 只发送 / 只接收。"""
+        bar = QFrame()
+        bar.setObjectName("SegmentBar")
+        bar.setFixedHeight(36)
+        bl = QHBoxLayout(bar)
+        bl.setContentsMargins(3, 3, 3, 3)
+        bl.setSpacing(2)
+
+        group = QButtonGroup(self)
+        group.setExclusive(True)
+        buttons = {}
+        for mode in VALID_MODES:
+            button = QPushButton(MODE_LABELS[mode])
+            button.setObjectName("Segment")
+            button.setCheckable(True)
+            button.setCursor(Qt.PointingHandCursor)
+            button.setMinimumWidth(74)
+            button.setFixedHeight(28)
+            group.addButton(button)
+            bl.addWidget(button)
+            buttons[mode] = button
+        return bar, group, buttons
+
+    def _number_input(self, label, unit):
+        box = QWidget()
+        row = QHBoxLayout(box)
+        row.setContentsMargins(0, 0, 0, 0)
+        row.setSpacing(6)
+
+        caption = QLabel(label)
+        caption.setObjectName("FieldLabel")
+        edit = QLineEdit()
+        edit.setFixedWidth(74)
+        edit.setMinimumHeight(34)
+        edit.setAlignment(Qt.AlignCenter)
+        suffix = QLabel(unit)
+        suffix.setObjectName("Hint")
+
+        row.addWidget(caption)
+        row.addWidget(edit)
+        row.addWidget(suffix)
+        return box, edit
+
+    def _on_folder_sync_toggled(self, checked):
+        edit = getattr(self, "folder_limit_edit", None)
+        if edit is not None:
+            edit.setEnabled(bool(checked))
 
     def _build_quick_actions(self):
         card = QFrame()
@@ -540,7 +671,88 @@ class MainWindow(QMainWindow):
         if button is not None:
             button.setChecked(True)
 
+        # 同步方向：文字 / 文件各一组分段按钮
+        for buttons, saved_mode in (
+            (self.text_mode_buttons, getattr(self.config, "text_sync_mode", MODE_BOTH)),
+            (self.file_mode_buttons, getattr(self.config, "file_sync_mode", MODE_BOTH)),
+        ):
+            target = buttons.get(saved_mode) or buttons.get(MODE_BOTH)
+            if target is not None:
+                target.setChecked(True)
+
+        folder_enabled = bool(getattr(self.config, "folder_sync_enabled", True))
+        self.folder_sync_switch.setChecked(folder_enabled, animate=False)
+        self.folder_limit_edit.setText(
+            self._format_number(
+                getattr(self.config, "folder_zip_confirm_gb", DEFAULT_FOLDER_ZIP_CONFIRM_GB)
+            )
+        )
+        # setChecked 不发出 toggled，关联控件的启用状态要单独同步
+        self._on_folder_sync_toggled(folder_enabled)
+        self.share_ttl_edit.setText(
+            str(
+                int(
+                    getattr(
+                        self.config,
+                        "file_share_ttl_minutes",
+                        DEFAULT_FILE_SHARE_TTL_MINUTES,
+                    )
+                )
+            )
+        )
+
         self.autostart_switch.setChecked(self.config.is_autostart_enabled(), animate=False)
+
+    @staticmethod
+    def _format_number(value):
+        """整数值不带小数点（10 而不是 10.0），小数保留一位。"""
+        try:
+            number = float(value)
+        except (TypeError, ValueError):
+            return str(value)
+        return f"{number:g}"
+
+    def _selected_mode(self, buttons, fallback=MODE_BOTH):
+        if not buttons:
+            return fallback
+        for mode, button in buttons.items():
+            if button.isChecked():
+                return mode
+        return fallback
+
+    def _collect_sync_settings(self):
+        """读取同步控制区的当前值；控件缺失（旧测试的裸窗口）时退回配置值。"""
+        switch = getattr(self, "folder_sync_switch", None)
+        folder_enabled = (
+            bool(switch.isChecked()) if switch is not None
+            else bool(getattr(self.config, "folder_sync_enabled", True))
+        )
+
+        limit_edit = getattr(self, "folder_limit_edit", None)
+        limit_gb = (
+            limit_edit.text() if limit_edit is not None
+            else getattr(self.config, "folder_zip_confirm_gb", DEFAULT_FOLDER_ZIP_CONFIRM_GB)
+        )
+
+        ttl_edit = getattr(self, "share_ttl_edit", None)
+        ttl_minutes = (
+            ttl_edit.text() if ttl_edit is not None
+            else getattr(self.config, "file_share_ttl_minutes", DEFAULT_FILE_SHARE_TTL_MINUTES)
+        )
+
+        return {
+            "text_sync_mode": self._selected_mode(
+                getattr(self, "text_mode_buttons", None),
+                getattr(self.config, "text_sync_mode", MODE_BOTH),
+            ),
+            "file_sync_mode": self._selected_mode(
+                getattr(self, "file_mode_buttons", None),
+                getattr(self.config, "file_sync_mode", MODE_BOTH),
+            ),
+            "folder_sync_enabled": folder_enabled,
+            "folder_zip_confirm_gb": limit_gb,
+            "file_share_ttl_minutes": ttl_minutes,
+        }
 
     def save_settings(self):
         try:
@@ -551,20 +763,37 @@ class MainWindow(QMainWindow):
                 self.file_port_edit.text(),
                 self.key_edit.text(),
                 self.save_path_edit.text(),
+                **self._collect_sync_settings(),
             )
         except ValueError as exc:
             self._set_settings_message(str(exc), self._palette["danger"])
             return
 
+        previous_ttl = getattr(self.config, "file_share_ttl_minutes", None)
         if not self.config.update_client_config(values):
             self._set_settings_message("配置保存失败，请查看日志", self._palette["danger"])
             return
+
+        # 共享存活时间同时决定服务端何时丢弃文件记录，必须一起改
+        ttl_changed = previous_ttl != values["file_share_ttl_minutes"]
+        if ttl_changed:
+            self.config.apply_file_share_ttl_to_server_config()
 
         self._set_settings_message("配置已保存", self._palette["success"])
         self.welcome_detail.setText(
             f"连接到 {values['server_host']}:{values['server_port']} · 设备 {values['local_name']}"
         )
-        if self.manager.get_service_state()["client_enabled"]:
+        state = self.manager.get_service_state()
+        if ttl_changed and state["server_enabled"]:
+            # 服务端按共享存活时间丢弃文件记录，改了得让它重新加载配置；
+            # restart_services 会把已启用的客户端一起重启，不必再单独调一次。
+            if self.manager.restart_services_async():
+                self._set_settings_message("配置已保存，正在重启服务…", self._palette["warning"])
+            else:
+                self._set_settings_message(
+                    "配置已保存；服务正忙，请稍后手动重启", self._palette["warning"]
+                )
+        elif state["client_enabled"]:
             if self.manager.restart_client_async():
                 self._set_settings_message("配置已保存，正在重启客户端…", self._palette["warning"])
             else:
@@ -621,8 +850,11 @@ class MainWindow(QMainWindow):
 
         self.welcome_detail.setText(self._connection_summary())
 
-        if not busy and self.settings_message.text() == "配置已保存，正在重启客户端…":
-            if state["client_alive"]:
+        if not busy and self.settings_message.text() in (
+            "配置已保存，正在重启客户端…",
+            "配置已保存，正在重启服务…",
+        ):
+            if state["client_alive"] or state["server_alive"]:
                 self._set_settings_message("配置已应用", palette["success"])
             else:
                 self._set_settings_message("配置已保存，但客户端启动失败", palette["danger"])

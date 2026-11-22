@@ -142,7 +142,8 @@ def main():
         center_port=server_port,
         local_name=local_name,
         key=key,
-        save_path=save_path
+        save_path=save_path,
+        share_ttl_seconds=getattr(config_manager, "file_share_ttl_minutes", 10) * 60,
     )
 
     # 创建同步客户端实例
@@ -152,9 +153,21 @@ def main():
             "server_port": server_port,
             "key": key,
             "local_name": local_name,
-            "file_server_port": file_server_port
+            "file_server_port": file_server_port,
+            # 面板里的同步方向 / 目录开关
+            "text_sync_mode": getattr(config_manager, "text_sync_mode", "both"),
+            "file_sync_mode": getattr(config_manager, "file_sync_mode", "both"),
+            "folder_sync_enabled": getattr(config_manager, "folder_sync_enabled", True),
+            "folder_zip_confirm_gb": getattr(config_manager, "folder_zip_confirm_gb", 10),
         },
         file_server    # 传入文件服务器对象，供客户端内部使用
+    )
+    logger.info(
+        f"同步方向 | 文字: {getattr(config_manager, 'text_sync_mode', 'both')} | "
+        f"文件: {getattr(config_manager, 'file_sync_mode', 'both')} | "
+        f"目录: {getattr(config_manager, 'folder_sync_enabled', True)} | "
+        f"目录上限: {getattr(config_manager, 'folder_zip_confirm_gb', 10)} GB | "
+        f"共享存活: {getattr(config_manager, 'file_share_ttl_minutes', 10)} 分钟"
     )
     file_server.start()   # 启动文件服务器的后台线程（监听文件上传/下载请求）
 

@@ -6,6 +6,7 @@ import time
 from datetime import datetime, timedelta
 from common.utils import SAFE_POST
 from common.notification import show_notification, show_notification_with_click
+from common.sync_modes import is_receive_allowed
 from server.core.file_latest import is_file_record_expired
 
 logger = logging.getLogger("gui")
@@ -56,6 +57,9 @@ class ClipboardHandler:
     def handle_client_latest(self):
         """处理文本剪贴板更新"""
         try:
+            if not is_receive_allowed(getattr(self.config, "text_sync_mode", "both")):
+                # 文字接收已关闭：客户端不会写剪贴板，这里也不必提醒
+                return
             if not self.config.TEXT_LATEST_FILE.exists():
                 return
 
@@ -111,6 +115,9 @@ class ClipboardHandler:
     def handle_file_latest(self):
         """处理文件剪贴板更新"""
         try:
+            if not is_receive_allowed(getattr(self.config, "file_sync_mode", "both")):
+                # 文件接收已关闭：不再提示远端发布的文件
+                return
             if not self.config.FILE_LATEST_FILE.exists():
                 return
 

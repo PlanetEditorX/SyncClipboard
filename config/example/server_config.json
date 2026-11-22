@@ -2,5 +2,6 @@
 	"key": "123456",
 	"host": "",
 	"port": 8000,
-	"local_name": "Server"
+	"local_name": "Server",
+	"file_share_ttl_minutes": 10
 }

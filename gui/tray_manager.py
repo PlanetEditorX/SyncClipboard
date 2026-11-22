@@ -33,6 +33,7 @@ from gui.qt_main_window import MainWindow
 from gui.qt_theme import app_icon, apply_theme
 from gui.service_manager import ServiceManager
 from gui.service_queue import ServiceActionQueue
+from server.core.file_latest import set_file_share_ttl
 
 logger = logging.getLogger("gui")
 
@@ -331,6 +332,11 @@ class TrayManager(QObject):
             )
             ui_bridge.clear_ui_root(self.root)
             return
+
+        # GUI 也要用同一套共享存活时间判断「文件记录是否已过期」
+        set_file_share_ttl(
+            getattr(self.config, "file_share_ttl_minutes", 10) * 60
+        )
 
         self.window = MainWindow(self)
         ui_bridge.set_main_window(self.window)

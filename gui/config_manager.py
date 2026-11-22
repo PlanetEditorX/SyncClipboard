@@ -7,7 +7,12 @@ import logging
 import tempfile
 import threading
 from pathlib import Path
+from common.sync_modes import MODE_BOTH, normalize_mode
 from common.utils import BASE_DIR, get_default_server_host
+from gui.main_window import (
+    DEFAULT_FILE_SHARE_TTL_MINUTES,
+    DEFAULT_FOLDER_ZIP_CONFIRM_GB,
+)
 
 logger = logging.getLogger("gui")
 
@@ -31,6 +36,12 @@ class ConfigManager:
         self.client_running = False
         self.server_local_name = "Server"
         self.appearance_mode = "System"
+        # ---- 同步控制（客户端与服务器共用共享存活时间）----
+        self.text_sync_mode = MODE_BOTH
+        self.file_sync_mode = MODE_BOTH
+        self.folder_sync_enabled = True
+        self.folder_zip_confirm_gb = DEFAULT_FOLDER_ZIP_CONFIRM_GB
+        self.file_share_ttl_minutes = DEFAULT_FILE_SHARE_TTL_MINUTES
         self._state_data = {}
         self._client_config_data = {}
         self._server_config_data = {}
@@ -128,7 +139,12 @@ class ConfigManager:
                 "key": "123456",
                 "local_name": self.local_name,
                 "file_server_port": 8899,
-                "save_path": str(Path.home() / "Downloads")
+                "save_path": str(Path.home() / "Downloads"),
+                "text_sync_mode": MODE_BOTH,
+                "file_sync_mode": MODE_BOTH,
+                "folder_sync_enabled": True,
+                "folder_zip_confirm_gb": DEFAULT_FOLDER_ZIP_CONFIRM_GB,
+                "file_share_ttl_minutes": DEFAULT_FILE_SHARE_TTL_MINUTES,
             }
             try:
                 with open(config_file, 'w', encoding='utf-8') as f:
@@ -167,7 +183,12 @@ class ConfigManager:
             "key": "",
             "local_name": self.local_name,
             "file_server_port": 8899,
-            "save_path": str(Path.home() / "Downloads")
+            "save_path": str(Path.home() / "Downloads"),
+            "text_sync_mode": MODE_BOTH,
+            "file_sync_mode": MODE_BOTH,
+            "folder_sync_enabled": True,
+            "folder_zip_confirm_gb": DEFAULT_FOLDER_ZIP_CONFIRM_GB,
+            "file_share_ttl_minutes": DEFAULT_FILE_SHARE_TTL_MINUTES,
         }
 
         for field, default_value in default_fields.items():
@@ -192,10 +213,56 @@ class ConfigManager:
         self.local_name = config.get("local_name")
         self.file_server_port = config.get("file_server_port")
         self.save_path = config.get("save_path", str(Path.home() / "Downloads"))
+        self.text_sync_mode = normalize_mode(config.get("text_sync_mode"))
+        self.file_sync_mode = normalize_mode(config.get("file_sync_mode"))
+        self.folder_sync_enabled = self._coerce_bool(
+            config.get("folder_sync_enabled"), True
+        )
+        gb = self._tidy_gb(
+            self._coerce_number(
+                config.get("folder_zip_confirm_gb"), DEFAULT_FOLDER_ZIP_CONFIRM_GB
+            )
+        )
+        # 手工改坏（0 或负数）时退回默认，避免变成「永不需要确认」
+        self.folder_zip_confirm_gb = gb if gb > 0 else DEFAULT_FOLDER_ZIP_CONFIRM_GB
+        ttl = int(
+            self._coerce_number(
+                config.get("file_share_ttl_minutes"), DEFAULT_FILE_SHARE_TTL_MINUTES
+            )
+        )
+        self.file_share_ttl_minutes = (
+            ttl if ttl > 0 else DEFAULT_FILE_SHARE_TTL_MINUTES
+        )
         self._client_config_data = dict(config)
 
-        logger.info(f"读取客户端配置 | 服务器={self.server_host}:{self.server_port} | 客户端={self.local_name}")
+        logger.info(
+            f"读取客户端配置 | 服务器={self.server_host}:{self.server_port} | "
+            f"客户端={self.local_name} | 文字={self.text_sync_mode} | "
+            f"文件={self.file_sync_mode} | 目录={self.folder_sync_enabled} | "
+            f"共享存活={self.file_share_ttl_minutes}分钟"
+        )
         return True
+
+    @staticmethod
+    def _coerce_bool(value, default):
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, str):
+            return value.strip().lower() not in {"false", "0", "no", "off", ""}
+        return default if value is None else bool(value)
+
+    @staticmethod
+    def _coerce_number(value, default):
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return default
+
+    @staticmethod
+    def _tidy_gb(value):
+        """整数值不带小数点，小数保留一位，方便面板回显。"""
+        number = float(value)
+        return int(number) if number.is_integer() else round(number, 1)
 
     def save_client_config(self):
         """保存客户端配置"""
@@ -216,7 +283,12 @@ class ConfigManager:
                 "key": self.key,
                 "local_name": self.local_name,
                 "file_server_port": self.file_server_port,
-                "save_path": self.save_path
+                "save_path": self.save_path,
+                "text_sync_mode": normalize_mode(self.text_sync_mode),
+                "file_sync_mode": normalize_mode(self.file_sync_mode),
+                "folder_sync_enabled": bool(self.folder_sync_enabled),
+                "folder_zip_confirm_gb": self.folder_zip_confirm_gb,
+                "file_share_ttl_minutes": int(self.file_share_ttl_minutes),
             })
             self._atomic_write_json(ConfigManager.CLIENT_CONFIG, config)
             self._client_config_data = config
@@ -235,6 +307,11 @@ class ConfigManager:
             "local_name",
             "file_server_port",
             "save_path",
+            "text_sync_mode",
+            "file_sync_mode",
+            "folder_sync_enabled",
+            "folder_zip_confirm_gb",
+            "file_share_ttl_minutes",
         }
         unknown = set(values) - allowed_fields
         if unknown:
@@ -260,7 +337,8 @@ class ConfigManager:
             default_config = {
                 "key": "123456",
                 "port": 8000,
-                "local_name": self.local_name
+                "local_name": self.local_name,
+                "file_share_ttl_minutes": DEFAULT_FILE_SHARE_TTL_MINUTES,
             }
             try:
                 with open(config_file, 'w', encoding='utf-8') as f:
@@ -290,7 +368,8 @@ class ConfigManager:
         default_fields = {
             "key": "123456",
             "port": 8000,
-            "local_name": self.local_name
+            "local_name": self.local_name,
+            "file_share_ttl_minutes": DEFAULT_FILE_SHARE_TTL_MINUTES,
         }
 
         for field, default_value in default_fields.items():
@@ -313,9 +392,14 @@ class ConfigManager:
         self.key = config.get("key", "")
         self.local_name = config.get("local_name", "Server")
         self.save_path = config.get("save_path", str(Path.home() / "Downloads"))
+        self.file_share_ttl_minutes = int(
+            self._coerce_number(
+                config.get("file_share_ttl_minutes"), DEFAULT_FILE_SHARE_TTL_MINUTES
+            )
+        )
         self._server_config_data = dict(config)
 
-        logger.info(f"读取服务器配置 | 端口={self.server_port} | 保存路径={self.save_path} | 服务器名称={self.local_name}")
+        logger.info(f"读取服务器配置 | 端口={self.server_port} | 保存路径={self.save_path} | 服务器名称={self.local_name} | 共享存活={self.file_share_ttl_minutes}分钟")
         return True
 
     def save_server_config(self):
@@ -333,6 +417,10 @@ class ConfigManager:
                     "key": self.key,
                     "local_name": getattr(self, 'local_name', "Server"),
                     "save_path": self.save_path,
+                    "file_share_ttl_minutes": int(
+                        getattr(self, "file_share_ttl_minutes",
+                                DEFAULT_FILE_SHARE_TTL_MINUTES)
+                    ),
                 })
                 self._atomic_write_json(ConfigManager.SERVER_CONFIG, config)
                 self._server_config_data = config
@@ -340,6 +428,28 @@ class ConfigManager:
                 return True
             except Exception as e:
                 logger.error(f"保存服务器配置失败: {e}")
+                return False
+
+    def apply_file_share_ttl_to_server_config(self):
+        """把共享存活时间写进 server_config。
+
+        GUI 进程只加载客户端配置，直接调 save_server_config() 会把服务器端口等
+        字段覆盖成客户端的值，所以这里只动这一个键。
+        """
+        with self._config_lock:
+            try:
+                config = {}
+                if ConfigManager.SERVER_CONFIG.exists():
+                    try:
+                        config = self._read_json_object(ConfigManager.SERVER_CONFIG)
+                    except Exception as e:
+                        logger.warning(f"读取服务器配置失败，将重建该字段: {e}")
+                config["file_share_ttl_minutes"] = int(self.file_share_ttl_minutes)
+                self._atomic_write_json(ConfigManager.SERVER_CONFIG, config)
+                logger.info(f"共享存活时间已同步到服务器配置: {self.file_share_ttl_minutes} 分钟")
+                return True
+            except Exception as e:
+                logger.error(f"同步共享存活时间失败: {e}")
                 return False
 
     def is_autostart_enabled(self):

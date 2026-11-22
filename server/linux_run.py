@@ -12,6 +12,7 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 from server.api.flask_app import app, init_services
+from server.core.file_latest import set_file_share_ttl
 from common.utils import BASE_DIR, get_default_server_host
 
 # ---------- 自定义格式化器：过滤 ANSI 转义序列 ----------
@@ -71,7 +72,8 @@ class LinuxConfigManager:
             'key': self.key,
             'save_path': self.save_path,
             'port': self.server_port,
-            'local_name': self.local_name
+            'local_name': self.local_name,
+            'file_share_ttl_minutes': 10
         }
         for field, default_value in default_fields.items():
             if field not in config:
@@ -91,8 +93,13 @@ class LinuxConfigManager:
         self.key = config.get('key', self.key)
         self.save_path = config.get('save_path', config.get('save_path', self.save_path))
         self.local_name = config.get('local_name', self.local_name)
+        try:
+            self.file_share_ttl_minutes = int(config.get('file_share_ttl_minutes', 10))
+        except (TypeError, ValueError):
+            self.file_share_ttl_minutes = 10
         logging.info(
-            f"读取服务器配置 | 端口={self.server_port} | 服务器名称={self.local_name}"
+            f"读取服务器配置 | 端口={self.server_port} | 服务器名称={self.local_name} | "
+            f"共享存活={self.file_share_ttl_minutes}分钟"
         )
         return True
 
@@ -165,6 +172,11 @@ def main():
         'local_name': config_manager.local_name,
         'clipboard_enabled': False
     })
+
+    # 共享文件存活时间（分钟 → 秒）
+    set_file_share_ttl(
+        getattr(config_manager, 'file_share_ttl_minutes', 10) * 60
+    )
 
     init_services(config_manager)
 

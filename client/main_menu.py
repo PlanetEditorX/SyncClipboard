@@ -16,12 +16,95 @@ from pathlib import Path
 from datetime import datetime
 from common.utils import SAFE_POST
 from client.file_server import FOLDER_SHARE_TEMP_DIR
+from common.sync_modes import (
+    MODE_BOTH,
+    describe_mode,
+    is_receive_allowed,
+    is_send_allowed,
+    normalize_mode,
+)
+from gui.main_window import DEFAULT_FOLDER_ZIP_CONFIRM_GB
 from server.core.text_tracker import TextTracker
 
 logger = logging.getLogger("client")
 
 # 压缩级别：1~9。文件夹里多是已压缩过的镜像/APK，用中等档位换取速度。
 FOLDER_ZIP_COMPRESS_LEVEL = 6
+
+
+def _as_bool(value, default):
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() not in {"false", "0", "no", "off", ""}
+    return default if value is None else bool(value)
+
+
+def _as_float(value, default):
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return float(default)
+
+
+def format_size(num_bytes):
+    """把字节数变成便于阅读的 GB/MB 文本。"""
+    size = float(num_bytes)
+    for unit in ("B", "KB", "MB", "GB", "TB"):
+        if size < 1024 or unit == "TB":
+            return f"{size:.0f} {unit}" if unit in ("B", "KB") else f"{size:.1f} {unit}"
+        size /= 1024
+    return f"{size:.1f} TB"
+
+
+def folder_size_bytes(folder_path):
+    """统计目录内所有文件的总字节数（读不到的文件按 0 计）。"""
+    total = 0
+    for root, _dirs, names in os.walk(folder_path):
+        for name in names:
+            try:
+                total += os.path.getsize(os.path.join(root, name))
+            except OSError:
+                continue
+    return total
+
+
+def confirm_large_folder(folder_name, size_text, limit_gb):
+    """原生确认框：目录超过上限时询问是否仍然压缩传输。
+
+    客户端是独立进程（GUI 的子进程），没有现成的界面通道，这里直接用 Win32
+    消息框；非 Windows 或无法弹框时按「否」处理，避免在无人值守时悄悄传大目录。
+    """
+    message = (
+        f"目录「{folder_name}」大小为 {size_text}，"
+        f"超过设定的上限 {limit_gb:g} GB。\n\n"
+        "是否仍然压缩后传输？压缩包会在传输完成后自动删除。"
+    )
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        user32 = ctypes.WinDLL("user32", use_last_error=True)
+        user32.MessageBoxW.restype = ctypes.c_int
+        user32.MessageBoxW.argtypes = (
+            wintypes.HWND, wintypes.LPCWSTR, wintypes.LPCWSTR, wintypes.UINT,
+        )
+        MB_YESNO = 0x00000004
+        MB_ICONWARNING = 0x00000030
+        MB_DEFBUTTON2 = 0x00000100
+        MB_TOPMOST = 0x00040000
+        MB_SETFOREGROUND = 0x00010000
+        IDYES = 6
+        result = user32.MessageBoxW(
+            None,
+            message,
+            "SyncClipboard · 目录超出上限",
+            MB_YESNO | MB_ICONWARNING | MB_DEFBUTTON2 | MB_TOPMOST | MB_SETFOREGROUND,
+        )
+        return result == IDYES
+    except Exception as exc:
+        logger.error("目录超限确认框弹出失败，按取消处理: %s", exc)
+        return False
 
 
 def get_clipboard_sequence():
@@ -49,6 +132,15 @@ class SyncClient:
         self.running = False
         self.last_remote_id = None
         self._last_remote_content = None
+        # ---- 同步开关（面板可调）----
+        self.text_sync_mode = normalize_mode(config.get("text_sync_mode"))
+        self.file_sync_mode = normalize_mode(config.get("file_sync_mode"))
+        self.folder_sync_enabled = _as_bool(config.get("folder_sync_enabled"), True)
+        # 目录体积超过这个值就弹窗询问，未超过直接后台打包
+        self.folder_zip_confirm_bytes = int(
+            _as_float(config.get("folder_zip_confirm_gb"), DEFAULT_FOLDER_ZIP_CONFIRM_GB)
+            * 1024 ** 3
+        )
         # 最近一次“已处理过”的剪贴板序列号，用于精确识别手动复制
         self._last_clipboard_seq = None
         self.push_thread = None
@@ -95,10 +187,18 @@ class SyncClient:
     def _push_loop(self):
         self.last_text = self.safe_paste() or ""
         self.last_file_set = None
+        logger.info(
+            f"同步方向: 文字={describe_mode(self.text_sync_mode)}, "
+            f"文件={describe_mode(self.file_sync_mode)}"
+        )
         while self.running:
             try:
                 files = self.get_clipboard_files()
                 if files:
+                    if not is_send_allowed(self.file_sync_mode):
+                        # 文件发送已关闭：剪贴板里是文件时什么都不推，也别把路径当文字发出去
+                        time.sleep(1)
+                        continue
                     current_set = frozenset(files)
                     if current_set != self.last_file_set:
                         self.last_file_set = current_set
@@ -108,14 +208,26 @@ class SyncClient:
 
                 self.last_file_set = None
                 text_to_push = self._get_local_text_to_push()
-                if text_to_push is not None:
-                    self.push_text(text_to_push)
+                # 只接收模式下仍要走完状态更新，免得重新打开发送时把旧内容补发出去
+                self._push_text_if_allowed(text_to_push)
             except Exception as e:
                 logger.error(f"监听异常: {e}")
             time.sleep(0.5)
 
+    def _push_text_if_allowed(self, text):
+        """按文字同步方向决定是否上传；不合法方向返回 False。"""
+        if text is None:
+            return False
+        if not is_send_allowed(self.text_sync_mode):
+            return False
+        self.push_text(text)
+        return True
+
     def _enqueue_file_push(self, file_paths):
         """把一批文件交给后台线程推送；只保留最新一批，避免积压。"""
+        if not is_send_allowed(self.file_sync_mode):
+            logger.info("文件发送已关闭，忽略本次文件推送")
+            return False
         paths = list(file_paths)
         while True:
             try:
@@ -175,6 +287,9 @@ class SyncClient:
 
     def apply_remote_text(self, latest):
         """应用服务器文字，并同步更新上传监听状态以阻断回环。"""
+        if not is_receive_allowed(self.text_sync_mode):
+            logger.info("文字接收已关闭，忽略远端文字")
+            return False
         if not isinstance(latest, dict):
             return False
 
@@ -236,6 +351,10 @@ class SyncClient:
             logger.warning("没有文件需要推送")
             return
 
+        if not is_send_allowed(self.file_sync_mode):
+            logger.info("文件发送已关闭，忽略本次文件推送")
+            return
+
         # 先把可推送的内容筛出来，再动共享列表：
         # 复制的是空目录或已被删除的路径时，不能顺手清掉上一次有效共享。
         files = []
@@ -256,9 +375,14 @@ class SyncClient:
         entries = []  # [(本地路径, 展示名, 是否临时文件)]
         for path in files:
             entries.append((path, os.path.basename(path), False))
+        folder_skipped = 0
         for folder in folders:
+            if not self._folder_ready_for_zip(folder):
+                folder_skipped += 1
+                continue
             zip_path = self._zip_folder(folder)
             if zip_path is None:
+                folder_skipped += 1
                 continue
             folder_name = os.path.basename(os.path.normpath(folder)) or "folder"
             entries.append((str(zip_path), f"{folder_name}.zip", True))
@@ -268,7 +392,7 @@ class SyncClient:
             # 服务端对空 file_list 一律返回 400，本机共享列表也没必要跟着清。
             logger.warning(
                 f"剪贴板中没有可共享的内容，本次不推送"
-                f"（跳过 {len(skipped)} 项，{len(folders)} 个文件夹打包失败）"
+                f"（跳过 {len(skipped)} 项，{folder_skipped} 个文件夹未打包）"
             )
             return
 
@@ -327,6 +451,31 @@ class SyncClient:
         if hasattr(self, 'file_server') and self.file_server:
             for item in file_list:
                 self.file_server.unregister_file(item["file_id"])
+
+    def _folder_ready_for_zip(self, folder_path):
+        """判断这个目录要不要打包上传：关闭 / 超限未确认都返回 False。"""
+        if not self.folder_sync_enabled:
+            logger.warning(f"目录同步已关闭，跳过: {folder_path}")
+            return False
+
+        size = folder_size_bytes(folder_path)
+        size_text = format_size(size)
+        limit_bytes = self.folder_zip_confirm_bytes
+        limit_gb = limit_bytes / 1024 ** 3
+
+        if limit_bytes > 0 and size > limit_bytes:
+            folder_name = os.path.basename(os.path.normpath(folder_path)) or "文件夹"
+            logger.info(
+                f"目录 {folder_name} 体积 {size_text}，超过上限 {limit_gb:g} GB，等待用户确认"
+            )
+            approved = confirm_large_folder(folder_name, size_text, limit_gb)
+            logger.info(
+                f"目录超限确认结果: {'同意压缩传输' if approved else '用户取消，本次不传输'}"
+            )
+            return approved
+
+        logger.info(f"目录 {folder_path} 体积 {size_text}，在限额内，开始自动打包")
+        return True
 
     def _zip_folder(self, folder_path):
         """把文件夹打包成临时 zip，返回压缩包路径；失败返回 None。

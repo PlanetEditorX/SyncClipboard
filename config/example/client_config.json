@@ -3,5 +3,11 @@
 	"server_port": 8000,
 	"key": "123456",
 	"local_name": "PC-01",
-	"file_server_port": 8899
+	"file_server_port": 8899,
+	"save_path": "D:/Downloads",
+	"text_sync_mode": "both",
+	"file_sync_mode": "both",
+	"folder_sync_enabled": true,
+	"folder_zip_confirm_gb": 10,
+	"file_share_ttl_minutes": 10
 }
