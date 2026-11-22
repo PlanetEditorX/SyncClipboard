@@ -60,13 +60,23 @@ class IosLogTest(unittest.TestCase):
         self.assertEqual(self._post("x", key="nope").status_code, 403)
         self.assertFalse(os.path.exists(self.log_path))
 
-    def test_empty_log_is_400(self):
-        self.assertEqual(self._post("   ").status_code, 400)
+    def test_empty_log_is_skipped_not_4xx(self):
+        """空日志回 200 但不写盘。
+
+        iOS 的「获取 URL 内容」遇到非 2xx 会**中断整条快捷指令**，日志只是
+        附属通道，它自己出问题不该把同步带崩（v10 真机：推了个空 body → 400
+        → 指令停在半路）。
+        """
+        resp = self._post("   ")
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.get_json()["status"], "skipped")
         self.assertFalse(os.path.exists(self.log_path))
 
-    def test_missing_field_is_400(self):
+    def test_missing_field_is_skipped(self):
         resp = self.client.post("/ios_log", headers={"key": KEY}, json={})
-        self.assertEqual(resp.status_code, 400)
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.get_json()["status"], "skipped")
+        self.assertFalse(os.path.exists(self.log_path))
 
     def test_raw_body_is_accepted(self):
         """正文不是 JSON 时，正文本身就是日志。

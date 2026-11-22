@@ -43,7 +43,7 @@ import uuid
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 REF = os.path.join(HERE, '获取同步-unsigned.plist')          # 仅借用顶层元数据
-OUT = os.path.join(HERE, '获取同步v10-unsigned.plist')
+OUT = os.path.join(HERE, '获取同步v11-unsigned.plist')
 
 OBJ = '\ufffc'          # 文本里变量的占位符
 
@@ -404,51 +404,40 @@ b.setvar('来源', b.device_name())    # 只进 JSON body，不做 URL 编码
 # 一定留得住。
 LOG_FILE = 'SyncClipboard-调试.log'      # 同时留一份到手机「下载」，方便自己看
 
-_log_ref = [None]        # 当前日志的「动作输出」引用，串成一条链
-
-
-def _log_init():
-    """初始化日志：一条字面文本，同时记住它的引用。"""
-    text = act_out(b.text(['SyncClipboard 同步日志\n']), '文本')
-    b.setvar('日志', text)
-    _log_ref[0] = text
-    return text
-
-
-_log_init()
+b.setvar('日志', act_out(b.text(['SyncClipboard 同步日志\n']), '文本'))
 b.setvar('日志地址', act_out(b.text([var('服务器'), '/ios_log']), '文本'))
 
 
 def log(parts):
     """往「日志」变量追加一行。
 
-    两个坑都在这儿踩过：
+    这里踩过两个坑，都写下来免得再犯：
 
     1. `b.text()` 返回的是 **UUID 字符串**，不是动作输出引用。直接丢给
        「设置变量」，写进去的输入就是坏的，变量被赋成空值 —— v9 真机上每次
-       `POST /ios_log` 的正文都是 `{"log":""}`，日志一个字节都没上来，界面
-       上还毫无提示。
-    2. 拼接时**引用上一条文本动作的输出**，而不是引用「日志」变量：动作输出
-       是确定能解析的，变量在文本里能不能取到值要赌实现细节，链条上有一环
-       赌输，整份日志就是空的。
+       `POST /ios_log` 的正文都是 `{"log":""}`，日志一个字节没上来，界面上
+       还毫无提示（v9 的 `att()` 现在会直接报错拦住这种写法）。
+    2. **别用「上一条文本动作的输出」当累加源**。看着更稳，其实有个致命缺陷：
+       存盘结果那条日志写在「如果 / 否则」里，两条文本动作只有一条会执行，
+       而生成顺序上记住的是**最后造的那条**（失败分支）。存盘成功时它没跑，
+       引用就是空的 —— v10 真机：前面的日志都上来了，一到循环里存完盘就推
+       了一个空 body，服务端 400，整条指令跟着中断。
+
+    累加只认「日志」这个变量：分支里怎么走，它都是最后被赋的那份完整内容。
     """
-    src = _log_ref[0]
-    text = act_out(b.text([src, *parts, '\n']), '文本')
-    b.setvar('日志', text)
-    _log_ref[0] = text
+    b.setvar('日志', act_out(b.text([var('日志'), *parts, '\n']), '文本'))
 
 
 def log_push():
     """把当前完整日志推给电脑端（服务端覆盖写 log/ios_shortcut.log）。
 
-    body 里同样用**上一条文本动作的输出**作值，和 v1 里跑通过的「JSON body
-    + ActionOutput」完全同形。电脑端是旧版（没有 /ios_log）时只会拿到 404
-    的内容，不会中断流程。
+    body 里直接取「日志」变量 —— 变量在文本 token 里是 iOS 自己的标准写法，
+    不受分支影响。电脑端是旧版（没有 /ios_log）时只会拿到 404 的内容。
     """
     b.post_json(
         var('日志地址'),
         headers=[('key', act_out(cfg, '配置', dkey(KEY)))],
-        body=[('log', _log_ref[0])],
+        body=[('log', var('日志'))],
     )
 
 

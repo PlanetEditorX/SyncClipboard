@@ -1178,9 +1178,12 @@ def ios_log():
             logging.warning("iOS 日志请求不是 JSON，按原始正文写入（content-type=%s）",
                             request.content_type)
     if not isinstance(text, str) or not text.strip():
+        # 不返回 4xx：iOS 的「获取 URL 内容」在非 2xx 时会**中断整条快捷指令**，
+        # 日志是个附属通道，它自己出问题绝不该把同步带崩（v10 真机：循环里推了
+        # 一个空 body，服务端 400，指令当场停在半路）。空日志就跳过，200 回去。
         logging.warning("iOS 日志请求没有可写内容 | content-type=%s | body=%r",
                         request.content_type, raw[:300])
-        return jsonify({"status": "error", "message": "空日志"}), 400
+        return jsonify({"status": "skipped", "message": "空日志"}), 200
     # 日志是排查用的，宁可留半份也不要把服务打挂
     if len(text) > 2000000:
         text = text[:2000000] + "\n…（日志过长，已截断）\n"
