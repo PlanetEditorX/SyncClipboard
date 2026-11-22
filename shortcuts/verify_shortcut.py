@@ -38,6 +38,19 @@ def param_keys(act):
     return set(p.keys()), p.get('WFControlFlowMode')
 
 
+# 参考文件里没有、但已核实过的参数键。
+#
+# 参考文件（v1）是用户手工搭的，其中「解压缩」动作本身是我加的、当时没带
+# 归档参数 —— 也就是说参考文件在这一点上**本身就是错的**，不能拿它当基准
+# 反过来否掉正确写法。`WFArchive` 已由 Apple 动作文档核实：Extract Archive
+# 只有一个具名参数 Archive，键名就是 WFArchive。
+KNOWN_EXTRA_PARAMS = {
+    ('is.workflow.actions.unzip', 'WFArchive'),
+    # 通用参数，iOS 自己导出时也常带，无害
+    ('is.workflow.actions.repeat.count', 'UUID'),
+}
+
+
 def check_params(acts, ref_path):
     """参数名对照：凡是参考文件里同样动作从未出现过的参数键，都值得怀疑。"""
     import os
@@ -55,7 +68,8 @@ def check_params(acts, ref_path):
         base = known.get((a['WFWorkflowActionIdentifier'], mode))
         if not base:                     # 参考文件里没有这种动作/模式
             continue
-        extra = keys - base
+        extra = {k for k in keys - base
+                 if (a['WFWorkflowActionIdentifier'], k) not in KNOWN_EXTRA_PARAMS}
         if extra:
             suspect.append((i, a['WFWorkflowActionIdentifier'], sorted(extra)))
     print('可疑参数（参考文件同动作未出现过）:', suspect or 'none')
@@ -174,4 +188,4 @@ def main(path):
 
 if __name__ == '__main__':
     main(sys.argv[1] if len(sys.argv) > 1
-         else 'D:/Documents/Github/SyncClipboard/shortcuts/获取同步v2-unsigned.plist')
+         else 'D:/Documents/Github/SyncClipboard/shortcuts/获取同步v3-unsigned.plist')

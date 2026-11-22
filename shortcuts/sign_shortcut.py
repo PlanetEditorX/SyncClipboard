@@ -21,9 +21,9 @@ from urllib.request import Request, urlopen
 import liblzfse
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-SRC = os.path.join(HERE, '获取同步v2-unsigned.plist')
-DST = os.path.join(HERE, '获取同步v2.shortcut')
-NAME = '获取同步v2'
+SRC = os.path.join(HERE, '获取同步v3-unsigned.plist')
+DST = os.path.join(HERE, '获取同步v3.shortcut')
+NAME = '获取同步v3'
 
 HUBSIGN_URL = 'https://hubsign.routinehub.services/sign'
 HEADERS = {

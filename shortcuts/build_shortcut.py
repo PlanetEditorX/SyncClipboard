@@ -25,7 +25,7 @@ import uuid
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 REF = os.path.join(HERE, '获取同步-unsigned.plist')          # 仅借用顶层元数据
-OUT = os.path.join(HERE, '获取同步v2-unsigned.plist')
+OUT = os.path.join(HERE, '获取同步v3-unsigned.plist')
 
 OBJ = '\ufffc'          # 文本里变量的占位符
 
@@ -229,20 +229,28 @@ class SC:
         self._add('is.workflow.actions.exit', {})
 
     # -- 文件 ------------------------------------------------------------
-    def unzip(self):
-        """解压缩。系统动作没有输入参数，隐式取上一步输出——所以调用前必须
-        紧跟「获取URL内容」下载动作，中间不能插其它动作。"""
+    def unzip(self, archive):
+        """解压缩。
+
+        归档是**具名参数** `WFArchive`，不是隐式输入。这一点踩过坑：早先按
+        「系统动作隐式取上一步输出」写成无参，结果动作拿到空输入、什么都不解，
+        下游「存储到文件」也跟着拿到空输入静默不存盘，全程不报错 —— 通知还是
+        我们自己的文案，于是显示「已保存」而磁盘上什么都没有。
+        """
         uid = U()
-        self._add('is.workflow.actions.unzip', {'UUID': uid})
+        self._add('is.workflow.actions.unzip',
+                  {'UUID': uid, 'WFArchive': att(archive)})
         return act_out(uid, 'Files')
 
     def save_to_folder(self, subject):
+        uid = U()
         self._add('is.workflow.actions.documentpicker.save', {
-            'UUID': U(),
+            'UUID': uid,
             'WFAskWhereToSave': False,
             'WFFolder': FOLDER_DOWNLOAD,
             'WFInput': att(subject),
         })
+        return act_out(uid, 'Saved Files')
 
     # -- 控制流 ----------------------------------------------------------
     def if_(self, subject, cond, string=None, number=None):
@@ -351,6 +359,22 @@ def dbg(parts):
     b.notify(parts)
     b.endif(g)
 
+
+def save_confirmed(subject, label):
+    """存盘并核对真的落了盘。
+
+    「存储到文件」拿到空输入时**不报错也不存盘**，直接在后面接一句「已保存」
+    就是自欺欺人 —— 之前那版正是这样：解压缩没拿到归档、输出为空，于是什么都
+    没写进「下载」，通知却显示成功。这里拿存盘动作自己的输出做判据（它有输出
+    就说明真写了文件），没有就明确报错，把问题暴露在用户面前而不是日志里。
+    """
+    saved = b.save_to_folder(subject)
+    g_ok = b.if_(saved, 100)                # 有任何值 = 确实写入了
+    dbg(['   已保存 ', label])
+    b.else_(g_ok)
+    b.notify(['保存失败：', label, ' 没写进「下载」'])
+    b.endif(g_ok)
+
 dbg(['① 服务器 ', var('服务器'), ' ｜ 设备 ', var('来源')])
 
 # ---- 3 拉取 ---------------------------------------------------------------
@@ -440,17 +464,24 @@ b.notify(['打包超时（已等待约 20 分钟）：', item_name])
 b.exit()
 b.endif(g_timeout)
 
-b.get(item_url)                      # 解压缩隐式吃这一步的输出，不能插动作
-b.save_to_folder(b.unzip())
+zip_item = b.get(item_url)
+b.setvar('压缩包', zip_item)
+
+extracted = b.unzip(zip_item)
+g_unzipped = b.if_(extracted, 100)          # 有任何值 = 确实解出了东西
+save_confirmed(extracted, item_name)
+b.else_(g_unzipped)
+# 解不出来就至少把压缩包存下去，别让这一项彻底消失
+dbg(['   解压无输出，改存压缩包 ', item_name])
+save_confirmed(var('压缩包'), item_name)
+b.endif(g_unzipped)
 
 b.else_(g_is_folder)
 
 # --- 普通文件：直接存 ---
-b.save_to_folder(b.get(item_url))
+save_confirmed(b.get(item_url), item_name)
 
 b.endif(g_is_folder)
-
-dbg(['   已保存 ', item_name])
 b.end_repeat(g_each, each=True)
 
 b.notify(['同步完成：', var('文件数量'), ' 项已存入「下载」'])

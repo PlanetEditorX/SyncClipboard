@@ -386,7 +386,7 @@ class TestShortcutArtifact(_SmokeCase):
     """快捷指令交付物本身也要能通过冒烟：容器完好、时序自洽。"""
 
     def test_signed_bundle_is_valid(self):
-        path = ROOT / "shortcuts" / "获取同步v2.shortcut"
+        path = ROOT / "shortcuts" / "获取同步v3.shortcut"
         if not path.exists():
             self.skipTest("还没生成签名产物")
         data = path.read_bytes()
@@ -397,7 +397,7 @@ class TestShortcutArtifact(_SmokeCase):
     def test_polling_budget_fits_share_ttl(self):
         """轮询最长时间必须短于共享存活，否则「打包超时」永远走不到。"""
         import plistlib
-        path = ROOT / "shortcuts" / "获取同步v2-unsigned.plist"
+        path = ROOT / "shortcuts" / "获取同步v3-unsigned.plist"
         if not path.exists():
             self.skipTest("还没生成未签名 plist")
         with open(path, "rb") as handle:
@@ -424,6 +424,49 @@ class TestShortcutArtifact(_SmokeCase):
         self.assertLess(budget, ttl, f"轮询 {budget}s 超过共享存活 {ttl}s")
         self.assertGreater(ttl - budget, 300, "给下载留的余量不足 5 分钟")
 
+
+    def test_no_action_runs_without_its_input(self):
+        """每个动作都必须真的拿到输入 —— 这一类失败是**静默**的。
+
+        「解压缩」的归档是具名参数 `WFArchive`；空着不会报错，只会拿到空输入、
+        什么都不解，然后下游「存储到文件」也跟着拿到空输入、同样不写盘。整条链
+        全程无异常，通知还照样弹「已保存」。真机上就这样丢过一次数据，这里用
+        静态检查把它钉死。
+        """
+        import plistlib
+        path = ROOT / "shortcuts" / "获取同步v3-unsigned.plist"
+        if not path.exists():
+            self.skipTest("还没生成未签名 plist")
+        with open(path, "rb") as handle:
+            actions = plistlib.load(handle)["WFWorkflowActions"]
+
+        for i, action in enumerate(actions):
+            ident = action["WFWorkflowActionIdentifier"]
+            params = action.get("WFWorkflowActionParameters") or {}
+
+            if ident == "is.workflow.actions.unzip":
+                self.assertIn("WFArchive", params,
+                              f"[{i}] 解压缩没有 WFArchive，会拿到空输入")
+                self.assertTrue(params["WFArchive"].get("Value"),
+                              f"[{i}] WFArchive 是空的")
+
+            if ident == "is.workflow.actions.documentpicker.save":
+                self.assertTrue((params.get("WFInput") or {}).get("Value"),
+                                f"[{i}] 存储到文件没有输入，会静默不写盘")
+                self.assertTrue(params.get("WFFolder"),
+                                f"[{i}] 存储到文件没指定目标目录")
+
+        # 解压缩的归档必须指向它前面那次下载，而不是更早/更晚的某个动作
+        downloads = [i for i, a in enumerate(actions)
+                     if a["WFWorkflowActionIdentifier"] == "is.workflow.actions.downloadurl"]
+        for i, action in enumerate(actions):
+            if action["WFWorkflowActionIdentifier"] != "is.workflow.actions.unzip":
+                continue
+            archive_uuid = action["WFWorkflowActionParameters"]["WFArchive"]["Value"]["OutputUUID"]
+            source = [k for k in downloads
+                      if (actions[k].get("WFWorkflowActionParameters") or {}).get("UUID") == archive_uuid]
+            self.assertTrue(source, f"[{i}] 解压缩的归档不来自任何下载动作")
+            self.assertLess(source[0], i, f"[{i}] 解压缩引用了后面的动作")
 
 if __name__ == "__main__":
     unittest.main()
