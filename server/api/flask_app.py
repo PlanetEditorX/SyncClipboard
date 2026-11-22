@@ -1166,6 +1166,9 @@ def request_file():
     all_files = latest_file.get_all_files()
     if all_files:
         file_list = []
+        # 目录共享的来源（file_id, ip, port）。接收端只用一份「合并清单」，
+        # 所以这些目录必须落在同一个文件服务上才合得起来。
+        folder_origins = []
         for info in all_files:
             if not isinstance(info, dict):
                 continue
@@ -1197,6 +1200,7 @@ def request_file():
                     # 下载。整包（无论 zip 还是别的归档）在 iOS 上解压会丢掉
                     # 目录层级，所以这里不再给打包地址。
                     entry["manifest_url"] = f"http://{ip}:{port}/manifest/{file_id}"
+                    folder_origins.append((file_id, ip, port))
                 file_list.append(entry)
             else:
                 logging.warning(f"跳过无效文件记录: {info}")
@@ -1216,6 +1220,25 @@ def request_file():
             }
             if is_single_folder:
                 payload["manifest_url"] = file_list[0]["manifest_url"]
+
+            # 合并清单：所有目录的文件摊平成一张表，接收端只遍历一层。
+            #
+            # iOS 快捷指令里「重复每一项」嵌两层时，内层拿到的 Repeat Item 是
+            # 空的（v5 真机现象：内层取 url 得到空，报「未指定 URL」）。所以
+            # 这里给出一条把所有目录合并好的地址，让接收端全程只有一层循环。
+            origins = {(ip, port) for _fid, ip, port in folder_origins}
+            if len(origins) == 1:
+                host_ip, host_port = origins.pop()
+                ids = ",".join(fid for fid, _ip, _port in folder_origins)
+                payload["manifest_batch_url"] = (
+                    f"http://{host_ip}:{host_port}/manifest/batch?ids={ids}")
+                payload["manifest_count"] = len(folder_origins)
+            elif len(origins) > 1:
+                # 多个来源（多台电脑同时登记了目录）合并不了，明确告知而不是
+                # 悄悄只给一份 —— 少传一部分文件比报错更难查。
+                logging.warning(
+                    "目录共享来自多个文件服务，无法合并清单: %s", sorted(origins))
+                payload["manifest_batch_error"] = "目录来自多个文件服务，请分开同步"
             return jsonify(payload), 200
         # 如果列表为空（所有记录均无效），继续执行文本逻辑
 

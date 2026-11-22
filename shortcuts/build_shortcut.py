@@ -7,13 +7,17 @@
 2. 结构收敛：type == text 走文本分支，否则走文件分支；文件分支内按
    Repeat Item.kind 判断目录/文件，因此「单目录」「多文件」「目录+文件混合」
    三种情况共用同一段下载循环。
-3. 目录只走「逐文件」：先取 /manifest 清单，再按清单逐项下载、按清单给的
-   相对路径写进对应子目录。**没有任何打包/解压环节** —— iOS 的「解压缩」会
-   把包内目录摊平，走归档必然丢层级（v3 的真机现象：所有文件都躺在「下载」
-   根下）。v5 起压缩包模式已从代码里彻底移除，不留回退开关。
-4. 调试开关：配置词典里的「调试」= 开/关。开时每个步骤弹一条静音通知
+3. 目录只走「逐文件」：先取 /manifest/batch 的**合并清单**，再按清单逐项
+   下载、按清单给的 dir 写进对应子目录。**没有任何打包/解压环节** —— iOS 的
+   「解压缩」会把包内目录摊平，走归档必然丢层级（v3 的真机现象：所有文件都
+   躺在「下载」根下）。
+4. **循环永远只有一层**。iOS 的「重复每一项」嵌两层时，内层拿到的 Repeat
+   Item 是空的（v5 真机现象：内层取 url 得空，报「未指定 URL」）。所以合并
+   清单在服务端就把「目录 → 文件」摊平了，快捷指令里只有并列的两段单层循环：
+   一段处理普通文件，一段处理目录清单。
+5. 调试开关：配置词典里的「调试」= 开/关。开时每个步骤弹一条静音通知
    （进入通知中心可回看），关时全程静默，只留结束提示。
-5. 目录传输不需要等待：清单请求即取，没有打包轮询。
+6. 目录传输不需要等待：清单请求即取，没有打包轮询。
 
 用法
 ----
@@ -27,7 +31,7 @@ import uuid
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 REF = os.path.join(HERE, '获取同步-unsigned.plist')          # 仅借用顶层元数据
-OUT = os.path.join(HERE, '获取同步v5-unsigned.plist')
+OUT = os.path.join(HERE, '获取同步v6-unsigned.plist')
 
 OBJ = '\ufffc'          # 文本里变量的占位符
 
@@ -322,7 +326,7 @@ PROTO, HOST, PORT, KEY = '协议', '主机', '端口', '密钥'
 ROOT_SUB = '根子路径'    # 落盘子路径的前缀（见 cfg 里的说明）
 REPEAT_ITEM = 'Repeat Item'
 
-b.comment('SyncClipboard 拉取 v5（逐文件保目录结构）\n'
+b.comment('SyncClipboard 拉取 v6（逐文件保目录结构）\n'
           '改配置：编辑下面「配置」词典里的协议/主机/端口/密钥/调试\n'
           '目录按清单逐个文件取，目录结构与电脑上完全一致（不再打包/解压）\n'
           '调试 = 开 时每个步骤弹一条静音通知，跑完可在通知中心回看\n'
@@ -402,8 +406,8 @@ b.endif(g_has_text)
 b.else_(g_text)
 
 # ---- 5 分支：文件 ---------------------------------------------------------
-b.comment('5. 文件分支：type 为 file_list 时逐个下载；目录项按 kind 判断，'
-          '取清单后逐文件下载并重建目录结构')
+b.comment('5. 文件分支：先逐个下载普通文件（一层循环），再按合并清单'
+          '逐文件下载目录内容（另一层循环）。两段并列，不做嵌套')
 
 g_kind = b.if_any(var('类型'), ['file_list', 'folder'])
 
@@ -411,27 +415,31 @@ b.setvar('文件列表', pick(resp, 'files'))
 b.setvar('文件数量', act_out(b.count(var('文件列表')), '计数'))
 dbg(['③ 待下载 ', var('文件数量'), ' 项'])
 
+# --- 普通文件：一层循环，只挑 kind == file ---
+#
+# 循环体里**不嵌套任何循环**。iOS 的「重复每一项」嵌两层时，内层拿到的
+# Repeat Item 是空的 —— v5 的真机现象就是内层取 `url` 得到空值，「获取 URL
+# 内容」直接报「未指定 URL」。所以目录那部分挪到下面的独立循环里：两段并列，
+# 任何时刻的循环深度都只有 1。
 g_has = b.if_(var('文件数量'), GT, number=0)
 
 g_each = b.repeat_each(var('文件列表'))
-
-item = var(REPEAT_ITEM)
-item_name = var(REPEAT_ITEM, dkey('name'))
 item_kind = var(REPEAT_ITEM, dkey('kind'))
-item_url = var(REPEAT_ITEM, dkey('download_url'))
+g_is_file = b.if_(item_kind, IS, 'file')
+save_confirmed(b.get(var(REPEAT_ITEM, dkey('download_url'))),
+               var(REPEAT_ITEM, dkey('name')))
+b.endif(g_is_file)
+b.end_repeat(g_each, each=True)
 
-dbg(['   · 开始下载 ', item_name, '（', item_kind, '）'])
+b.endif(g_has)
 
-g_is_folder = b.if_(item_kind, IS, 'folder')
+# --- 目录：服务端已把所有目录合并成一张清单，这里同样只有一层循环 ---
+b.comment('目录：合并清单 → 逐个下载 → 按清单的 dir 写进「下载/目录名/子目录」\n'
+          '清单一层摊平（dir 已含目录名），所以这里只有一层循环，不嵌第二层')
+b.setvar('清单地址', pick(resp, 'manifest_batch_url'))
 
-# --- 目录：按清单一项项取，路径由清单给 ---
-#
-# 目录**不打包**。以前走「等电脑打包 → 下载 zip → 解压缩 → 存进下载」，真机
-# 结果是所有文件平铺在「下载」根目录：iOS 的「解压缩」会把包内文件摊平，
-# 层级在解压那一刻就没了，包内再规整也没用。现在每项单独下载、单独写子路径，
-# 层级按清单重建，顺带还能跳过单个坏文件。
-b.comment('目录：清单 → 逐个下载 → 按 dir 写进「下载/目录名/dir」')
-b.setvar('清单地址', var(REPEAT_ITEM, dkey('manifest_url')))
+g_has_list = b.if_(var('清单地址'), 100)        # 有任何值 = 这次带了目录
+
 listing = b.get(var('清单地址'))
 b.setvar('清单', listing)
 
@@ -440,31 +448,34 @@ g_listing_ok = b.if_(pick(listing, 'status'), IS, 'ok')
 b.setvar('清单根', pick(listing, 'root'))
 b.setvar('清单文件数', act_out(b.count(pick(listing, 'entries')), '计数'))
 b.setvar('空目录数', act_out(b.count(pick(listing, 'empty_dirs')), '计数'))
-dbg(['   清单 ', var('清单根'), ' ｜ ', var('清单文件数'), ' 个文件 ｜ 空目录 ',
+dbg(['④ 清单 ', var('清单根'), ' ｜ ', var('清单文件数'), ' 个文件 ｜ 空目录 ',
      var('空目录数')])
 
-g_truncated = b.if_(pick(listing, 'notice'), 100)   # 有任何值 = 服务端有话说
+g_notice = b.if_(pick(listing, 'notice'), 100)  # 有任何值 = 服务端有话说
 b.notify([pick(listing, 'notice')])
-b.endif(g_truncated)
+b.endif(g_notice)
 
 g_has_files = b.if_(var('清单文件数'), GT, number=0)
 
 g_each_file = b.repeat_each(pick(listing, 'entries'))
 
+entry_dir = var(REPEAT_ITEM, dkey('dir'))
 entry_name = var(REPEAT_ITEM, dkey('name'))
-# 子路径必须在末尾带 "/"：iOS 见到斜杠才当目录，否则拿它去改文件名。
-# 目录为空串时也要带上「清单根/」，这样根目录下的文件才有落点。
-dest = [act_out(cfg, '配置', dkey(ROOT_SUB)), var('清单根'), '/',
-        var(REPEAT_ITEM, dkey('dir'))]
-dbg(['   · ', var('清单根'), '/', var(REPEAT_ITEM, dkey('dir')), entry_name])
+entry_url = var(REPEAT_ITEM, dkey('url'))
+dbg(['   · ', entry_dir, entry_name])
 
-save_confirmed(b.get(var(REPEAT_ITEM, dkey('url'))),
-               [var('清单根'), '/', var(REPEAT_ITEM, dkey('dir')), entry_name],
-               subpath=dest)
+g_has_url = b.if_(entry_url, 100)
+# 子路径直接用清单给的 dir：它已含「目录名/」前缀，且末尾带 "/" —— iOS 见到
+# 斜杠才当目录，否则会拿这串去改文件名。前面再挂配置里的「根子路径」。
+save_confirmed(b.get(entry_url), [entry_dir, entry_name],
+               subpath=[act_out(cfg, '配置', dkey(ROOT_SUB)), entry_dir])
+b.else_(g_has_url)
+b.notify(['跳过（清单条目没有下载地址）：', entry_name])
+b.endif(g_has_url)
 
 b.end_repeat(g_each_file, each=True)
 
-b.notify(['同步完成：', var('清单根'), ' 共 ', var('清单文件数'), ' 个文件'])
+b.notify(['同步完成：', var('清单文件数'), ' 个文件已存入「下载」'])
 g_has_empty = b.if_(var('空目录数'), GT, number=0)
 b.notify([var('空目录数'), ' 个空目录没有文件可写，未能重建（其余结构已保留）'])
 b.endif(g_has_empty)
@@ -478,19 +489,16 @@ b.notify(['取不到目录清单：', pick(listing, 'message'),
           '\n（共享可能已过期，请回电脑重新复制）'])
 b.endif(g_listing_ok)
 
-b.else_(g_is_folder)
-
-# --- 普通文件：直接存 ---
-save_confirmed(b.get(item_url), item_name)
-
-b.endif(g_is_folder)
-b.end_repeat(g_each, each=True)
-
-b.notify(['同步完成：', var('文件数量'), ' 项已存入「下载」'])
-
-b.else_(g_has)
-b.notify(['响应里没有文件（type=', var('类型'), '）'])
-b.endif(g_has)
+b.else_(g_has_list)
+# 没拿到合并清单地址，分两种：服务端明确指出合并不了（多台电脑各登记了
+# 目录），或者干脆没给 —— 后者基本就是电脑端版本旧，还只会给单目录清单。
+g_batch_err = b.if_(pick(resp, 'manifest_batch_error'), 100)
+b.notify([pick(resp, 'manifest_batch_error')])
+b.else_(g_batch_err)
+b.notify(['没有目录内容可同步。若刚复制的是目录，多半是电脑端版本过旧'
+          '（需要 1.12.5 及以上，它会给出目录合并清单）'])
+b.endif(g_batch_err)
+b.endif(g_has_list)
 
 b.else_(g_kind)
 b.notify(['请求失败：', var('响应', dkey('message'))])

@@ -9,7 +9,11 @@ from threading import Thread
 from urllib.parse import quote, unquote
 from common.utils import BASE_DIR, reveal_in_explorer
 from common.notification import show_notification_with_click
-from client.folder_manifest import build_manifest, folder_display_name
+from client.folder_manifest import (
+    MANIFEST_MAX_ENTRIES,
+    build_manifest,
+    folder_display_name,
+)
 from server.core.file_latest import (
     get_file_share_ttl_seconds,
     is_file_record_expired,
@@ -288,6 +292,89 @@ class FileServer:
 
             response.response = body_stream()
             return response
+
+        @self.app.route("/manifest/batch", methods=["GET"])
+        def folder_manifest_batch():
+            """多个目录的**合并**清单：把二维的「目录 → 条目」在一处摊平。
+
+            为什么要有这个接口：iOS 快捷指令里「重复每一项」嵌两层时，内层拿到
+            的 Repeat Item 是空的 —— v5 的真机现象就是内层取 `url` 得到空值，
+            「获取 URL 内容」直接报「未指定 URL」。所以接收端全程只能遍历**一
+            层**：所有目录的文件必须先合并成一张表，`dir` 也就得在这里补上
+            「根目录名/」前缀，接收端不必再拼字符串。
+            """
+            self._purge_expired_files()
+            ids, seen = [], set()
+            for raw in (request.args.get("ids") or "").split(","):
+                file_id = raw.strip()
+                if file_id and file_id not in seen:
+                    seen.add(file_id)
+                    ids.append(file_id)
+            if not ids:
+                return jsonify({
+                    "status": "error",
+                    "message": "缺少 ids 参数（形如 ?ids=a,b）",
+                }), 400
+
+            base = request.host_url.rstrip("/")
+            entries, empty_dirs, notices, roots = [], [], [], []
+            total_size, total_dirs, truncated = 0, 0, False
+            for file_id in ids:
+                folder = self._folder_root(file_id)
+                if not folder:
+                    continue
+                payload = build_manifest(folder)
+                if payload is None:
+                    continue
+                root = payload["root"]
+                roots.append(root)
+                prefix = root.rstrip("/") + "/"
+                total_size += payload["total_size"]
+                total_dirs += len(payload["dirs"])
+                if payload["truncated"]:
+                    truncated = True
+                if payload.get("notice") and payload["notice"] not in notices:
+                    notices.append(payload["notice"])
+                for rel_dir in payload["empty_dirs"]:
+                    empty_dirs.append(prefix + rel_dir)
+                for entry in payload["entries"]:
+                    # dir 补上根目录名：接收端拿到就能直接当子路径用，
+                    # 多个目录混在一起也不会撞车。
+                    entry["dir"] = prefix + entry["dir"]
+                    entry["url"] = "{}/file/{}/{}".format(
+                        base, file_id, quote(entry["path"], safe="/"))
+                    entries.append(entry)
+
+            if not entries and not roots:
+                return jsonify({
+                    "status": "error",
+                    "message": "目录共享都不存在或已失效，请回电脑重新复制",
+                }), 404
+
+            # 手工维护条数上限：单个目录时由 build_manifest 截断，多个目录
+            # 合并后也要有总上限，否则接收端会被几千个请求拖死。
+            if len(entries) > MANIFEST_MAX_ENTRIES:
+                entries = entries[:MANIFEST_MAX_ENTRIES]
+                truncated = True
+                notices.append(
+                    f"目录文件超过 {MANIFEST_MAX_ENTRIES} 个，只传前 "
+                    f"{MANIFEST_MAX_ENTRIES} 个，请拆成几个目录分别同步")
+
+            logger.info("合并清单: %s -> %s 个文件 / %s 个目录（截断=%s）",
+                        ",".join(ids), len(entries), total_dirs, truncated)
+            return jsonify({
+                "status": "ok",
+                "roots": roots,
+                # 只共享一个目录时把名字也直接给出，通知里好显示
+                "root": roots[0] if len(roots) == 1 else "、".join(roots),
+                "count": len(entries),
+                "dirs_count": total_dirs,
+                "total_size": total_size,
+                "truncated": truncated,
+                "notice": "；".join(notices),
+                "empty_dirs": empty_dirs,
+                "entries": entries,
+            }), 200
 
         @self.app.route("/manifest/<file_id>", methods=["GET"])
         def folder_manifest(file_id):

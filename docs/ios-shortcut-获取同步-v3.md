@@ -2,7 +2,7 @@
 
 > **已废弃**：v3 的「等电脑打包 → 下载 zip → 解压缩」链路会丢目录层级，v1.12.4
 > 起打包相关代码已整体删除。现行文档见
-> [`ios-shortcut-获取同步-v5.md`](./ios-shortcut-获取同步-v5.md)。
+> [`ios-shortcut-获取同步-v6.md`](./ios-shortcut-获取同步-v6.md)。
 
 
 产物：

@@ -134,3 +134,93 @@ class ManifestShareKeptTest(_FolderCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class BatchManifestTest(_FolderCase):
+    """合并清单：把「目录 → 条目」摊平成一层，接收端只跑一层循环。
+
+    这是 v1.12.5 的关键改动。iOS 的「重复每一项」嵌两层时，内层拿到的
+    Repeat Item 是空的（真机现象：内层取 url 得空，报「未指定 URL」），
+    所以服务端必须先把多目录摊平，手机上才不会有第二层循环。
+    """
+
+    def setUp(self):
+        super().setUp()
+        # 第二个目录，名字不同，用来验证前缀不会撞车
+        self.folder2 = self.root / "文档"
+        (self.folder2 / "第一章").mkdir(parents=True)
+        (self.folder2 / "讲义.txt").write_text("L", encoding="utf-8")
+        (self.folder2 / "第一章" / "作业.txt").write_text("H", encoding="utf-8")
+
+    def _two_servers(self):
+        server = FileServer(local_name="client-a", key="secret")
+        server.register_folder("d1", str(self.folder), size=1)
+        server.register_folder("d2", str(self.folder2), size=1)
+        return server
+
+    def test_dirs_are_prefixed_with_root(self):
+        body = self._two_servers().app.test_client().get(
+            "/manifest/batch?ids=d1,d2").get_json()
+        self.assertEqual(body["status"], "ok")
+        self.assertEqual(body["roots"], ["课程", "文档"])
+        self.assertEqual(body["count"], 5)
+        dirs = {e["path"]: e["dir"] for e in body["entries"]}
+        # 根目录下文件也带前缀 —— 接收端拿 dir 直接当子路径，不需要再拼接
+        self.assertEqual(dirs["readme.txt"], "课程/")
+        self.assertEqual(dirs["子目录/a.txt"], "课程/子目录/")
+        self.assertEqual(dirs["讲义.txt"], "文档/")
+        self.assertEqual(dirs["第一章/作业.txt"], "文档/第一章/")
+        # 每个 dir 都以 "/" 结尾，否则 iOS 会把它当文件名
+        for dir_value in dirs.values():
+            self.assertTrue(dir_value.endswith("/"), dir_value)
+
+    def test_empty_dirs_keep_prefix(self):
+        body = self._two_servers().app.test_client().get(
+            "/manifest/batch?ids=d1").get_json()
+        self.assertEqual(body["empty_dirs"], ["课程/空目录/"])
+
+    def test_urls_downloadable_and_point_at_own_folder(self):
+        server = self._two_servers()
+        body = server.app.test_client().get(
+            "/manifest/batch?ids=d1,d2").get_json()
+        by_name = {e["name"]: e for e in body["entries"]}
+        # url 里的 file_id 必须是它自己那个目录，串了就会拿到别的目录的文件
+        self.assertIn("/file/d2/", by_name["讲义.txt"]["url"])
+        self.assertIn("/file/d1/", by_name["readme.txt"]["url"])
+        resp = server.app.test_client().get(
+            "/file/d2/第一章/作业.txt")
+        self.assertEqual(resp.get_data(), b"H")
+        resp.close()
+
+    def test_unknown_id_is_ignored(self):
+        body = self._two_servers().app.test_client().get(
+            "/manifest/batch?ids=d1,nope").get_json()
+        self.assertEqual(body["status"], "ok")
+        self.assertEqual(body["roots"], ["课程"])
+        self.assertEqual(body["count"], 3)
+
+    def test_all_ids_unknown_is_404(self):
+        resp = self._two_servers().app.test_client().get(
+            "/manifest/batch?ids=nope,nada")
+        self.assertEqual(resp.status_code, 404)
+
+    def test_missing_ids_is_400(self):
+        resp = self._two_servers().app.test_client().get("/manifest/batch")
+        self.assertEqual(resp.status_code, 400)
+
+    def test_duplicate_ids_not_double_counted(self):
+        body = self._two_servers().app.test_client().get(
+            "/manifest/batch?ids=d1,d1").get_json()
+        self.assertEqual(body["count"], 3)
+        self.assertEqual(body["roots"], ["课程"])
+
+    def test_over_limit_truncates_with_notice(self):
+        from client import file_server as fs
+        server = self._two_servers()
+        # file_server 是值导入，得补丁它自己那份绑定
+        with patch.object(fs, "MANIFEST_MAX_ENTRIES", 2):
+            body = server.app.test_client().get(
+                "/manifest/batch?ids=d1,d2").get_json()
+        self.assertEqual(body["count"], 2)
+        self.assertTrue(body["truncated"])
+        self.assertIn("只传前 2 个", body["notice"])

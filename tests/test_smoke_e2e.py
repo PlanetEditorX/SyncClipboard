@@ -15,6 +15,7 @@ file_id 和下载路由对不上、清单里的地址在真机上打不开、手
     电脑上有一个目录 → 手机上拉 → 等到打包完成 → 下载 → 解开 → 文件在里面。
 """
 
+import json
 import os
 import socket
 import struct
@@ -163,12 +164,18 @@ class _SmokeCase(unittest.TestCase):
         return resp.json()
 
     def _download_folder(self, manifest):
-        """按清单逐文件下载，返回 {相对路径: 字节}（这层结构就是目录层级）。"""
+        """按清单逐文件下载，键是手机端真实的落盘路径。
+
+        手机端不做任何拼接：子路径直接取清单给的 `dir`（已含目录名、末尾带
+        "/"），所以这里也用 `dir + name` 当键 —— 这一层就是目录层级。若哪天
+        服务端忘了补根目录名，键会变成 `a.txt` 而不是 `课程资料/a.txt`，
+        断言会立刻炸出来。
+        """
         got = {}
         for entry in manifest["entries"]:
             resp, data = self._download(entry["url"])
             self.assertEqual(resp.status_code, 200, entry["path"])
-            got[entry["path"]] = data
+            got[entry["dir"] + entry["name"]] = data
         return got
 
     def _download(self, url, chunk_size=65536, max_bytes=None):
@@ -210,16 +217,22 @@ class TestFolderRoundTrip(_SmokeCase):
         self.assertEqual(parsed.hostname, "127.0.0.1")
         self.assertEqual(parsed.port, self.file_server.port)
 
-        manifest = self._manifest(entry["manifest_url"])
+        # 手机端只认这条合并清单地址：它把所有目录摊成一层，
+        # 手机上因此只需要一层循环（嵌套两层时内层取不到值）
+        batch_url = payload["manifest_batch_url"]
+        parsed_batch = urlparse(batch_url)
+        self.assertEqual(parsed_batch.hostname, "127.0.0.1")
+        self.assertEqual(parsed_batch.port, self.file_server.port)
+
+        manifest = self._manifest(batch_url)
         self.assertEqual(manifest["status"], "ok")
-        self.assertEqual(manifest["root"], "课程资料")
+        self.assertEqual(manifest["roots"], ["课程资料"])
         self.assertEqual(manifest["count"], 2)
-        self.assertIn("子目录/", manifest["dirs"])
 
         files = self._download_folder(manifest)
-        # 相对路径就是目录层级：子目录里的文件必须带前缀，不能和根目录混在一起
-        self.assertEqual(files["讲义.txt"].decode("utf-8"), "第一章")
-        self.assertEqual(files["子目录/作业.txt"].decode("utf-8"), "第一题")
+        # 键就是落盘路径：目录名在里、子目录在里面，一层都不能少
+        self.assertEqual(files["课程资料/讲义.txt"].decode("utf-8"), "第一章")
+        self.assertEqual(files["课程资料/子目录/作业.txt"].decode("utf-8"), "第一题")
 
         # 一次性消费：再拉一次只剩文本分支
         self.assertEqual(self._request_file().json()["type"], "text")
@@ -242,10 +255,11 @@ class TestFolderRoundTrip(_SmokeCase):
         _, raw = self._download(by_id["f1"]["download_url"])
         self.assertEqual(raw.decode("utf-8"), "记得交作业")
 
-        # 目录按清单逐文件取
-        manifest = self._manifest(by_id["d1"]["manifest_url"])
+        # 目录走顶层合并清单；普通文件不在清单里，走各自的 download_url
+        manifest = self._manifest(payload["manifest_batch_url"])
         self.assertEqual(manifest["count"], 2)
-        self.assertEqual(len(self._download_folder(manifest)), 2)
+        self.assertEqual(sorted(self._download_folder(manifest)),
+                         ["课程资料/子目录/作业.txt", "课程资料/讲义.txt"])
 
 
 class TestInterruptedDownloadRetry(_SmokeCase):
@@ -304,11 +318,12 @@ class TestInterruptedDownloadRetry(_SmokeCase):
         self.assertEqual(payload["files"][0]["file_id"], "d1")
 
         # 重试这次要能真下完（清单还在，逐文件全取到）
-        manifest = self._manifest(payload["files"][0]["manifest_url"])
+        manifest = self._manifest(payload["manifest_batch_url"])
         self.assertEqual(manifest["count"], 40)
         files = self._download_folder(manifest)
         self.assertEqual(len(files), 40)
-        self.assertTrue(all(name.endswith(".txt") for name in files))
+        self.assertTrue(all(name.startswith("大目录/") and name.endswith(".txt")
+                            for name in files), sorted(files)[:3])
 
     def test_abrupt_client_close_keeps_share(self):
         """真断流：下到一半就掐，共享不能被当成「已下完」删掉。
@@ -378,8 +393,8 @@ class TestTextOnly(_SmokeCase):
 class TestShortcutArtifact(_SmokeCase):
     """快捷指令交付物本身也要能通过冒烟：容器完好、且不含已废弃的打包链路。"""
 
-    UNSIGNED = ROOT / "shortcuts" / "获取同步v5-unsigned.plist"
-    SIGNED = ROOT / "shortcuts" / "获取同步v5.shortcut"
+    UNSIGNED = ROOT / "shortcuts" / "获取同步v6-unsigned.plist"
+    SIGNED = ROOT / "shortcuts" / "获取同步v6.shortcut"
 
     def _actions(self):
         import plistlib
@@ -404,8 +419,9 @@ class TestShortcutArtifact(_SmokeCase):
                      "is.workflow.actions.delay",         # 只在打包轮询里用过
                      "is.workflow.actions.repeat.count"):
             self.assertNotIn(gone, idents, f"{gone} 不该再出现")
-        # 目录必须走清单：有取清单的下载动作，且引用的是 manifest_url
-        self.assertIn("manifest_url", str(actions), "没有引用 manifest_url")
+        # 目录必须走合并清单：引用的是 manifest_batch_url（不是单目录的
+        # manifest_url —— 后者要遍历每个目录，手机上就得多一层循环）
+        self.assertIn("manifest_batch_url", str(actions), "没有引用合并清单地址")
 
     def test_every_save_has_input_folder_and_subpath(self):
         """「存储到文件」缺任何一项都会静默出问题。
@@ -422,7 +438,9 @@ class TestShortcutArtifact(_SmokeCase):
             self.assertTrue(params.get("WFFolder"),
                             f"[{i}] 存储到文件没指定目标目录")
 
-        # 目录分支那个「存储到文件」必须带子路径，且拼进去的字符串以 "/" 收尾
+        # 目录分支那个「存储到文件」必须带子路径，且子路径要接上清单的 dir
+        # （dir 已含「目录名/」前缀并以 "/" 收尾，斜杠由服务端保证 —— 快捷指令
+        # 里不再自己拼字符串，拼错了真机上是「看着跑完、目录还是平的」）。
         subpaths = [
             (a["WFWorkflowActionParameters"] or {}).get("WFFileDestinationPath")
             for a in self._actions()
@@ -431,10 +449,15 @@ class TestShortcutArtifact(_SmokeCase):
         subpaths = [s for s in subpaths if s]
         self.assertTrue(subpaths, "目录分支缺少子路径，写文件会全平在下载根下")
         for token in subpaths:
-            text = token["Value"]["string"]
-            self.assertIn("/", text)
-            self.assertIn("dir", token["Value"]["attachmentsByRange"].__str__()
-                          + str(text), "子路径没有接上清单里的 dir")
+            blob = json.dumps(token["Value"], ensure_ascii=False)
+            self.assertIn("dir", blob, "子路径没有接上清单里的 dir")
+
+        # 子路径存在时必须打开覆盖，否则同一个文件同步两次会变成「a 1.txt」
+        for action in self._actions():
+            params = action.get("WFWorkflowActionParameters") or {}
+            if params.get("WFFileDestinationPath"):
+                self.assertTrue(params.get("WFSaveFileOverwrite"),
+                                "目录写入没打开覆盖，重复同步会存成「名字 1」")
 
 if __name__ == "__main__":
     unittest.main()

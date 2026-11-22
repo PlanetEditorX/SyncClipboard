@@ -191,6 +191,13 @@ class TestFolderPullContract(_FlaskCase):
             "http://127.0.0.1:9100/manifest/d1")
         self.assertEqual(payload["manifest_url"],
                          "http://127.0.0.1:9100/manifest/d1")
+        # 合并清单：手机上只能跑一层循环（嵌套两层的「重复每一项」内层取不到
+        # 值，v5 真机就是在这里报「未指定 URL」），所以顶层要给出一条把所有
+        # 目录摊平的地址。
+        self.assertEqual(
+            payload["manifest_batch_url"],
+            "http://127.0.0.1:9100/manifest/batch?ids=d1")
+        self.assertEqual(payload["manifest_count"], 1)
         # 打包接口已删除，别再下发给客户端
         self.assertNotIn("prepare_url", payload["files"][0])
         self.assertNotIn("prepare_url", payload)
@@ -204,8 +211,39 @@ class TestFolderPullContract(_FlaskCase):
         folder, plain = payload["files"]
         self.assertTrue(folder["manifest_url"].endswith("/manifest/d1"))
         self.assertNotIn("manifest_url", plain)
-        # 混合列表不该有顶层快捷字段，免得接收端误判
+        # 混合列表不该有顶层单目录字段，免得接收端误判
         self.assertNotIn("manifest_url", payload)
+        # 但合并清单要给：否则混合场景里目录那部分就传不过来
+        self.assertEqual(payload["manifest_batch_url"],
+                         "http://127.0.0.1:9100/manifest/batch?ids=d1")
+
+
+    def test_two_folders_share_one_batch_url(self):
+        self._push([self._folder_record(),
+                    {"file_id": "d2", "path": "D:/Downloads/文档", "name": "文档",
+                     "size": 1, "kind": "folder"}], port=9100)
+        payload = self._pull()
+        self.assertEqual(payload["manifest_batch_url"],
+                         "http://127.0.0.1:9100/manifest/batch?ids=d1,d2")
+        self.assertEqual(payload["manifest_count"], 2)
+
+    def test_folders_from_different_ports_cannot_batch(self):
+        """目录来自两个文件服务时合并不了 —— 明确报错，不要悄悄少传。"""
+        self.latest_file.records = [
+            {"file_id": "d1", "ip": "127.0.0.1", "port": 9100, "name": "课程",
+             "size": 1, "kind": "folder"},
+            {"file_id": "d2", "ip": "127.0.0.1", "port": 9200, "name": "文档",
+             "size": 1, "kind": "folder"},
+        ]
+        payload = self._pull()
+        self.assertNotIn("manifest_batch_url", payload)
+        self.assertIn("manifest_batch_error", payload)
+
+    def test_plain_files_only_have_no_batch_url(self):
+        self._push([{"file_id": "f1", "path": "D:/Downloads/a.txt",
+                     "name": "a.txt", "size": 3, "kind": "file"}], port=9100)
+        payload = self._pull()
+        self.assertNotIn("manifest_batch_url", payload)
 
 
 class TestShareReannounce(unittest.TestCase):
