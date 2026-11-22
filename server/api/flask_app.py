@@ -1196,6 +1196,9 @@ def request_file():
                     # 目录由发送端按需打包。prepare 地址一并给出，手机端（含 iOS
                     # 快捷指令）不必自己拼 URL 就能「先等打包完成再下载」。
                     entry["prepare_url"] = f"http://{ip}:{port}/prepare/{file_id}"
+                    # 逐文件清单：不打包，直接按目录结构一项项取。手机端
+                    # 「解压缩」会摊平层级，走这条路才能保住目录结构。
+                    entry["manifest_url"] = f"http://{ip}:{port}/manifest/{file_id}"
                 file_list.append(entry)
             else:
                 logging.warning(f"跳过无效文件记录: {info}")
@@ -1215,6 +1218,7 @@ def request_file():
             }
             if is_single_folder:
                 payload["prepare_url"] = file_list[0]["prepare_url"]
+                payload["manifest_url"] = file_list[0].get("manifest_url")
             return jsonify(payload), 200
         # 如果列表为空（所有记录均无效），继续执行文本逻辑
 

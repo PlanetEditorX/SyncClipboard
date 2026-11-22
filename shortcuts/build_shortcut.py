@@ -7,11 +7,15 @@
 2. 结构收敛：type == text 走文本分支，否则走文件分支；文件分支内按
    Repeat Item.kind 判断目录/文件，因此「单目录」「多文件」「目录+文件混合」
    三种情况共用同一段下载循环。
-3. 调试开关：配置词典里的「调试」= 开/关。开时每个步骤弹一条静音通知
+3. 目录默认走「逐文件」：先取 /manifest 清单，再按清单逐项下载、按清单给的
+   相对路径写进对应子目录。**不打包** —— iOS 的「解压缩」会把包内目录摊平，
+   走压缩包必然丢层级（v3 的真机现象：所有文件都躺在「下载」根下）。
+   配置里「目录传输」设成「压缩包」时仍走老路子，留作对照/应急。
+4. 调试开关：配置词典里的「调试」= 开/关。开时每个步骤弹一条静音通知
    （进入通知中心可回看），关时全程静默，只留结束提示。
-4. 打包轮询改成嵌套循环：内层 15 次 × 2 秒 ≈ 30 秒，外层 40 轮 ≈ 最长 20 分钟，
-   外层每轮输出一条进度通知，避免每 2 秒刷一条通知。上限定在 20 分钟是因为
-   客户端的「共享存活」从电脑复制那一刻起算、默认 30 分钟，超时要能先于它触发。
+5. 打包轮询（仅压缩包模式）：内层 15 次 × 2 秒 ≈ 30 秒，外层 40 轮 ≈ 最长
+   20 分钟；上限定在 20 分钟是因为客户端「共享存活」默认 30 分钟，超时要能
+   先于它触发。逐文件模式不需要等待，请求即取。
 
 用法
 ----
@@ -25,7 +29,7 @@ import uuid
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 REF = os.path.join(HERE, '获取同步-unsigned.plist')          # 仅借用顶层元数据
-OUT = os.path.join(HERE, '获取同步v3-unsigned.plist')
+OUT = os.path.join(HERE, '获取同步v4-unsigned.plist')
 
 OBJ = '\ufffc'          # 文本里变量的占位符
 
@@ -242,14 +246,29 @@ class SC:
                   {'UUID': uid, 'WFArchive': att(archive)})
         return act_out(uid, 'Files')
 
-    def save_to_folder(self, subject):
+    def save_to_folder(self, subject, subpath=None):
+        """存储到文件。
+
+        subpath 是「子路径」（parts 列表），用来在目标文件夹里重建目录层级：
+        iOS 的实现是 `WFFileDestinationPath`，**必须以 "/" 结尾**才被当成
+        目录，否则它会拿这个字符串去改文件名 —— 这也是包内层级丢失后一个
+        常见的坑。`WFDestinationPath` 是旧版键名，一并写上去，多写的键
+        iOS 会忽略，少写则整段子路径都失效。
+        """
         uid = U()
-        self._add('is.workflow.actions.documentpicker.save', {
+        p = {
             'UUID': uid,
             'WFAskWhereToSave': False,
             'WFFolder': FOLDER_DOWNLOAD,
             'WFInput': att(subject),
-        })
+        }
+        if subpath is not None:
+            p['WFFileDestinationPath'] = tok(subpath)
+            p['WFDestinationPath'] = tok(subpath)
+            # 同一个文件重复同步时覆盖，否则 iOS 会存成「a 1.txt」
+            p['WFSaveFileOverwrite'] = True
+            p['WFOverwriteFile'] = True
+        self._add('is.workflow.actions.documentpicker.save', p)
         return act_out(uid, 'Saved Files')
 
     # -- 控制流 ----------------------------------------------------------
@@ -326,12 +345,16 @@ class SC:
 b = SC()
 DEBUG = '调试'          # 配置词典里的开关键
 PROTO, HOST, PORT, KEY = '协议', '主机', '端口', '密钥'
+MODE = '目录传输'        # 目录走「逐文件」还是「压缩包」
+ROOT_SUB = '根子路径'    # 逐文件落盘的路径前缀（见 cfg 里的说明）
 REPEAT_ITEM = 'Repeat Item'
 
-b.comment('SyncClipboard 拉取 v2（重构版）\n'
+b.comment('SyncClipboard 拉取 v4（逐文件保目录结构）\n'
           '改配置：编辑下面「配置」词典里的协议/主机/端口/密钥/调试\n'
+          '目录传输 = 逐文件：按清单一个个取文件，目录结构与电脑上一致\n'
+          '目录传输 = 压缩包：老路子（等电脑打包 → 下载 → 解压），会丢层级\n'
           '调试 = 开 时每个步骤弹一条静音通知，跑完可在通知中心回看\n'
-          '文件统一存入「下载」，需要换目录请在两个「存储到文件」动作里重选')
+          '文件统一存入「下载」，需要换目录请在「存储到文件」动作里重选')
 
 cfg = b.dictionary([
     (PROTO, 'http'),
@@ -339,6 +362,12 @@ cfg = b.dictionary([
     (PORT, '8000'),
     (KEY, '123456'),
     (DEBUG, '开'),
+    # 逐文件模式的两档：传输方式，以及落盘子路径的前缀。
+    # 前缀留空即「子路径相对所选文件夹（下载）」；万一你的 iOS 把它当成
+    # 存储根相对路径，文件会落到「下载/下载/项目名/…」，那时把它填成
+    # 「下载/」即可，不必重新生成快捷指令。
+    (MODE, '逐文件'),
+    (ROOT_SUB, ''),
 ], out_name='配置')
 
 # ---- 1 地址 ---------------------------------------------------------------
@@ -360,7 +389,7 @@ def dbg(parts):
     b.endif(g)
 
 
-def save_confirmed(subject, label):
+def save_confirmed(subject, label, subpath=None):
     """存盘并核对真的落了盘。
 
     「存储到文件」拿到空输入时**不报错也不存盘**，直接在后面接一句「已保存」
@@ -368,7 +397,7 @@ def save_confirmed(subject, label):
     没写进「下载」，通知却显示成功。这里拿存盘动作自己的输出做判据（它有输出
     就说明真写了文件），没有就明确报错，把问题暴露在用户面前而不是日志里。
     """
-    saved = b.save_to_folder(subject)
+    saved = b.save_to_folder(subject, subpath=subpath)
     g_ok = b.if_(saved, 100)                # 有任何值 = 确实写入了
     dbg(['   已保存 ', label])
     b.else_(g_ok)
@@ -425,7 +454,10 @@ dbg(['   · 开始下载 ', item_name, '（', item_kind, '）'])
 
 g_is_folder = b.if_(item_kind, IS, 'folder')
 
-# --- 目录：先等打包完成 ---
+# 「目录传输」= 压缩包 时走老路子，否则逐文件（默认）。
+g_zip_mode = b.if_(act_out(cfg, '配置', dkey(MODE)), IS, '压缩包')
+
+# --- 目录 / 压缩包：先等打包完成 ---
 b.comment('打包轮询：内层 15 次 × 2 秒 ≈ 30 秒，外层 40 轮 ≈ 最长 20 分钟；\n'
           '外层每轮输出一条进度，避免每 2 秒刷一条通知。\n'
           '上限必须小于客户端「共享存活」（默认 30 分钟），否则超时前共享已被清掉')
@@ -475,6 +507,63 @@ b.else_(g_unzipped)
 dbg(['   解压无输出，改存压缩包 ', item_name])
 save_confirmed(var('压缩包'), item_name)
 b.endif(g_unzipped)
+
+b.else_(g_zip_mode)
+
+# --- 目录 / 逐文件：按清单一项项取，路径由清单给 ---
+#
+# 为什么不再打包：iOS 的「解压缩」会把包内文件摊平，目录层级在解压那一刻
+# 就没了，全堆进同一个文件夹。改成逐文件后每项单独下载、单独写子路径，
+# 层级由我们自己按清单重建，顺带还能跳过单个坏文件。
+b.comment('逐文件：清单 → 逐个下载 → 按 dir 写进「下载/目录名/dir」')
+b.setvar('清单地址', var(REPEAT_ITEM, dkey('manifest_url')))
+listing = b.get(var('清单地址'))
+b.setvar('清单', listing)
+
+g_listing_ok = b.if_(pick(listing, 'status'), IS, 'ok')
+
+b.setvar('清单根', pick(listing, 'root'))
+b.setvar('清单文件数', act_out(b.count(pick(listing, 'entries')), '计数'))
+b.setvar('空目录数', act_out(b.count(pick(listing, 'empty_dirs')), '计数'))
+dbg(['   清单 ', var('清单根'), ' ｜ ', var('清单文件数'), ' 个文件 ｜ 空目录 ',
+     var('空目录数')])
+
+g_truncated = b.if_(pick(listing, 'notice'), 100)   # 有任何值 = 服务端有话说
+b.notify([pick(listing, 'notice')])
+b.endif(g_truncated)
+
+g_has_files = b.if_(var('清单文件数'), GT, number=0)
+
+g_each_file = b.repeat_each(pick(listing, 'entries'))
+
+entry_name = var(REPEAT_ITEM, dkey('name'))
+# 子路径必须在末尾带 "/"：iOS 见到斜杠才当目录，否则拿它去改文件名。
+# 目录为空串时也要带上「清单根/」，这样根目录下的文件才有落点。
+dest = [act_out(cfg, '配置', dkey(ROOT_SUB)), var('清单根'), '/',
+        var(REPEAT_ITEM, dkey('dir'))]
+dbg(['   · ', var('清单根'), '/', var(REPEAT_ITEM, dkey('dir')), entry_name])
+
+save_confirmed(b.get(var(REPEAT_ITEM, dkey('url'))),
+               [var('清单根'), '/', var(REPEAT_ITEM, dkey('dir')), entry_name],
+               subpath=dest)
+
+b.end_repeat(g_each_file, each=True)
+
+b.notify(['同步完成：', var('清单根'), ' 共 ', var('清单文件数'), ' 个文件'])
+g_has_empty = b.if_(var('空目录数'), GT, number=0)
+b.notify([var('空目录数'), ' 个空目录没有文件可写，未能重建（其余结构已保留）'])
+b.endif(g_has_empty)
+
+b.else_(g_has_files)
+b.notify(['目录是空的：', var('清单根')])
+b.endif(g_has_files)
+
+b.else_(g_listing_ok)
+b.notify(['取不到目录清单：', pick(listing, 'message'),
+          '\n（共享可能已过期，请回电脑重新复制）'])
+b.endif(g_listing_ok)
+
+b.endif(g_zip_mode)
 
 b.else_(g_is_folder)
 

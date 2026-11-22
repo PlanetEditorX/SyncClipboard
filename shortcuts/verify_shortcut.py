@@ -46,6 +46,15 @@ def param_keys(act):
 # 只有一个具名参数 Archive，键名就是 WFArchive。
 KNOWN_EXTRA_PARAMS = {
     ('is.workflow.actions.unzip', 'WFArchive'),
+    # 「存储到文件」的子路径与覆盖开关。参考文件（v1）里这两组都没用到，
+    # 但键名有两个来源可核：ScPL 的动作文档给出 `WFFileDestinationPath` /
+    # `WFSaveFileOverwrite`，早期逆向资料给的是 `WFDestinationPath` /
+    # `WFOverwriteFile`。未知键 iOS 会忽略，所以两个键名都写 —— 少写的那一
+    # 个才会真的丢功能（丢子路径 = 层级又不保）。
+    ('is.workflow.actions.documentpicker.save', 'WFFileDestinationPath'),
+    ('is.workflow.actions.documentpicker.save', 'WFDestinationPath'),
+    ('is.workflow.actions.documentpicker.save', 'WFSaveFileOverwrite'),
+    ('is.workflow.actions.documentpicker.save', 'WFOverwriteFile'),
     # 通用参数，iOS 自己导出时也常带，无害
     ('is.workflow.actions.repeat.count', 'UUID'),
 }

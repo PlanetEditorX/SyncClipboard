@@ -7,13 +7,14 @@ import threading
 import pyperclip
 import requests
 from threading import Thread
-from urllib.parse import unquote
+from urllib.parse import quote, unquote
 from common.utils import BASE_DIR, reveal_in_explorer
 from common.notification import show_notification_with_click
 from client.folder_archive import (
     FolderArchiveCancelled,
     zip_folder,
 )
+from client.folder_manifest import build_manifest
 from server.core.file_latest import (
     get_file_share_ttl_seconds,
     is_file_record_expired,
@@ -338,6 +339,82 @@ class FileServer:
 
             response.response = body_stream()
             return response
+
+        @self.app.route("/manifest/<file_id>", methods=["GET"])
+        def folder_manifest(file_id):
+            """目录共享的文件清单：逐文件传输时用，不打包、不等打包。
+
+            iOS 的「解压缩」会把包内目录摊平，接收端只能拿到一堆散装文件。
+            走这条路就不必经过压缩包：清单给出每项的相对路径和下载地址，
+            接收端逐项下载并写回子目录，层级由它自己重建。
+            """
+            self._purge_expired_files()
+            with self._shared_files_lock:
+                job = self._folder_shares.get(file_id)
+                folder = job["folder"] if job else None
+            if not folder:
+                return jsonify({
+                    "status": "error",
+                    "file_id": file_id,
+                    "message": "file_id 不存在或不是目录共享",
+                }), 404
+
+            payload = build_manifest(folder)
+            if payload is None:
+                return jsonify({
+                    "status": "error",
+                    "file_id": file_id,
+                    "message": "目录已不存在或无法读取",
+                }), 404
+
+            # 用请求带的 Host 拼绝对地址：接收端就是通过这个地址找到我们的，
+            # 回给它的地址一定能用，不必猜本机网卡 IP。
+            base = request.host_url.rstrip("/")
+            for entry in payload["entries"]:
+                entry["url"] = "{}/file/{}/{}".format(
+                    base, file_id, quote(entry["path"], safe="/"))
+            payload["file_id"] = file_id
+            logger.info("目录清单: %s -> %s 个文件 / %s 个目录（截断=%s）",
+                        file_id, payload["count"], len(payload["dirs"]),
+                        payload["truncated"])
+            return jsonify(payload), 200
+
+        @self.app.route("/file/<file_id>/<path:rel_path>", methods=["GET"])
+        def download_member(file_id, rel_path):
+            """目录共享里的单个文件。
+
+            与 `/file/<file_id>` 的区别：这里只发一个文件，且**不**在发完
+            后撤销共享 —— 一份目录要连续取很多次，撤销得等接收端自己用完
+            （或到期清理）。
+            """
+            self._purge_expired_files()
+            with self._shared_files_lock:
+                job = self._folder_shares.get(file_id)
+                folder = job["folder"] if job else None
+            if not folder:
+                return jsonify({
+                    "status": "error",
+                    "message": "file_id 不存在或不是目录共享",
+                }), 404
+
+            base = os.path.realpath(folder)
+            target = os.path.realpath(os.path.join(base, unquote(rel_path)))
+            # 目录穿越（../、绝对路径、指向目录外的符号链接）一律拒掉
+            try:
+                inside = os.path.commonpath([base, target]) == base
+            except ValueError:      # 不同盘符
+                inside = False
+            if not inside or not os.path.isfile(target):
+                logger.warning("拒绝越界的目录内文件请求: %s -> %s",
+                               file_id, rel_path)
+                return jsonify({
+                    "status": "error",
+                    "message": "文件不存在或路径越界",
+                }), 404
+
+            logger.info("目录内文件下载: %s -> %s", file_id, target)
+            return send_file(target, as_attachment=True,
+                             download_name=os.path.basename(target))
 
     def _begin_download(self, file_id):
         with self._shared_files_lock:

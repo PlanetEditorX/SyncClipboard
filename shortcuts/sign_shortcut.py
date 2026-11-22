@@ -8,7 +8,10 @@ Windows 上也没有本地签名手段（需 macOS 钥匙串里的 Apple ID 私�
     注意：工作流全文（含配置词典里的内网地址与密钥）会发送到
     hubs.routinehub.services 这个第三方。
 
-    python sign_shortcut.py
+    网络：请求会**绕过**系统 HTTP(S)_PROXY 直连。走代理时 Cloudflare 会
+    回 403（Attention Required），直连才是 200。
+
+    python sign_shortcut.py [v4]
 """
 
 import json
@@ -16,14 +19,21 @@ import os
 import plistlib
 import struct
 import sys
-from urllib.request import Request, urlopen
+from urllib.request import ProxyHandler, Request, build_opener
 
-import liblzfse
+try:
+    import liblzfse               # 只用于签名后的回验（bvx2 段解压）
+except ImportError:               # 退而求其次：PyPI 上的 lzfse 提供同名函数
+    try:
+        import lzfse as liblzfse
+    except ImportError:           # 都没装也能签，只是少了逐动作比对
+        liblzfse = None
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-SRC = os.path.join(HERE, '获取同步v3-unsigned.plist')
-DST = os.path.join(HERE, '获取同步v3.shortcut')
-NAME = '获取同步v3'
+VERSION = sys.argv[1] if len(sys.argv) > 1 else 'v4'
+SRC = os.path.join(HERE, f'获取同步{VERSION}-unsigned.plist')
+DST = os.path.join(HERE, f'获取同步{VERSION}.shortcut')
+NAME = f'获取同步{VERSION}'
 
 HUBSIGN_URL = 'https://hubsign.routinehub.services/sign'
 HEADERS = {
@@ -40,7 +50,11 @@ def main():
     payload = json.dumps({'shortcutName': NAME, 'shortcut': xml}).encode()
 
     req = Request(HUBSIGN_URL, data=payload, headers=HEADERS, method='POST')
-    with urlopen(req, timeout=180) as resp:
+    # 强制直连：本机环境变量里挂着 HTTP(S)_PROXY 时，请求会从代理出口出去，
+    # 而 HubSign 前置的 Cloudflare 会把这个出口判成异常流量，直接回 403
+    # 「Attention Required」。绕开代理反而能正常拿到 200。
+    opener = build_opener(ProxyHandler({}))
+    with opener.open(req, timeout=180) as resp:
         data = resp.read()
         print('HTTP', resp.status, 'bytes', len(data), 'magic', data[:4])
 
@@ -53,6 +67,11 @@ def main():
     print('saved', DST, os.path.getsize(DST), 'B')
 
     # --- 解包回验：签名后的工作流必须与源文件逐动作一致 ---
+    if liblzfse is None:
+        print('动作数一致: 未校验（缺 liblzfse，无法解 bvx2 段）')
+        print('AEA1 容器:', data[:4] == b'AEA1')
+        return 0
+
     i = data.find(b'bvx2')
     _, n_payload = struct.unpack('<II', data[i + 4:i + 12])
     out = liblzfse.decompress(data[i:i + 12 + n_payload])

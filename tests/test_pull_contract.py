@@ -176,6 +176,40 @@ class TestFileSyncPortFallback(_FlaskCase):
         )
 
 
+class TestFolderPullContract(_FlaskCase):
+    """目录共享必须同时给出两条路：打包（prepare）与逐文件（manifest）。"""
+
+    def _folder_record(self):
+        return {"file_id": "d1", "path": "D:/Downloads/课程", "name": "课程.zip",
+                "size": 999, "kind": "folder"}
+
+    def test_single_folder_has_both_urls(self):
+        self._push([self._folder_record()], port=9100)
+        payload = self._pull()
+        self.assertEqual(payload["type"], "folder")
+        self.assertEqual(
+            payload["files"][0]["prepare_url"], "http://127.0.0.1:9100/prepare/d1")
+        # 逐文件模式靠这个地址取清单；缺了它，快捷指令只能回退到压缩包，
+        # 而压缩包在 iOS 上解压必然摊平目录结构。
+        self.assertEqual(
+            payload["files"][0]["manifest_url"],
+            "http://127.0.0.1:9100/manifest/d1")
+        self.assertEqual(payload["manifest_url"],
+                         "http://127.0.0.1:9100/manifest/d1")
+
+    def test_mixed_list_keeps_manifest_url_per_entry(self):
+        self._push([self._folder_record(),
+                    {"file_id": "f1", "path": "D:/Downloads/a.txt", "name": "a.txt",
+                     "size": 3, "kind": "file"}], port=9100)
+        payload = self._pull()
+        self.assertEqual(payload["type"], "file_list")
+        folder, plain = payload["files"]
+        self.assertTrue(folder["manifest_url"].endswith("/manifest/d1"))
+        self.assertNotIn("manifest_url", plain)
+        # 混合列表不该有顶层快捷字段，免得接收端误判
+        self.assertNotIn("manifest_url", payload)
+
+
 class TestShareReannounce(unittest.TestCase):
     """下载中断后把仍留着的共享重新登记，让接收端能直接重试。"""
 
