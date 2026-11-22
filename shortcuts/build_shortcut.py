@@ -43,7 +43,7 @@ import uuid
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 REF = os.path.join(HERE, '获取同步-unsigned.plist')          # 仅借用顶层元数据
-OUT = os.path.join(HERE, '获取同步v11-unsigned.plist')
+OUT = os.path.join(HERE, '获取同步v12-unsigned.plist')
 
 OBJ = '\ufffc'          # 文本里变量的占位符
 
@@ -525,6 +525,10 @@ save_confirmed(b.get(f_url), [f_name],
 b.endif(g_is_file)
 b.end_repeat(g_each, each=True)
 
+# 结束标记必须写：v11 真机上单纯复制几个文件时，日志停在最后一条「OK 写入」
+# 就没了，看不出是**正常跑完**还是**半路断掉** —— 目录分支有这行，文件分支
+# 漏了，排查时得靠数行数猜。补上以后两条路径的收尾形态一致。
+log(['③ 文件同步结束：', var('文件数量'), ' 个'])
 log_push()
 b.endif(g_has)
 
