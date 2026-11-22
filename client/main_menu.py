@@ -108,6 +108,8 @@ class SyncClient:
         self.server_url = f"http://{config['server_host']}:{config['server_port']}"
         self.key = config["key"]
         self.local_name = config["local_name"]
+        # 文件服务端口：file_server 对象还没就绪时用它兜底拼下载地址
+        self.file_server_port = config.get("file_server_port")
         self.last_text = ""
         self.running = False
         self.last_remote_id = None
@@ -323,6 +325,19 @@ class SyncClient:
         except Exception:
             logger.exception("连接服务端失败")
 
+    def _share_port(self):
+        """上报给服务端的下载端口：文件服务对象优先、配置次之、最后默认。
+
+        三处都为空时不能传 None 出去 —— 服务端的 `data.get("port", 8899)` 在
+        「键存在、值为 None」时不回落默认值，记录会以 port=None 落库，
+        `/request_file` 再把每一条都跳过，文件静默消失。
+        """
+        return (
+            getattr(self.file_server, 'port', None)
+            or self.file_server_port
+            or 8899
+        )
+
     def _push_latest_file(self, file_paths):
         """
         推送最新的文件
@@ -410,6 +425,11 @@ class SyncClient:
         else:
             label = f"{file_list[0]['name']} 等 {len(file_list)} 个文件"
 
+        # 端口必须是数字：file_server 还没就绪时会拿到 None，而服务端的
+        # `data.get("port", 8899)` 在「键存在、值为 null」时不会回落到默认值，
+        # 于是整批记录都以 port=None 落库，接收端拉取时被逐条跳过。
+        share_port = self._share_port()
+
         try:
             resp = requests.post(
                 f"{self.server_url}/file_sync",
@@ -417,7 +437,7 @@ class SyncClient:
                 json={
                     "file_list": file_list,
                     "source": getattr(self, 'local_name', 'unknown'),
-                    "port": getattr(self.file_server, 'port', None)
+                    "port": share_port
                 },
                 timeout=10
             )
@@ -433,6 +453,46 @@ class SyncClient:
         if hasattr(self, 'file_server') and self.file_server:
             for item in file_list:
                 self.file_server.unregister_file(item["file_id"])
+
+    def reannounce_shares(self):
+        """下载中断后，把本机仍持有的共享重新登记到服务端。
+
+        `/request_file` 在返回前就把文件记录清空了（一次性消费），而
+        FileServer 为了让接收端能重试，会把压缩包留到 TTL 到期。两者叠加的
+        结果是：接收端下载失败后再拉一次只能拿到文本分支，只能回电脑重新
+        复制一遍。这里用还留着的共享重建 file_list 再推一次，让重试可行。
+        """
+        if not self.file_server:
+            return
+        if not is_send_allowed(self.file_sync_mode):
+            return
+
+        file_list = self.file_server.share_entries()
+        if not file_list:
+            return
+
+        share_port = self._share_port()
+        try:
+            resp = requests.post(
+                f"{self.server_url}/file_sync",
+                headers={"key": self.key},
+                json={
+                    "file_list": file_list,
+                    "source": self.local_name,
+                    "port": share_port,
+                },
+                timeout=10,
+            )
+            if resp.status_code == 200:
+                logger.warning(
+                    "下载中断，已重新登记 %d 项共享供接收端重试", len(file_list)
+                )
+            else:
+                logger.warning(
+                    f"重新登记共享失败: {resp.status_code} {resp.text}"
+                )
+        except Exception as e:
+            logger.warning(f"重新登记共享失败: {e}")
 
     def _folder_ready_for_zip(self, folder_path):
         """判断这个目录要不要共享，并返回 (是否共享, 原始总字节数)。

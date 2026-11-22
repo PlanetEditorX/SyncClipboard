@@ -143,7 +143,7 @@ def main():
         local_name=local_name,
         key=key,
         save_path=save_path,
-        share_ttl_seconds=getattr(config_manager, "file_share_ttl_minutes", 10) * 60,
+        share_ttl_seconds=getattr(config_manager, "file_share_ttl_minutes", 30) * 60,
     )
 
     # 创建同步客户端实例
@@ -162,12 +162,15 @@ def main():
         },
         file_server    # 传入文件服务器对象，供客户端内部使用
     )
+    # 下载中途失败时，服务端的文件记录早已被 /request_file 清空，
+    # 由客户端把仍留着的共享重新登记一次，接收端才能直接重试而不必回电脑重复制。
+    file_server.set_reannounce_handler(client.reannounce_shares)
     logger.info(
         f"同步方向 | 文字: {getattr(config_manager, 'text_sync_mode', 'both')} | "
         f"文件: {getattr(config_manager, 'file_sync_mode', 'both')} | "
         f"目录: {getattr(config_manager, 'folder_sync_enabled', True)} | "
         f"目录上限: {getattr(config_manager, 'folder_zip_confirm_gb', 10)} GB | "
-        f"共享存活: {getattr(config_manager, 'file_share_ttl_minutes', 10)} 分钟"
+        f"共享存活: {getattr(config_manager, 'file_share_ttl_minutes', 30)} 分钟"
     )
     file_server.start()   # 启动文件服务器的后台线程（监听文件上传/下载请求）
 

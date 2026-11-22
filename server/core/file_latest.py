@@ -7,8 +7,11 @@ from common.utils import BASE_DIR
 FILE_LATEST_FILE = BASE_DIR / "latest" / "file_latest.json"
 FILE_LATEST_FILE.parent.mkdir(parents=True, exist_ok=True)
 
-# 共享文件默认存活 10 分钟；面板可改，运行时通过 set_file_share_ttl() 生效
-DEFAULT_FILE_SHARE_TTL_SECONDS = 10 * 60
+# 共享文件默认存活 30 分钟；面板可改，运行时通过 set_file_share_ttl() 生效。
+# 这个时钟从「电脑上复制那一刻」起算，打包时间和下载时间都算在里面：
+# 大目录（5GB 级）打包可能两三分钟、手机端下载再来几分钟，10 分钟会中途
+# 把共享清掉，接收端只看到 404。留 30 分钟给「打包 + 下载」两端余量。
+DEFAULT_FILE_SHARE_TTL_SECONDS = 30 * 60
 FILE_SHARE_TTL_SECONDS = DEFAULT_FILE_SHARE_TTL_SECONDS
 
 

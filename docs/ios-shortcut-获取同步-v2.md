@@ -1,0 +1,137 @@
+# 获取同步 v2（重构版）说明
+
+产物：
+
+| 文件 | 说明 |
+|---|---|
+| `shortcuts/获取同步v2.shortcut` | 已签名，可直接导入 iPhone（31 KB / 100 个动作） |
+| `shortcuts/获取同步v2-unsigned.plist` | 未签名源（生成物，别直接导入 iOS） |
+| `shortcuts/build_shortcut.py` | 生成器，改逻辑改这里，不要手改 plist |
+| `shortcuts/verify_shortcut.py` | 校验器：控制流配对 / 引用完整性 / 打印动作树 |
+| `shortcuts/sign_shortcut.py` | 调用 HubSign 签名并解包回验 |
+
+所有 Python 脚本都在 `shortcuts/` 下，标准流程：
+
+```bash
+cd shortcuts
+python build_shortcut.py      # 改完 build_shortcut.py 后重新生成
+python verify_shortcut.py     # 必须 0 异常再签名
+python sign_shortcut.py       # 签名 + 回验动作序列
+```
+
+## 配置
+
+导入后编辑第一个「词典」动作（输出名为 `配置`）：
+
+| 键 | 默认值 | 说明 |
+|---|---|---|
+| 协议 | `http` | |
+| 主机 | `192.168.1.24` | 电脑的局域网 IP |
+| 端口 | `8000` | |
+| 密钥 | `123456` | 与电脑端一致 |
+| **调试** | `开` | 改成 `关` 即全程静默，只留结束提示 |
+
+## 调试怎么用
+
+调试 = `开` 时，每个关键节点会弹一条**静音通知**，跑完后下拉通知中心就是一份完整执行轨迹：
+
+| 标记 | 时机 | 内容 |
+|---|---|---|
+| `① 服务器` | 启动后 | 拼好的服务器地址 + 设备来源 |
+| `② 响应 type=` | `/request_file` 返回后 | `text` / `file_list` / `folder`；为空说明请求失败或密钥错 |
+| `③ 待下载` | 进入文件分支 | 待下载项数 |
+| `· 开始下载` | 每项开始 | 文件名 + kind（file/folder） |
+| `打包 …` | 目录打包期间，**每约 30 秒一条** | 状态（idle/packing/ready）+ 进度文本 |
+| `已保存` | 每项存盘后 | 文件名 |
+| `同步完成` | 全部结束 | 成功项数（始终弹出，不受调试开关影响） |
+
+失败路径都有独立提示，不会静默退出：
+
+- 打包 `error` / `unknown` → 「打包失败（error），请回电脑重新复制」并停止
+- 打包超时 → 「打包超时（已等待约 20 分钟）：<目录名>」并停止
+- 响应里没有文件 → 「响应里没有文件（type=…）」
+- 服务端返回错误体 → 「请求失败：<响应.message>」，能直接看到「密钥错误」这类原因
+
+## 结构
+
+```
+配置词典
+  → 服务器地址、/request_file 地址
+  → 设备来源（获取设备名 → URL 编码）
+
+POST /request_file  ── 只发一次，返回体存进「响应」变量
+  ├─ type == text   → 取 latest_global.content → 剪贴板 + 通知
+  └─ 否则
+      ├─ type 是 file_list / folder
+      │    ├─ 文件列表 = 响应.files，计数
+      │    ├─ 重复逐个：
+      │    │    ├─ kind == folder → 打包轮询 → 下载 zip → 解压缩 → 存「下载」
+      │    │    └─ 否则           → 下载 → 存「下载」
+      │    └─ 无文件时提示
+      └─ 其它 type → 打印 响应.message
+```
+
+## 相比 v1 的改动
+
+| 项 | v1 | v2 |
+|---|---|---|
+| 生成方式 | 在 82 个动作上手改 | 声明式生成器从零编排，可重复构建 |
+| 目录判断 | 只认顶层 `type == folder`，多选目录会漏 | 循环内按 `Repeat Item.kind` 判断，单目录 / 多文件 / 目录+文件混合都走同一段逻辑 |
+| 打包轮询 | 200 次 × 5 秒裸轮询，ready 后仍狂发请求 | 内层 15 次 × 2 秒、外层 40 轮（≈20 分钟），ready 后不再发请求 |
+| 超时余量 | 250 秒 < 5 GB 实际耗时 | ≈20 分钟，且小于客户端共享存活（30 分钟） |
+| 第三方依赖 | 依赖 Actions 的「主机是否可达」 | 无，只用系统动作 |
+| 调试 | 无（只有 5 个临时「显示结果」残留被删） | `调试` 开关 + 分阶段通知 |
+| 错误静默 | `/latest/clear` 残留、非法 URL 等 | 每条失败路径都有提示 |
+
+## 常见报错
+
+| 现象 | 原因 | 修法 |
+|---|---|---|
+| 「如果」标红：*请为此操作中的每个参数选取值。* | 条件的被判断值缺 `WFStringContentItem` 强制转换，iOS 推断不出参数类型 | 已在生成器 `cond_input(coerce=True)` 统一加上；文本比较加、数值比较（大于/小于）不加 |
+| 解压缩动作报错 | 该动作没有输入参数，隐式取**上一步**输出 | 生成器里 `unzip()` 不接受参数，调用前必须紧跟「获取URL内容」，中间不能插任何动作 |
+
+
+## 逻辑审查（2026-11-22）
+
+对照服务端 `server/api/flask_app.py` 的返回结构、客户端 `client/file_server.py` 的状态机，
+以及 Apple 的条件码规范逐一核过一遍，改了 3 处、确认 2 处无法修：
+
+| # | 位置 | 问题 | 处理 |
+|---|---|---|---|
+| 1 | 文本分支 | 服务端没有新文本时 `latest_global` 为 null，原逻辑会无条件「拷贝到剪贴板」，把用户剪贴板刷成空 | 加 `如果 文本内容 有任何值`（条件码 100）判定，空则提示「服务端没有新文本」不动剪贴板 |
+| 2 | 打包轮询 | 客户端 job 状态有 `idle / packing / ready / cancelled / error` 五种，原来只判 `error` | 失败条件补成 `error / unknown / cancelled` |
+| 3 | 设备来源 | 把已经 URL 编码的设备名塞进 JSON body，服务端日志里显示成 `%E4%B8%AD…` | 只传原始设备名（编码只对 header 有意义，而这里不用 header） |
+| 4 | `/prepare` 404 | 共享被撤销或超过 TTL 时，`client/_release_file()` 会把 job 从 `_folder_shares` 里 pop 掉，`/prepare` 返回 **404**；iOS 的「获取URL内容」遇非 2xx 直接抛错中止，读不到 `{"status":"unknown"}` 这个响应体 | **修不了**（快捷指令没有 try/catch）。`unknown`、`cancelled` 两个分支实际走不到，保留只是防御。唯一有效手段是把面板 TTL 调到 30 分钟以上 |
+| 5 | 网络层异常 | 电脑关机 / 断网时 `/request_file` 本身就会失败 | **修不了**，只有系统级报错。需要友好提示就自行插回 Actions 的「主机是否可达」 |
+
+条件码核对表（Apple 规范）：`4`=是、`5`=不是、`2`=大于、`0`=小于、`99`=包含、
+`100`=有任何值、`101`=无任何值。每个条件都必须带显式的 `WFInput`（`Type=Variable` 包装），
+文本比较再加 `WFStringContentItem` 强制转换，数值比较不能加——这两条是「动作标红」的常见原因。
+
+
+## 三端逻辑对齐（2026-11-22 晚）
+
+把服务端 `server/api/flask_app.py`、客户端 `client/file_server.py` / `client/main_menu.py`
+与这份快捷指令放在一起逐字段对了一遍，改掉四处会让「看起来正常、实际丢数据」的偏差：
+
+| # | 位置 | 问题 | 处理 |
+|---|---|---|---|
+| 1 | 时序 | 快捷指令愿意等 30 分钟打包，客户端共享 10 分钟就过期；`/prepare` 每 2 秒的自己清理会把正在打包的 job `pop` 掉 | TTL 默认 10 → **30 分钟**（`server/core/file_latest.py`、`gui/main_window.py`、`client/run.py`），轮询上限 60 → **40 轮（20 分钟）** |
+| 2 | `/file_sync` | 发送端把端口传成 `null` 时，`data.get("port", 8899)` **不会**回落默认值（键存在值为 None），记录以 `port=None` 落库，`/request_file` 的 `if file_id and ip and port` 把每条都跳过 | 服务端 `port = data.get("port") or DEFAULT_FILE_PORT` 并记警告；客户端 `file_server.port → file_server_port → 8899` 逐级兜底 |
+| 3 | 文本分支 | `/request_file` 只判「不是自己发的」，同一段文本会被反复投递 —— 连跑两次快捷指令，第二次又覆盖一次剪贴板 | 改用 `_take_ios_latest(source)`，与 `/ios_latest` 同语义：`IOS_NOTIFY` 优先、跳过本机来源、跳过本机已有 → 否则返回 `{"pasted": true}` |
+| 4 | 断流重试 | `/request_file` 返回前就 `clear()`，客户端却为断点续传把压缩包留到 TTL；接收端重跑只能拿到文本分支，客户端的保留白做 | 客户端 `_keep_for_retry` 触发 `reannounce_shares()`，用 `FileServer.share_entries()` 重建 file_list 重新 POST `/file_sync` |
+
+快捷指令侧只有第 1 条要改（已重新生成并签名），其余都在服务端 / 客户端，接收端行为不变。
+回归：`python -m unittest discover -s tests` → **261 例 OK**，新增 `tests/test_pull_contract.py`（15 例）盯住这四处。
+
+## 已知限制
+
+1. **共享存活时间已对齐**。`file_share_ttl_minutes` 默认从 10 分钟提到 30 分钟（从电脑复制那一刻
+   起算，打包 + 下载都算在内），快捷指令轮询上限压到 20 分钟，留 10 分钟给下载。两者必须保持
+   「轮询上限 < 共享存活」，否则超时之前共享已被清掉、`/prepare` 直接 404，脚本里的超时提示
+   永远走不到。
+2. **存储目录绑定了设备**。`WFFolder` 里是 `deviceSpecific:2AECE2CD-…fid=1130423`，指向本机的「下载」；
+   换手机或重装系统后需要在那两个「存储到文件」动作里重新选一次目录。
+3. **无法捕获网络层异常**。快捷指令没有 try/catch，电脑关机时 `/request_file` 会以系统级
+   「无法连接到服务器」中止，拿不到自定义提示。想要友好提示可以自行插回 Actions 的「主机是否可达」。
+4. **签名要联网**。见 `sign_shortcut.py` 顶部说明：工作流全文会发到第三方 HubSign 服务。

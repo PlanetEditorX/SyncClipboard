@@ -65,6 +65,10 @@ class FileServer:
         # 先下完的一端不能把文件删掉，否则另一端会被截断
         self._active_downloads = {}
         self._remote_text_handler = None
+        # 下载中断时用来「重新登记共享」的回调（由 SyncClient 注入）。
+        # 服务端的文件记录在 /request_file 返回前就清空了，而这里会为断点
+        # 续传保留压缩包；不重新登记的话，接收端再拉一次只会走文本分支。
+        self._reannounce_handler = None
         self.app = Flask(__name__)
         # 关闭 Flask 默认访问日志
         logging.getLogger("werkzeug").setLevel(logging.ERROR)
@@ -369,6 +373,61 @@ class FileServer:
             remaining,
             "，压缩包到期后删除" if keep_temp else "",
         )
+        # 光保留没用：服务端的文件记录在 /request_file 返回前就清空了，
+        # 接收端再拉一次只会拿到文本分支。这里通知上层重新登记一次共享。
+        self._trigger_reannounce()
+
+    def _trigger_reannounce(self):
+        handler = self._reannounce_handler
+        if handler is None:
+            return
+
+        def run():
+            try:
+                handler()
+            except Exception:
+                logger.exception("重新登记共享失败")
+
+        Thread(target=run, name="share-reannounce", daemon=True).start()
+
+    def set_reannounce_handler(self, handler):
+        """注入「共享需要重新登记」回调（下载中断时调用）。"""
+        self._reannounce_handler = handler
+
+    def share_entries(self):
+        """把当前仍持有的共享整理成 `/file_sync` 需要的 file_list。
+
+        用于下载中断后的重新登记：目录仍按 kind=folder 上报（压缩包是否已经
+        打好由接收端 /prepare 判定），普通文件按路径现取体积。
+        """
+        entries = []
+        with self._shared_files_lock:
+            shared = dict(self.shared_files)
+            jobs = {fid: dict(job) for fid, job in self._folder_shares.items()}
+        for file_id, path in shared.items():
+            job = jobs.get(file_id)
+            if job is not None:
+                entries.append({
+                    "file_id": file_id,
+                    # 上报原始目录路径，而不是临时压缩包路径
+                    "path": job.get("folder") or path,
+                    "name": job.get("archive_name") or os.path.basename(path),
+                    "size": job.get("size") or 0,
+                    "kind": "folder",
+                })
+                continue
+            try:
+                size = os.path.getsize(path)
+            except OSError:
+                size = 0
+            entries.append({
+                "file_id": file_id,
+                "path": path,
+                "name": os.path.basename(path),
+                "size": size,
+                "kind": "file",
+            })
+        return entries
 
     def set_remote_text_handler(self, handler):
         """将远程文字交给剪贴板监听器统一处理，避免接收后再次上传。"""

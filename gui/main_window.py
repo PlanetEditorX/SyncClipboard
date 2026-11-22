@@ -11,8 +11,10 @@ DEFAULT_FOLDER_ZIP_CONFIRM_GB = 10
 MIN_FOLDER_ZIP_CONFIRM_GB = 0.1
 MAX_FOLDER_ZIP_CONFIRM_GB = 10240
 
-# 共享文件存活时间（分钟）
-DEFAULT_FILE_SHARE_TTL_MINUTES = 10
+# 共享文件存活时间（分钟）。从电脑上复制那一刻起算，打包 + 下载都算在内，
+# 默认给 30 分钟；接收端（含 iOS 快捷指令）轮询打包最多等 20 分钟，
+# 剩下的时间留给下载，避免大目录下到一半 404。
+DEFAULT_FILE_SHARE_TTL_MINUTES = 30
 MIN_FILE_SHARE_TTL_MINUTES = 1
 MAX_FILE_SHARE_TTL_MINUTES = 24 * 60
 

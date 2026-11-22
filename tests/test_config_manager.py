@@ -12,6 +12,10 @@ class TestConfigManager(unittest.TestCase):
 
         # Import ConfigManager after mocking winreg
         from gui.config_manager import ConfigManager
+        # 默认共享存活时间的权威定义在 gui.main_window，这里跟着它走，
+        # 免得默认值调整后测试又要改一遍
+        from gui.main_window import DEFAULT_FILE_SHARE_TTL_MINUTES
+        self.default_ttl = DEFAULT_FILE_SHARE_TTL_MINUTES
         self.ConfigManager = ConfigManager
 
     def tearDown(self):
@@ -39,7 +43,7 @@ class TestConfigManager(unittest.TestCase):
                 "key": "123456",
                 "port": 8000,
                 "local_name": manager.local_name,
-                "file_share_ttl_minutes": 10
+                "file_share_ttl_minutes": self.default_ttl
             },
             ANY,
             ensure_ascii=False,
@@ -75,7 +79,7 @@ class TestConfigManager(unittest.TestCase):
                 "file_sync_mode": "both",
                 "folder_sync_enabled": True,
                 "folder_zip_confirm_gb": 10,
-                "file_share_ttl_minutes": 10
+                "file_share_ttl_minutes": self.default_ttl
             },
             ANY,
             ensure_ascii=False,

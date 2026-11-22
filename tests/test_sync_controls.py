@@ -19,7 +19,7 @@ from common.sync_modes import (
     is_send_allowed,
     normalize_mode,
 )
-from gui.main_window import validate_client_settings
+from gui.main_window import DEFAULT_FILE_SHARE_TTL_MINUTES, validate_client_settings
 from server.core import file_latest
 
 
@@ -63,7 +63,8 @@ class TestValidateSyncSettings(unittest.TestCase):
         self.assertEqual(values["file_sync_mode"], MODE_BOTH)
         self.assertTrue(values["folder_sync_enabled"])
         self.assertEqual(values["folder_zip_confirm_gb"], 10)
-        self.assertEqual(values["file_share_ttl_minutes"], 10)
+        # 默认值：从电脑复制那一刻起算，打包 + 下载都算在内
+        self.assertEqual(values["file_share_ttl_minutes"], DEFAULT_FILE_SHARE_TTL_MINUTES)
 
     def test_custom_values_are_normalized(self):
         values = self._validate(
@@ -301,7 +302,7 @@ class TestConfigManagerSyncFields(unittest.TestCase):
         self.assertEqual(manager.file_sync_mode, MODE_BOTH)
         self.assertTrue(manager.folder_sync_enabled)
         self.assertEqual(manager.folder_zip_confirm_gb, 10)
-        self.assertEqual(manager.file_share_ttl_minutes, 10)
+        self.assertEqual(manager.file_share_ttl_minutes, DEFAULT_FILE_SHARE_TTL_MINUTES)
 
         saved = json.loads(self.config_path.read_text(encoding="utf-8"))
         for key in (
@@ -336,7 +337,7 @@ class TestConfigManagerSyncFields(unittest.TestCase):
         self.assertEqual(manager.text_sync_mode, MODE_BOTH)
         self.assertFalse(manager.folder_sync_enabled)
         self.assertEqual(manager.folder_zip_confirm_gb, 10)
-        self.assertEqual(manager.file_share_ttl_minutes, 10)
+        self.assertEqual(manager.file_share_ttl_minutes, DEFAULT_FILE_SHARE_TTL_MINUTES)
 
     def test_update_client_config_persists_sync_fields(self):
         manager = self.manager_class()

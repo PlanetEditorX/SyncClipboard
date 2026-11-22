@@ -69,6 +69,31 @@ CLIENT_NOTIFY = {} # 客户端通知记录
 IOS_NOTIFY = {} # ios的通知文件
 CLIENT_TOUCH = {}  # (客户端名, seen|delivery) -> 最近一次写盘的时间戳
 
+# 发送端文件服务端口兜底值。客户端偶尔会把 file_server 的端口传成 null
+# （对象还没就绪时），而 dict.get 在「键存在、值为 None」时不会回落到默认值，
+# 结果记录落库时 port=None，/request_file 的 `if file_id and ip and port`
+# 会把每一条都跳过 —— 文件静默消失、接收端只看到「没有新内容」。
+DEFAULT_FILE_PORT = 8899
+
+
+def normalize_file_port(value):
+    """把发送端上报的端口收敛成 1..65535 的整数，非法值一律回落默认端口。
+
+    返回 (端口, 是否合法)。只做 `or DEFAULT_FILE_PORT` 是不够的：`"0"`、`"abc"`、
+    `-1`、`65536` 这些值都是 truthy，会原样落库并拼出 `http://ip:0/file/xxx`
+    这类不可用地址 —— 接收端拿到的是一个必然失败的 URL，比「没有文件」更难查。
+    """
+    if isinstance(value, bool) or not isinstance(value, (int, str)):
+        return DEFAULT_FILE_PORT, False
+    try:
+        port = int(str(value).strip())
+    except (TypeError, ValueError):
+        return DEFAULT_FILE_PORT, False
+    if not 0 < port < 65536:
+        return DEFAULT_FILE_PORT, False
+    return port, True
+
+
 def init_services(config_manager=None):
     """由 run.py 在配置注入后调用，初始化依赖配置的服务"""
     global tracker, file_handler, latest_file, KEY, LOCAL_NAME, SAVE_PATH, PORT
@@ -1044,10 +1069,19 @@ def file_sync():
         return jsonify({"status": "error", "message": "密钥错误"}), 403
 
     client_ip = request.remote_addr
-    data = request.get_json()
-    file_list = data.get("file_list", [])
-    source = data.get("source", "unknown")
-    port = data.get("port", 8899)
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict):
+        return jsonify({"status": "error", "message": "无效请求"}), 400
+    file_list = data.get("file_list") or []
+    if not isinstance(file_list, list):
+        # 直接遍历一个 dict 会拿 key 当条目，`.get` 当场 AttributeError → 500，
+        # 发送端只看到「服务器错误」，不知道是自己把数组写成了对象。
+        return jsonify({"status": "error", "message": "file_list 必须是数组"}), 400
+    source = data.get("source") or "unknown"
+    port, port_ok = normalize_file_port(data.get("port"))
+    if not port_ok:
+        logging.warning("发送端未提供有效端口(%r)，按默认 %s 记录（否则下载地址无法拼出）",
+                        data.get("port"), DEFAULT_FILE_PORT)
     if source and source != "unknown":
         touch_client(
             request.remote_addr,
@@ -1063,6 +1097,9 @@ def file_sync():
     # 先清理文件数据
     latest_file.clear()
     for file_info in file_list:
+        if not isinstance(file_info, dict):
+            errors.append(f"无效记录: {str(file_info)[:40]}")
+            continue
         file_id = file_info.get("file_id")
         path = file_info.get("path")
         name = file_info.get("name")
@@ -1117,19 +1154,30 @@ def request_file():
     if key != KEY:
         return jsonify({"status": "error", "message": "密钥错误"}), 403
 
-    data = request.get_json()
-    if not data:
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict) or not data:
         return jsonify({"status": "error", "message": "无效请求"}), 400
-    source = data.get("source", "unknown")
+    # 这里不能像 /file_sync 那样兜底成 "unknown"：判重是「按设备名」做的，
+    # 拿一个假的设备名去查，既命中不了「这台设备手上有没有」，又会在 clients
+    # 表里留下一条叫 unknown 的垃圾记录。没有 source 就什么都不投递。
+    source = data.get("source")
 
     # 1. 获取所有待拉取文件
     all_files = latest_file.get_all_files()
     if all_files:
         file_list = []
         for info in all_files:
+            if not isinstance(info, dict):
+                continue
             file_id = info.get("file_id")
             ip = info.get("ip")
-            port = info.get("port")
+            # 磁盘上可能留着旧版本写入的脏端口（0、"0"、"abc"、越界）。
+            # 读的时候一律判定、不做改写：无效就整条跳过，绝不拿默认端口去猜 ——
+            # 发送端的文件服务未必在默认端口上，猜错比「拉不到」更难查。
+            # 真正的兜底放在写入侧（/file_sync），那里必须收敛，否则整批文件消失。
+            port, port_ok = normalize_file_port(info.get("port"))
+            if not port_ok:
+                port = None
             name = info.get("name")
             size = info.get("size")
             src = info.get("source")
@@ -1170,20 +1218,15 @@ def request_file():
             return jsonify(payload), 200
         # 如果列表为空（所有记录均无效），继续执行文本逻辑
 
-    # 2. 无文件时，执行原有的文本拉取逻辑
-    latest = tracker.get_global_latest()
-    if source and latest and latest.get("source") != source:
-        pasted_item = {
-            "id": latest["id"],
-            "type": latest.get("type", "text"),
-            "content": latest["content"],
-            "timestamp": datetime.now().isoformat(),
-            "source": latest["source"],
-            "pasted": True
-        }
-        tracker.mark_pasted(source, pasted_item)
-        logging.info("客户端 %s 已获取并标记粘贴: %s (来自 %s)",
-                    source, latest["content"][:30], latest["source"])
+    # 2. 无文件时投递最新文本。
+    #
+    #    这里必须复用 iOS 轮询那套判重（_take_ios_latest），不能只判「不是自己
+    #    发的」：那样同一段文本会被反复投递，手机上连跑两次快捷指令，第二次
+    #    同样返回完整内容、再覆盖一次剪贴板，把用户这期间复制的东西冲掉。
+    #    _take_ios_latest 会做三级判断 —— IOS_NOTIFY 主动推送优先、跳过本机
+    #    自己发的、跳过这台设备手上已经有的 —— 都没有时返回 {"pasted": True}
+    #    空对象，接收端据此什么都不做。
+    latest = _take_ios_latest(source)
 
     return jsonify({
         "status": "ok",
