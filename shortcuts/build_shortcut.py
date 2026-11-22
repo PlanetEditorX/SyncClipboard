@@ -15,11 +15,14 @@
    Item 是空的（v5 真机现象：内层取 url 得空，报「未指定 URL」）。所以合并
    清单在服务端就把「目录 → 文件」摊平了，快捷指令里只有并列的两段单层循环：
    一段处理普通文件，一段处理目录清单。
-5. 运行日志：**不受任何开关控制**，每个节点把累积后的完整日志 POST 到
-   `/ios_log`，服务端覆盖写 `<项目>/log/ios_shortcut.log`。不走 iOS 的
-   「存储到文件」—— 那条路保存纯文本会静默失败（v7 真机：一条日志都没有）。
-   结尾再尽力存一份 `SyncClipboard-调试.log` 到「下载」给自己看，存不上
-   不影响排查。中间不弹任何通知，只留结尾一条汇总通知。
+5. **两套输出，按需切换**：
+   - 进度通知（默认，无条件弹）：开始时报一共几项、目录里几个文件；每个文件
+     下载前弹「正在下载 X」，落盘后弹「已保存 X」或「保存失败 X」。静音通知，
+     堆在通知中心里，随时能看进度。
+   - 运行日志（配置里「调试」= 开 才写）：每个节点把累积后的完整日志 POST 到
+     `/ios_log`，服务端覆盖写 `<项目>/log/ios_shortcut.log`。不走 iOS 的
+     「存储到文件」—— 那条路保存纯文本会静默失败（v7 真机：一条日志都没有）。
+     关着的时候一个字节都不产生，连请求都不发。
 6. 目录传输不需要等待：清单请求即取，没有打包轮询。
 7. **全程不做数字比较**。`如果 X 大于 0` 在 X 是空值（字段不存在）时，
    iOS 会弹「请为此操作中的每个参数选取值」并**中断整条指令** —— v8 真机就
@@ -43,7 +46,7 @@ import uuid
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 REF = os.path.join(HERE, '获取同步-unsigned.plist')          # 仅借用顶层元数据
-OUT = os.path.join(HERE, '获取同步v12-unsigned.plist')
+OUT = os.path.join(HERE, '获取同步v13-unsigned.plist')
 
 OBJ = '\ufffc'          # 文本里变量的占位符
 
@@ -358,23 +361,27 @@ class SC:
 b = SC()
 PROTO, HOST, PORT, KEY = '协议', '主机', '端口', '密钥'
 ROOT_SUB = '根子路径'    # 落盘子路径的前缀（见 cfg 里的说明）
+DEBUG = '调试'           # 开着才写日志文件；默认关，平时只弹进度通知
 REPEAT_ITEM = 'Repeat Item'
 
-b.comment('SyncClipboard 拉取 v8（逐文件保目录结构）\n'
+b.comment('SyncClipboard 拉取 v13（逐文件保目录结构）\n'
           '改配置：编辑下面「配置」词典里的协议/主机/端口/密钥\n'
           '目录按清单逐个文件取，目录结构与电脑上完全一致（不再打包/解压）\n'
-          '过程写进「下载/SyncClipboard-调试.log」，跑完把它发回来即可\n'
+          '平时只弹进度通知（几个文件、正在下载谁、已保存谁）\n'
+          '出问题排查时把「调试」改成 开，才会写日志文件\n'
           '文件统一存入「下载」，需要换目录请在「存储到文件」动作里重选')
 
 cfg = b.dictionary([
     (PROTO, 'http'),
-    (HOST, '192.168.1.24'),
+    (HOST, '192.168.1.23'),
     (PORT, '8000'),
     (KEY, '123456'),
     # 落盘路径的前缀。留空即「相对所选的『下载』文件夹」；万一你的 iOS 把
     # 它当成存储根相对路径，文件会落到「下载/下载/项目名/…」，那时把它填成
     # 「下载/」即可，不必重新生成快捷指令。
     (ROOT_SUB, ''),
+    # 日常关：一个日志字节都不产生，只留进度通知。要发日志给我排查时才改「开」。
+    (DEBUG, '关'),
 ], out_name='配置')
 
 # ---- 1 地址 ---------------------------------------------------------------
@@ -389,27 +396,30 @@ b.setvar('请求地址', act_out(b.text([var('服务器'), '/request_file']), '�
 b.comment('2. 设备来源（随请求带上，便于服务端区分设备）')
 b.setvar('来源', b.device_name())    # 只进 JSON body，不做 URL 编码
 
-# ---- 运行日志 -------------------------------------------------------------
+# ---- 运行日志（只在「调试」= 开 时才写） -----------------------------------
 #
-# 日志**走 HTTP 推给电脑端**（POST /ios_log），由服务端写成
-# `<项目>/log/ios_shortcut.log`。
+# 配置里的「调试」默认 **关**：一个日志字节都不产生，界面上只留进度通知。
+# 要排查问题时改成「开」，才会把过程推给电脑端写成
+# `<项目>/log/ios_shortcut.log`，并在手机「下载」留一份副本。
 #
-# 为什么不用「存储到文件」写进手机「下载」：v7 真机证明那条路会**静默失败**
-# —— 既没有文件，也没有任何提示。日志是排查的唯一抓手，它自己静默丢一次，
-# 人就只能干瞪眼。而 HTTP 通道在 /request_file 上已经跑通无数次，日志直接落
-# 到电脑上，排查时也不用再让用户回传文件。
+# 为什么走 HTTP 而不是「存储到文件」写进手机「下载」：v7 真机证明那条路会
+# **静默失败** —— 既没有文件，也没有任何提示。日志是排查的唯一抓手，它自己
+# 静默丢一次，人就只能干瞪眼。HTTP 通道和 /request_file 同一套，参数早就跑通。
 #
 # 每次推的都是**累积后的完整日志**，服务端覆盖写同一个文件：崩在哪一步，电脑
 # 上那份就停在哪一步。循环里每处理完一个文件推一次，所以第一条出问题的记录
 # 一定留得住。
-LOG_FILE = 'SyncClipboard-调试.log'      # 同时留一份到手机「下载」，方便自己看
+LOG_FILE = 'SyncClipboard-调试.log'      # 调试=开 时同时留一份到手机「下载」
 
 b.setvar('日志', act_out(b.text(['SyncClipboard 同步日志\n']), '文本'))
 b.setvar('日志地址', act_out(b.text([var('服务器'), '/ios_log']), '文本'))
 
 
 def log(parts):
-    """往「日志」变量追加一行。
+    """往「日志」变量追加一行（纯内存操作，不落盘、不影响流程）。
+
+    写完只在调试开关打开时才由 log_push 真正发出去 —— 关着的时候这几步
+    只是把字符串拼在变量里，不发请求、不建文件。
 
     这里踩过两个坑，都写下来免得再犯：
 
@@ -428,17 +438,24 @@ def log(parts):
     b.setvar('日志', act_out(b.text([var('日志'), *parts, '\n']), '文本'))
 
 
-def log_push():
-    """把当前完整日志推给电脑端（服务端覆盖写 log/ios_shortcut.log）。
+def _debug_on():
+    """「调试」= 开 时进入下面这段，否则整段跳过（什么都不发生）。"""
+    return b.if_(act_out(cfg, '配置', dkey(DEBUG)), IS, '开')
 
-    body 里直接取「日志」变量 —— 变量在文本 token 里是 iOS 自己的标准写法，
-    不受分支影响。电脑端是旧版（没有 /ios_log）时只会拿到 404 的内容。
+
+def log_push():
+    """把当前完整日志推给电脑端 —— 只有「调试」= 开 时才推。
+
+    关着的时候连请求都不发：不占网络、不建文件，也就不会在电脑上留一堆
+    用户根本不需要的日志。
     """
+    g = _debug_on()
     b.post_json(
         var('日志地址'),
         headers=[('key', act_out(cfg, '配置', dkey(KEY)))],
         body=[('log', var('日志'))],
     )
+    b.endif(g)
 
 
 def dbg(parts):
@@ -447,18 +464,30 @@ def dbg(parts):
     log_push()
 
 
+def notice(parts):
+    """进度通知：**无条件弹**，和调试开关无关。
+
+    用户要的是随时知道「这次一共几个文件、现在在下哪个、哪个已经存好了」，
+    这些不是调试信息，是正常使用时的基本反馈。通知是静音的，会堆在通知
+    中心里，扫一眼就知道进度。
+    """
+    b.notify(parts)
+
+
 def save_confirmed(subject, label_parts, dest=None):
-    """存盘并核对真的落了盘，结果只进日志。
+    """存盘并核对真的落了盘，结果写日志 + 弹通知。
 
     「存储到文件」拿到空输入时**不报错也不存盘**，直接在后面接一句「已保存」
     就是自欺欺人。这里拿存盘动作自己的输出做判据（它有输出就说明真写了），
-    没有就在日志里写「保存失败」。
+    没有就明确告诉用户「保存失败」，而不是让人对着空目录猜。
     """
     saved = b.save_to_folder(subject, dest=dest)
     g_ok = b.if_(saved, 100)                # 有任何值 = 确实写入了
     log(['   OK 写入 ', *label_parts])
+    notice(['已保存 ', *label_parts])
     b.else_(g_ok)
     log(['   !! 保存失败（动作输出为空，文件没落地）', *label_parts])
+    notice(['保存失败：', *label_parts, '（文件没写进「下载」）'])
     b.endif(g_ok)
 
 dbg(['=== SyncClipboard 同步开始 ==='])
@@ -501,6 +530,8 @@ g_kind = b.if_any(var('类型'), ['file_list', 'folder'])
 b.setvar('文件列表', pick(resp, 'files'))
 b.setvar('文件数量', act_out(b.count(var('文件列表')), '计数'))
 dbg(['③ 待下载 ', var('文件数量'), ' 项'])
+# 进度通知从这里开始，一直弹到结束 —— 用户随时能知道这次有几项、正在下谁。
+notice(['开始同步：', var('文件数量'), ' 项'])
 
 # --- 普通文件：一层循环，只挑 kind == file ---
 #
@@ -518,6 +549,8 @@ g_is_file = b.if_(item_kind, IS, 'file')
 f_url = var(REPEAT_ITEM, dkey('download_url'))
 f_name = var(REPEAT_ITEM, dkey('name'))
 log(['· 文件 ', f_name])
+# 下载前先弹一条：大文件要几十秒，光看「开始同步」不知道卡在哪个文件上。
+notice(['正在下载：', f_name])
 # 普通文件没有子目录，dest 就是「根子路径 + 文件名」；根子路径留空时只剩
 # 文件名，所以这里不额外塞字面 "/"，避免拼出前导斜杠。
 save_confirmed(b.get(f_url), [f_name],
@@ -549,6 +582,8 @@ b.setvar('清单文件数', act_out(b.count(pick(listing, 'entries')), '计数')
 b.setvar('空目录数', act_out(b.count(pick(listing, 'empty_dirs')), '计数'))
 dbg(['④ 清单 ', var('清单根'), ' ｜ ', var('清单文件数'), ' 个文件 ｜ 空目录 ',
      var('空目录数')])
+# 目录这边也要一句总览：光看「开始同步 1 项」根本不知道里面装着几个文件。
+notice(['目录 ', var('清单根'), '：', var('清单文件数'), ' 个文件'])
 
 g_notice = b.if_(pick(listing, 'notice'), 100)  # 有任何值 = 服务端有话说
 b.notify([pick(listing, 'notice')])
@@ -563,6 +598,8 @@ entry_prefix = var(REPEAT_ITEM, dkey('prefix'))
 entry_name = var(REPEAT_ITEM, dkey('name'))
 entry_url = var(REPEAT_ITEM, dkey('url'))
 log(['· ', entry_name, ' ｜ dir=', entry_dir, ' ｜ prefix=', entry_prefix])
+# 下载前先弹一条，带上级目录：目录里文件重名时也能分清是哪一个。
+notice(['正在下载：', entry_name])
 
 g_has_url = b.if_(entry_url, 100)
 
@@ -635,14 +672,15 @@ b.endif(g_kind)
 
 b.endif(g_text)
 
-# 结尾：把整份日志再存一份到手机「下载」，方便用户自己翻。
-# 这一步**不校验、不提示**：能存就存，存不上也不影响排查 —— 电脑端的
+# 结尾：**调试=开 时**才把整份日志再存一份到手机「下载」，方便自己翻。
+# 这一步不校验、不提示：能存就存，存不上也不影响排查 —— 电脑端的
 # log/ios_shortcut.log 才是权威副本（每个节点都已推过）。
+g_dbg_file = _debug_on()
 b.save_to_folder(var('日志'), dest=[LOG_FILE])
+b.endif(g_dbg_file)
 
-b.comment('结束。若某个文件没出现，把「下载/SyncClipboard-调试.log」发回去看：'
-          '里面逐条记了清单给到的 dir/prefix 和每次存盘的成功/失败。'
-          '日志始终写，不受任何开关控制')
+b.comment('结束。平时只看进度通知即可；要排查时把「配置」里的「调试」改成 开，'
+          '过程会写进电脑端 log/ios_shortcut.log，手机「下载」也留一份副本')
 
 # ------------------------------------------------------------------ 输出
 
