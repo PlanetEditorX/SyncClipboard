@@ -41,8 +41,8 @@ def param_keys(act):
     return set(p.keys()), p.get('WFControlFlowMode')
 
 
-# 动作 → 真机导入成功过的那份导出里出现过的参数键。
-# 只用来发现「新写的动作里冒出了没见过的键」，不作为正确性判据。
+# 动作（identifier, WFControlFlowMode）→ 该动作允许出现的参数键。
+# 用途：生成的动作里冒出了这里没有的键时提示一声；只作参考，不作正确性判据。
 _REF_PARAMS = {
     ('com.sindresorhus.Actions.IsHostReachable', None): {'AppIntentDescriptor', 'UUID', 'host', 'port'},
     ('is.workflow.actions.comment', None): {'WFCommentActionText'},
@@ -95,11 +95,10 @@ KNOWN_EXTRA_PARAMS = {
 
 
 def check_params(acts):
-    """参数名对照：参考集里同样动作从未出现过的参数键，都值得怀疑。
+    """参数名对照：参考集里没有的参数键提示出来，多半是键名写错或拼错。
 
-    参考集内嵌在本文件里（原来读另一份手工搭的 plist）。内嵌的理由很实在：
-    那份 plist 与构建产物同目录，一旦「只保留最新一版」把它覆盖掉，这个检查
-    就会悄悄退化；常量不会因为文件增删而失效。
+    参考集是 `_REF_PARAMS`，取自一份可正常导入的导出。只作提示，不作正确性
+    判据 —— iOS 容忍多余键，真正致命的是必填键缺失。
     """
     suspect = []
     for i, a in enumerate(acts):

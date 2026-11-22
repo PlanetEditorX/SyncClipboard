@@ -1,17 +1,17 @@
 # -*- coding: utf-8 -*-
 """给生成的快捷指令签名。
 
-iOS 15+ 不再提供「允许不受信任的快捷指令」开关，未签名的 .shortcut 无法导入；
-Windows 上也没有本地签名手段（需 macOS 钥匙串里的 Apple ID 私钥）。
-这里走 RoutineHub 社区的 HubSign 服务：把工作流 XML POST 过去，拿回 AEA1 文件。
-
-    注意：工作流全文（含配置词典里的内网地址与密钥）会发送到
-    hubs.routinehub.services 这个第三方。
-
-    网络：请求会**绕过**系统 HTTP(S)_PROXY 直连。走代理时 Cloudflare 会
-    回 403（Attention Required），直连才是 200。
+iOS 15+ 需要签名才能导入，本机没有 Apple 私钥无法本地签，因此把工作流 XML
+POST 给 RoutineHub 的 HubSign 服务，取回 AEA1 容器文件。
 
     python lib/sign.py <unsigned.plist> [签名输出路径]
+
+    输入            unsigned.plist；输出默认同目录同名 .shortcut
+    shortcutName    文件名去掉「-unsigned.plist」，也是 iOS 里显示的名字
+    shortcut        工作流 XML 全文 —— 含配置词典里的内网地址与密钥，
+                    会发送给 hubs.routinehub.services（第三方）
+    请求            强制绕开 HTTP(S)_PROXY 直连；走代理时 Cloudflare 回 403
+    回验            解 bvx2 段逐动作比对；缺 liblzfse 时只校 AEA1 头
 """
 
 import json

@@ -1,15 +1,17 @@
 # -*- coding: utf-8 -*-
-"""快捷指令的通用构建层：动作工厂 + 序列化助手。
+"""快捷指令的通用构建层：动作工厂 + token 序列化助手。
 
-这里只放与「具体哪个快捷指令」无关的东西：
-  · `SC`：往工作流里追加动作的薄封装（文本/词典/如果/循环/通知/存盘…）
-  · `tok` / `att` / `act_out` / `pick` / `var` / `dkey`：把动作输出、变量、
-    词典取值拼成 iOS 认的 token 结构
-  · `DEFAULT_META`：工作流顶层元数据，所有快捷指令共用一份
+与具体流程无关，各快捷指令共用：
 
-具体的流程写在各自子目录的 `build.py` 里（如 `获取同步/build.py`）。
-分层的理由：以后还要有文字同步、短信同步、推送同步，这些动作工厂每个都要用，
-留在某个具体快捷指令的脚本里就只能靠 import 兄弟文件，越往后越别扭。
+    SC                 往工作流里追加动作（文本 / 词典 / 如果 / 循环 / 通知 / 存盘…）
+    tok, att            文本 token 与附件引用
+    act_out, pick, var  动作输出、逐层取词典值、变量引用
+    dkey, as_text       取值链：按词典键取值、强制成字符串
+    cond_input          「如果」动作的被判断对象（按比较类型决定是否转字符串）
+    FOLDER_DOWNLOAD     「存储到文件」的默认目标目录描述
+    DEFAULT_META        工作流顶层元数据
+
+具体流程写在各子目录的 `build.py` 里（如 `获取同步/build.py`）。
 """
 
 import json
@@ -44,14 +46,12 @@ def tok(parts):
 
 
 def att(x):
-    """把一个附件引用包成 WFTextTokenAttachment。
+    """把一个引用包成 WFTextTokenAttachment。
 
-    只接受 **dict**（`var(...)` / `act_out(...)` 的返回值）。传 UUID 字符串是
-    常见笔误：`b.text(...)` 返回的是 UUID 字符串，不是引用，包进去就成了
-    `{"Value": "7A3F…", "WFSerializationType": "WFTextTokenAttachment"}` ——
-    iOS 解析不出这个动作的输出，变量直接被赋成空值。v9 真机就栽在这上面：
-    「设置变量 日志」拿到的输入是坏的，手机每次 POST /ios_log 都是
-    `{"log":""}`，电脑上一个字节都收不到。这里直接拦下来，编译期就报错。
+    只接受 dict（`var(...)` / `act_out(...)` 的返回值）。传 UUID 字符串是常见
+    笔误：`b.text(...)` 返回的是 UUID 字符串而不是引用，包进去就成了
+    `{"Value": "7A3F…", "WFSerializationType": "WFTextTokenAttachment"}`，
+    iOS 解析不出该动作的输出，变量/文件会拿到空值。这里直接抛错在生成阶段拦掉。
     """
     if isinstance(x, str):
         raise AssertionError(
@@ -173,7 +173,7 @@ class SC:
         return uid
 
     def setvar(self, name, subject):
-        # 同上：uuid 字符串不是引用，传进来一定是个笔误，当场拦掉
+        # 同上：UUID 字符串不是引用，传进来一定是笔误，当场拦掉
         if isinstance(subject, str):
             raise AssertionError(
                 'setvar(%r) 收到 UUID 字符串，要传 act_out(uuid, 名字)' % name)
@@ -236,17 +236,18 @@ class SC:
     def save_to_folder(self, subject, dest=None):
         """存储到文件。
 
-        dest 是「完整目标路径」的 parts 列表，**含文件名**，例如
-        `[根子路径, 目录名, '/', 子目录, '/', 文件名]`。
+        dest 是目标路径的 parts 列表，**含文件名**，例如
+        `[根子路径, 目录名, '/', 子目录, '/', 文件名]`；省略则按 iOS 默认
+        命名直接存进目标文件夹。
 
-        这个参数（`WFFileDestinationPath`，UI 上叫 Subpath）的语义是**路径
-        本身**，不是「目录前缀」：末尾带 "/" 时最后一段才被当成目录，否则整
-        串直接被拿去当文件名。而且 iOS 会先对路径做一遍规范化 —— 变量值末尾
-        的 "/" 靠不住，实测会丢，于是 `目录名/` 变成 `目录名` 并成为文件名
-        （v6 真机：每个文件都用目录名当名字、互相覆盖，最后只剩一个）。
-        所以斜杠一律用**字面文本**给出，绝不依赖变量内容的末尾字符。
+        `WFFileDestinationPath`（界面上的 Subpath）是**完整路径**而非目录
+        前缀：分隔靠字面 "/"，整串没有斜杠时会被整段当成文件名。iOS 还会先
+        规范化路径，变量值结尾的 "/" 不保证保留，所以斜杠一律用字面文本给出，
+        不依赖变量内容的末尾字符。
 
-        `WFDestinationPath` 是旧版键名，一并写上去；多写的键 iOS 会忽略。
+        覆盖开关（`WFSaveFileOverwrite` / `WFOverwriteFile`）打开，同名文件
+        直接替换，否则 iOS 会存成「a 1.txt」。`WFDestinationPath` 是同一参数
+        的旧键名，一并写入，多余的键会被忽略。
         """
         uid = U()
         p = {
