@@ -113,7 +113,7 @@ services:
 | 文件同步 | 双向 / 只发送 / 只接收。只发送时不再提示远端发布的文件，只接收时不再共享本地文件 | `file_sync_mode` |
 | 自动打包同步复制的文件夹 | 关闭后复制文件夹不会被传输 | `folder_sync_enabled` |
 | 目录大小上限 | 默认 10 GB。小于上限的目录复制后直接登记共享；超过上限会弹窗确认，确认后才登记 | `folder_zip_confirm_gb` |
-| 共享存活时间 | 默认 10 分钟。到期后自动取消共享、删除临时压缩包，服务器也会丢弃对应记录 | `file_share_ttl_minutes` |
+| 共享存活时间 | 默认 30 分钟。到期后自动取消共享、删除临时压缩包，服务器也会丢弃对应记录。从电脑上复制那一刻起算，打包 + 下载都算在内 | `file_share_ttl_minutes` |
 
 示例 `client_config.json`（旧版本缺少这些字段时会自动补默认值）：
 
@@ -129,7 +129,7 @@ services:
     "file_sync_mode": "both",
     "folder_sync_enabled": true,
     "folder_zip_confirm_gb": 10,
-    "file_share_ttl_minutes": 10
+    "file_share_ttl_minutes": 30
 }
 ```
 
