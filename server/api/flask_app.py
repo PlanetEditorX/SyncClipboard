@@ -1162,11 +1162,24 @@ def ios_log():
     key = request.headers.get("key", "")
     if key != KEY:
         return jsonify({"status": "error", "message": "密钥错误"}), 403
+    # 客户端要是把日志放 JSON 里就取 JSON；iOS 的「获取 URL 内容」在参数组合
+    # 稍有出入时会改发原始正文（v8 真机：连续 POST /ios_log 全是 400），那种
+    # 情况下正文本身就是日志，照收不误 —— 少一次「日志没上来」的来回。
+    raw = request.get_data(as_text=True) or ""
     data = request.get_json(silent=True)
-    if not isinstance(data, dict):
-        return jsonify({"status": "error", "message": "无效请求"}), 400
-    text = data.get("log")
+    if isinstance(data, dict):
+        # 显式给了字段就以字段为准（哪怕是空的，那是客户端的问题，要报错）
+        text = data.get("log")
+        if text is None:
+            text = data.get("text")
+    else:
+        text = raw
+        if raw.strip():
+            logging.warning("iOS 日志请求不是 JSON，按原始正文写入（content-type=%s）",
+                            request.content_type)
     if not isinstance(text, str) or not text.strip():
+        logging.warning("iOS 日志请求没有可写内容 | content-type=%s | body=%r",
+                        request.content_type, raw[:300])
         return jsonify({"status": "error", "message": "空日志"}), 400
     # 日志是排查用的，宁可留半份也不要把服务打挂
     if len(text) > 2000000:

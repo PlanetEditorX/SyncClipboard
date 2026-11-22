@@ -68,6 +68,20 @@ class IosLogTest(unittest.TestCase):
         resp = self.client.post("/ios_log", headers={"key": KEY}, json={})
         self.assertEqual(resp.status_code, 400)
 
+    def test_raw_body_is_accepted(self):
+        """正文不是 JSON 时，正文本身就是日志。
+
+        v8 真机：快捷指令连续 POST /ios_log 全是 400，日志一条没上来 —— iOS
+        的「获取 URL 内容」在参数组合稍有出入时会改发原始正文。这里兜住它，
+        宁可多写一份也不要再丢一次排查线索。
+        """
+        resp = self.client.post("/ios_log", headers={"key": KEY},
+                                data="① 服务器 http://192.168.1.23:8000 ｜ 设备 iPhone",
+                                content_type="text/plain")
+        self.assertEqual(resp.status_code, 200)
+        with open(self.log_path, encoding="utf-8") as handle:
+            self.assertIn("192.168.1.23:8000", handle.read())
+
     def test_dotdot_in_log_is_harmless(self):
         """日志内容只是写进固定文件的数据，不参与路径拼接。"""
         self._post("../../etc/passwd\n<b>不转义</b>")

@@ -21,7 +21,11 @@
    结尾再尽力存一份 `SyncClipboard-调试.log` 到「下载」给自己看，存不上
    不影响排查。中间不弹任何通知，只留结尾一条汇总通知。
 6. 目录传输不需要等待：清单请求即取，没有打包轮询。
-7. 子路径必须「字面斜杠 + 不带斜杠的 prefix」拼接。iOS 的「存储到文件」
+7. **全程不做数字比较**。`如果 X 大于 0` 在 X 是空值（字段不存在）时，
+   iOS 会弹「请为此操作中的每个参数选取值」并**中断整条指令** —— v8 真机就
+   卡在「如果 目录数 大于 0」这一步，后面的结束提示、日志落盘全没跑。判断
+   「有没有内容」一律用「有任何值」（条件 100），空值走假分支，安全。
+8. 子路径必须「字面斜杠 + 不带斜杠的 prefix」拼接。iOS 的「存储到文件」
    会对子路径做规范化，变量值结尾的 "/" 会被吃掉：`目录名/` 退化成一个叫
    `目录名` 的文件名，配合覆盖开关就变成「只剩一个叫目录名的文件」（v6
    真机现象）。所以服务端多给一个去掉尾斜杠的 `prefix`，斜杠由字面文本
@@ -39,7 +43,7 @@ import uuid
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 REF = os.path.join(HERE, '获取同步-unsigned.plist')          # 仅借用顶层元数据
-OUT = os.path.join(HERE, '获取同步v8-unsigned.plist')
+OUT = os.path.join(HERE, '获取同步v9-unsigned.plist')
 
 OBJ = '\ufffc'          # 文本里变量的占位符
 
@@ -439,6 +443,9 @@ resp = b.post_json(
 b.setvar('响应', resp)
 b.setvar('类型', pick(resp, 'type'))
 dbg(['② 响应 type=', var('类型')])
+# 把原始返回体也记一行：出问题时一眼能看出服务端到底给了哪些字段（有没有
+# manifest_batch_url / manifest_batch_error），不用再猜版本。
+dbg(['② 原文 ', var('响应')])
 
 # ---- 4 分支：纯文本 -------------------------------------------------------
 g_text = b.if_(var('类型'), IS, 'text')
@@ -469,7 +476,9 @@ dbg(['③ 待下载 ', var('文件数量'), ' 项'])
 # Repeat Item 是空的 —— v5 的真机现象就是内层取 `url` 得到空值，「获取 URL
 # 内容」直接报「未指定 URL」。所以目录那部分挪到下面的独立循环里：两段并列，
 # 任何时刻的循环深度都只有 1。
-g_has = b.if_(var('文件数量'), GT, number=0)
+# 判断「有没有文件」用「有任何值」，**不做数字比较** —— 见下面目录分支的
+# 长注释：数字比较一旦碰上取不到的字段，iOS 会直接中断整条指令。
+g_has = b.if_(var('文件列表'), 100)
 
 g_each = b.repeat_each(var('文件列表'))
 item_kind = var(REPEAT_ITEM, dkey('kind'))
@@ -509,7 +518,7 @@ g_notice = b.if_(pick(listing, 'notice'), 100)  # 有任何值 = 服务端有话
 b.notify([pick(listing, 'notice')])
 b.endif(g_notice)
 
-g_has_files = b.if_(var('清单文件数'), GT, number=0)
+g_has_files = b.if_(pick(listing, 'entries'), 100)
 
 g_each_file = b.repeat_each(pick(listing, 'entries'))
 
@@ -551,7 +560,7 @@ b.end_repeat(g_each_file, each=True)
 
 dbg(['⑤ 同步结束：', var('清单文件数'), ' 个文件'])
 b.notify(['同步完成：', var('清单文件数'), ' 个文件已存入「下载」'])
-g_has_empty = b.if_(var('空目录数'), GT, number=0)
+g_has_empty = b.if_(pick(listing, 'empty_dirs'), 100)
 b.notify([var('空目录数'), ' 个空目录没有文件可写，未能重建（其余结构已保留）'])
 b.endif(g_has_empty)
 
@@ -565,37 +574,22 @@ b.notify(['取不到目录清单：', pick(listing, 'message'),
 b.endif(g_listing_ok)
 
 b.else_(g_has_list)
-# 没拿到合并清单地址。**先看这次到底带没带目录**：
-#   0 个目录（复制的是普通文件）→ 本来就该没有清单，什么都不说；
-#   >0 个目录但没给地址 → 才是真问题，分两种提示：
-#       · 服务端明确指出合并不了（多台电脑各登记了目录）；
-#       · 干脆没给 —— 基本就是电脑端版本旧，还只会给单目录清单。
-# v7 少了这层判断，复制普通文件时也弹「没有目录内容可同步」，纯粹是噪音。
-b.setvar('目录数', pick(resp, 'folder_count'))
-g_has_folder = b.if_(var('目录数'), GT, number=0)
-
+# 没拿到合并清单地址。判断「这次到底带没带目录」时**绝不用数字比较**：
+# folder_count 是 1.12.7 才加的字段，电脑端是旧版时它压根不存在，取出来是
+# **空值**；拿空值去「大于 0」，iOS 会当场弹「请为此操作中的每个参数选取值」
+# 并中断整条指令 —— v8 真机就卡死在这儿，后面的结束提示、日志落盘全都没跑。
+# 空变量配「有任何值」是安全的（同一份指令里「如果 清单地址」就是这么用的）。
+#   有 manifest_batch_error → 服务端明确说合并不了，原样转达；
+#   没有 + 类型 = folder    → 单目录却没有合并清单 = 电脑端版本旧，提示升级；
+#   没有 + 类型 = file_list → 复制的是普通文件，本来就没清单，静默（v7 噪音）。
 g_batch_err = b.if_(pick(resp, 'manifest_batch_error'), 100)
 b.notify([pick(resp, 'manifest_batch_error')])
 b.else_(g_batch_err)
-b.notify(['这次带了目录，但电脑端没给出合并清单 —— 请把电脑端升到 '
-          '1.12.7 及以上再试'])
+g_old_server = b.if_(var('类型'), IS, 'folder')
+b.notify(['这次带了目录，但电脑端没给出合并清单 —— 请把电脑端升级到 '
+          '1.12.7 及以上（git pull 后重启程序）'])
+b.endif(g_old_server)
 b.endif(g_batch_err)
-
-# 老服务端没有 folder_count 字段（1.12.6 以前）：退回用 type 兜底，单目录
-# 时它会是 folder。取不到就是空，两个判断都不成立 → 静默，不会误报。
-# 放在 else 里，避免和上面的 folder_count 分支重复提示。
-b.else_(g_has_folder)
-
-g_has_folder2 = b.if_(var('类型'), IS, 'folder')
-g_batch_err2 = b.if_(pick(resp, 'manifest_batch_error'), 100)
-b.notify([pick(resp, 'manifest_batch_error')])
-b.else_(g_batch_err2)
-b.notify(['这次带了目录，但电脑端没给出合并清单 —— 请把电脑端升到 '
-          '1.12.7 及以上再试'])
-b.endif(g_batch_err2)
-b.endif(g_has_folder2)
-
-b.endif(g_has_folder)
 
 b.endif(g_has_list)
 
