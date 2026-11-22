@@ -175,6 +175,20 @@ class TestFileSyncPortFallback(_FlaskCase):
         )
 
 
+    def test_plain_files_carry_progress_index(self):
+        """普通文件带 index/total + file_count，通知才能说「第 2/3 个」「共 3 项」。
+
+        编号放在服务端算：快捷指令里要自己累加就得用「计算」动作维护变量，
+        多一个动作多一个真机出错点；而这里的编号是确定的、可测试的。
+        """
+        self._push([self._record(f"f{i}", f"{i}.txt") for i in (1, 2, 3)],
+                   port=9100)
+        payload = self._pull()
+        self.assertEqual(payload["file_count"], 3)
+        self.assertEqual([e["index"] for e in payload["files"]], [1, 2, 3])
+        self.assertEqual([e["total"] for e in payload["files"]], [3, 3, 3])
+
+
 class TestFolderPullContract(_FlaskCase):
     """目录共享只给一条路：manifest 清单（打包/解压已彻底移除）。"""
 
@@ -219,6 +233,12 @@ class TestFolderPullContract(_FlaskCase):
         # 但合并清单要给：否则混合场景里目录那部分就传不过来
         self.assertEqual(payload["manifest_batch_url"],
                          "http://127.0.0.1:9100/manifest/batch?ids=d1")
+        # 编号只在一类里算：目录的条目不吃普通文件的序号，否则「2 文件 + 1 目录」
+        # 会得到 1/3、2/3 这种错位；file_count 同理，只数普通文件。
+        self.assertEqual(payload["file_count"], 1)
+        self.assertEqual(plain["index"], 1)
+        self.assertEqual(plain["total"], 1)
+        self.assertNotIn("index", folder)
 
 
     def test_two_folders_share_one_batch_url(self):

@@ -46,7 +46,7 @@ import uuid
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 REF = os.path.join(HERE, '获取同步-unsigned.plist')          # 仅借用顶层元数据
-OUT = os.path.join(HERE, '获取同步v13-unsigned.plist')
+OUT = os.path.join(HERE, '获取同步v14-unsigned.plist')
 
 OBJ = '\ufffc'          # 文本里变量的占位符
 
@@ -364,7 +364,7 @@ ROOT_SUB = '根子路径'    # 落盘子路径的前缀（见 cfg 里的说明�
 DEBUG = '调试'           # 开着才写日志文件；默认关，平时只弹进度通知
 REPEAT_ITEM = 'Repeat Item'
 
-b.comment('SyncClipboard 拉取 v13（逐文件保目录结构）\n'
+b.comment('SyncClipboard 拉取 v14（逐文件保目录结构）\n'
           '改配置：编辑下面「配置」词典里的协议/主机/端口/密钥\n'
           '目录按清单逐个文件取，目录结构与电脑上完全一致（不再打包/解压）\n'
           '平时只弹进度通知（几个文件、正在下载谁、已保存谁）\n'
@@ -516,7 +516,9 @@ g_has_text = b.if_(var('文本内容'), 100)     # 100 = 有任何值；101 = �
 b.clipboard(var('文本内容'))
 b.notify(['已复制到剪贴板：', var('文本内容')])
 b.else_(g_has_text)
-b.notify(['服务端没有新文本'])
+# 措辞别写「新文本」：文本分支只是「这次没东西」的一种，复制了文件却来这边
+# 走一遭时说「没有新文本」会让人以为文件丢了。统一说「内容」。
+b.notify(['服务端没有新内容'])
 b.endif(g_has_text)
 
 b.else_(g_text)
@@ -531,7 +533,7 @@ b.setvar('文件列表', pick(resp, 'files'))
 b.setvar('文件数量', act_out(b.count(var('文件列表')), '计数'))
 dbg(['③ 待下载 ', var('文件数量'), ' 项'])
 # 进度通知从这里开始，一直弹到结束 —— 用户随时能知道这次有几项、正在下谁。
-notice(['开始同步：', var('文件数量'), ' 项'])
+notice(['开始同步：共 ', var('文件数量'), ' 项'])
 
 # --- 普通文件：一层循环，只挑 kind == file ---
 #
@@ -550,7 +552,14 @@ f_url = var(REPEAT_ITEM, dkey('download_url'))
 f_name = var(REPEAT_ITEM, dkey('name'))
 log(['· 文件 ', f_name])
 # 下载前先弹一条：大文件要几十秒，光看「开始同步」不知道卡在哪个文件上。
+# 服务端会带 index/total（1.12.10 起），拼成「第 3/10 个」就是进度条；
+# 电脑端是旧版没这两个字段时，退回不带序号的写法，不显示「第 /个」。
+g_f_idx = b.if_(var(REPEAT_ITEM, dkey('total')), 100)
+notice(['正在下载 第 ', var(REPEAT_ITEM, dkey('index')), '/',
+        var(REPEAT_ITEM, dkey('total')), ' 个：', f_name])
+b.else_(g_f_idx)
 notice(['正在下载：', f_name])
+b.endif(g_f_idx)
 # 普通文件没有子目录，dest 就是「根子路径 + 文件名」；根子路径留空时只剩
 # 文件名，所以这里不额外塞字面 "/"，避免拼出前导斜杠。
 save_confirmed(b.get(f_url), [f_name],
@@ -582,8 +591,8 @@ b.setvar('清单文件数', act_out(b.count(pick(listing, 'entries')), '计数')
 b.setvar('空目录数', act_out(b.count(pick(listing, 'empty_dirs')), '计数'))
 dbg(['④ 清单 ', var('清单根'), ' ｜ ', var('清单文件数'), ' 个文件 ｜ 空目录 ',
      var('空目录数')])
-# 目录这边也要一句总览：光看「开始同步 1 项」根本不知道里面装着几个文件。
-notice(['目录 ', var('清单根'), '：', var('清单文件数'), ' 个文件'])
+# 目录这边也要一句总览：光看「开始同步 共 1 项」根本不知道里面装着几个文件。
+notice(['目录 ', var('清单根'), '：共 ', var('清单文件数'), ' 个文件'])
 
 g_notice = b.if_(pick(listing, 'notice'), 100)  # 有任何值 = 服务端有话说
 b.notify([pick(listing, 'notice')])
@@ -598,8 +607,14 @@ entry_prefix = var(REPEAT_ITEM, dkey('prefix'))
 entry_name = var(REPEAT_ITEM, dkey('name'))
 entry_url = var(REPEAT_ITEM, dkey('url'))
 log(['· ', entry_name, ' ｜ dir=', entry_dir, ' ｜ prefix=', entry_prefix])
-# 下载前先弹一条，带上级目录：目录里文件重名时也能分清是哪一个。
+# 下载前先弹一条带进度：目录里文件重名时看序号也能分清是哪一个。
+# 清单的每条都有 index/total，分母是这次要传的文件总数。
+g_e_idx = b.if_(var(REPEAT_ITEM, dkey('total')), 100)
+notice(['正在下载 第 ', var(REPEAT_ITEM, dkey('index')), '/',
+        var(REPEAT_ITEM, dkey('total')), ' 个：', entry_name])
+b.else_(g_e_idx)
 notice(['正在下载：', entry_name])
+b.endif(g_e_idx)
 
 g_has_url = b.if_(entry_url, 100)
 

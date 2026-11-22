@@ -1262,6 +1262,14 @@ def request_file():
         latest_file.clear()
 
         if file_list:
+            # 给普通文件编号：接收端直接读 index/total，弹「正在下载 第 3/10 个」。
+            # 编号只在一类里算 —— 目录不在这一串里（它的文件由合并清单编号），
+            # 否则一次「2 个文件 + 1 个目录」的复制会得到 1/3、2/3 这种错位。
+            plain_files = [e for e in file_list if e.get("kind") != "folder"]
+            for position, entry in enumerate(plain_files, 1):
+                entry["index"] = position
+                entry["total"] = len(plain_files)
+
             # 只共享了一个目录时用 type=folder：接收端据此知道这是一次完整的
             # 目录传输（走清单逐文件下载）。单个/多个普通文件仍统一返回
             # file_list，老客户端无需改动。
@@ -1274,6 +1282,10 @@ def request_file():
                 # 出声：复制普通文件时本来就没有目录，v7 却照样弹一句「没有
                 # 目录内容可同步」，纯属噪音（真机反馈）。
                 "folder_count": len(folder_origins),
+                # 普通文件个数（不含目录）。通知里说「共 N 项」时要的是它，
+                # 而不是 files 的条目数 —— 复制一个目录时 files 只有 1 条，
+                # 说「共 1 项」用户会以为只传一个文件。
+                "file_count": len(plain_files),
             }
             if is_single_folder:
                 payload["manifest_url"] = file_list[0]["manifest_url"]

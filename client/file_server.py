@@ -369,6 +369,15 @@ class FileServer:
                     f"目录文件超过 {MANIFEST_MAX_ENTRIES} 个，只传前 "
                     f"{MANIFEST_MAX_ENTRIES} 个，请拆成几个目录分别同步")
 
+            # 给每条补上「第几个 / 共几个」：接收端直接读，就能弹
+            # 「正在下载 第 3/10 个：xxx.pdf」。让服务端算而不是让快捷指令
+            # 自己累加 —— iOS 里做计数得靠「计算」动作维护变量，多一个动作就
+            # 多一个可能在真机上炸的点，而这边的编号是确定的、可测试的。
+            total_entries = len(entries)
+            for position, entry in enumerate(entries, 1):
+                entry["index"] = position
+                entry["total"] = total_entries
+
             logger.info("合并清单: %s -> %s 个文件 / %s 个目录（截断=%s）",
                         ",".join(ids), len(entries), total_dirs, truncated)
             return jsonify({

@@ -193,6 +193,21 @@ class BatchManifestTest(_FolderCase):
             self.assertEqual(f"{prefix}/{entry['name']}",
                              f"{root}/{entry['path']}", entry)
 
+    def test_entries_carry_progress_index(self):
+        """每条带 index/total，接收端据此弹「正在下载 第 3/10 个」。
+
+        编号由服务端算而不是让快捷指令自己累加：iOS 里做计数得靠「计算」动作
+        维护变量，多一个动作就多一个真机上可能出错的地方，而这里的编号是确定
+        的、可以测试的。两个目录合并后序号必须连续，不能各自从 1 开始。
+        """
+        body = self._two_servers().app.test_client().get(
+            "/manifest/batch?ids=d1,d2").get_json()
+        total = body["count"]
+        indexes = [e["index"] for e in body["entries"]]
+        self.assertEqual(indexes, list(range(1, total + 1)))
+        for entry in body["entries"]:
+            self.assertEqual(entry["total"], total, entry)
+
     def test_empty_dirs_keep_prefix(self):
         body = self._two_servers().app.test_client().get(
             "/manifest/batch?ids=d1").get_json()
