@@ -43,7 +43,7 @@ import uuid
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 REF = os.path.join(HERE, '获取同步-unsigned.plist')          # 仅借用顶层元数据
-OUT = os.path.join(HERE, '获取同步v9-unsigned.plist')
+OUT = os.path.join(HERE, '获取同步v10-unsigned.plist')
 
 OBJ = '\ufffc'          # 文本里变量的占位符
 
@@ -72,6 +72,19 @@ def tok(parts):
 
 
 def att(x):
+    """把一个附件引用包成 WFTextTokenAttachment。
+
+    只接受 **dict**（`var(...)` / `act_out(...)` 的返回值）。传 UUID 字符串是
+    常见笔误：`b.text(...)` 返回的是 UUID 字符串，不是引用，包进去就成了
+    `{"Value": "7A3F…", "WFSerializationType": "WFTextTokenAttachment"}` ——
+    iOS 解析不出这个动作的输出，变量直接被赋成空值。v9 真机就栽在这上面：
+    「设置变量 日志」拿到的输入是坏的，手机每次 POST /ios_log 都是
+    `{"log":""}`，电脑上一个字节都收不到。这里直接拦下来，编译期就报错。
+    """
+    if isinstance(x, str):
+        raise AssertionError(
+            'att() 收到的是 UUID 字符串（%s…），要传 act_out(uuid, 名字)'
+            % x[:8])
     return {'Value': x, 'WFSerializationType': 'WFTextTokenAttachment'}
 
 
@@ -188,6 +201,10 @@ class SC:
         return uid
 
     def setvar(self, name, subject):
+        # 同上：uuid 字符串不是引用，传进来一定是个笔误，当场拦掉
+        if isinstance(subject, str):
+            raise AssertionError(
+                'setvar(%r) 收到 UUID 字符串，要传 act_out(uuid, 名字)' % name)
         self._add('is.workflow.actions.setvariable',
                   {'WFInput': att(subject), 'WFVariableName': name})
 
@@ -387,25 +404,51 @@ b.setvar('来源', b.device_name())    # 只进 JSON body，不做 URL 编码
 # 一定留得住。
 LOG_FILE = 'SyncClipboard-调试.log'      # 同时留一份到手机「下载」，方便自己看
 
-b.setvar('日志', act_out(b.text(['SyncClipboard 同步日志\n']), '文本'))
+_log_ref = [None]        # 当前日志的「动作输出」引用，串成一条链
+
+
+def _log_init():
+    """初始化日志：一条字面文本，同时记住它的引用。"""
+    text = act_out(b.text(['SyncClipboard 同步日志\n']), '文本')
+    b.setvar('日志', text)
+    _log_ref[0] = text
+    return text
+
+
+_log_init()
 b.setvar('日志地址', act_out(b.text([var('服务器'), '/ios_log']), '文本'))
 
 
 def log(parts):
-    """往「日志」变量追加一行。"""
-    b.setvar('日志', b.text([var('日志'), *parts, '\n']))
+    """往「日志」变量追加一行。
+
+    两个坑都在这儿踩过：
+
+    1. `b.text()` 返回的是 **UUID 字符串**，不是动作输出引用。直接丢给
+       「设置变量」，写进去的输入就是坏的，变量被赋成空值 —— v9 真机上每次
+       `POST /ios_log` 的正文都是 `{"log":""}`，日志一个字节都没上来，界面
+       上还毫无提示。
+    2. 拼接时**引用上一条文本动作的输出**，而不是引用「日志」变量：动作输出
+       是确定能解析的，变量在文本里能不能取到值要赌实现细节，链条上有一环
+       赌输，整份日志就是空的。
+    """
+    src = _log_ref[0]
+    text = act_out(b.text([src, *parts, '\n']), '文本')
+    b.setvar('日志', text)
+    _log_ref[0] = text
 
 
 def log_push():
     """把当前完整日志推给电脑端（服务端覆盖写 log/ios_shortcut.log）。
 
-    用和 /request_file 同一套「获取 URL 内容 + JSON body」，参数已验证过。
-    电脑端是旧版（没有 /ios_log）时只会拿到 404 的内容，不会中断流程。
+    body 里同样用**上一条文本动作的输出**作值，和 v1 里跑通过的「JSON body
+    + ActionOutput」完全同形。电脑端是旧版（没有 /ios_log）时只会拿到 404
+    的内容，不会中断流程。
     """
     b.post_json(
         var('日志地址'),
         headers=[('key', act_out(cfg, '配置', dkey(KEY)))],
-        body=[('log', var('日志'))],
+        body=[('log', _log_ref[0])],
     )
 
 
