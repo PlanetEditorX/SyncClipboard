@@ -1,9 +1,11 @@
 import os
 import sys
+import queue
 import uuid
 import time
 import json
 import logging
+import zipfile
 import requests
 import threading
 import pyperclip
@@ -12,10 +14,14 @@ import win32api
 import win32clipboard
 from pathlib import Path
 from datetime import datetime
-from common.utils import BASE_DIR, SAFE_POST
+from common.utils import SAFE_POST
+from client.file_server import FOLDER_SHARE_TEMP_DIR
 from server.core.text_tracker import TextTracker
 
 logger = logging.getLogger("client")
+
+# 压缩级别：1~9。文件夹里多是已压缩过的镜像/APK，用中等档位换取速度。
+FOLDER_ZIP_COMPRESS_LEVEL = 6
 
 
 def get_clipboard_sequence():
@@ -49,6 +55,10 @@ class SyncClient:
         self.pull_thread = None
         # 文件服务
         self.file_server = file_server
+        # 文件推送队列：文件夹要先压缩，耗时不可控，放到后台线程按“最新优先”处理，
+        # 避免卡住剪贴板轮询。队列长度 1，新内容直接顶掉还没开始的旧任务。
+        self._file_push_queue = queue.Queue(maxsize=1)
+        self._file_push_thread = None
         # 全局锁，避免同时读写剪贴板
         self.clipboard_lock = threading.Lock()
         self.tracker = TextTracker()
@@ -73,6 +83,12 @@ class SyncClient:
         self.push_thread = threading.Thread(target=self._push_loop, daemon=True)
         self.push_thread.start()
 
+        # 文件推送线程（压缩文件夹可能耗时，独立成线程）
+        self._file_push_thread = threading.Thread(
+            target=self._file_push_worker, daemon=True
+        )
+        self._file_push_thread.start()
+
         # self.pull_thread = threading.Thread(target=self._pull_loop, daemon=True)
         # self.pull_thread.start()
 
@@ -86,7 +102,7 @@ class SyncClient:
                     current_set = frozenset(files)
                     if current_set != self.last_file_set:
                         self.last_file_set = current_set
-                        self._push_latest_file(files)
+                        self._enqueue_file_push(files)
                     time.sleep(1)
                     continue
 
@@ -97,6 +113,40 @@ class SyncClient:
             except Exception as e:
                 logger.error(f"监听异常: {e}")
             time.sleep(0.5)
+
+    def _enqueue_file_push(self, file_paths):
+        """把一批文件交给后台线程推送；只保留最新一批，避免积压。"""
+        paths = list(file_paths)
+        while True:
+            try:
+                self._file_push_queue.put_nowait(paths)
+                return
+            except queue.Full:
+                # 丢旧留新：用户又复制了新东西，还在排队的旧任务已无意义
+                try:
+                    dropped = self._file_push_queue.get_nowait()
+                except queue.Empty:
+                    continue
+                logger.info(
+                    f"文件推送队列已更新，放弃排队的旧内容（{len(dropped)} 项）"
+                )
+
+    def _file_push_worker(self):
+        while True:
+            try:
+                paths = self._file_push_queue.get(timeout=1)
+            except queue.Empty:
+                if not self.running:
+                    break
+                continue
+            if paths is None:
+                break
+            try:
+                self._push_latest_file(paths)
+            except Exception:
+                logger.exception("文件推送失败")
+            finally:
+                self._file_push_queue.task_done()
 
     def _get_local_text_to_push(self):
         """原子地读取剪贴板并判断这次变化是否需要上传。"""
@@ -186,29 +236,73 @@ class SyncClient:
             logger.warning("没有文件需要推送")
             return
 
+        # 先把可推送的内容筛出来，再动共享列表：
+        # 复制的是空目录或已被删除的路径时，不能顺手清掉上一次有效共享。
+        files = []
+        folders = []
+        skipped = []
+        for path in file_paths:
+            if os.path.isfile(path):
+                files.append(path)
+                continue
+            sanitized = path.encode('utf-8', 'surrogatepass').decode('utf-8', 'replace')
+            if os.path.isdir(path):
+                folders.append(path)
+            else:
+                logger.warning(f"文件不存在，跳过: {sanitized}")
+                skipped.append(sanitized)
+
+        # 文件夹没有直接共享的能力，先打包成 zip（多个文件夹各自一个包）
+        entries = []  # [(本地路径, 展示名, 是否临时文件)]
+        for path in files:
+            entries.append((path, os.path.basename(path), False))
+        for folder in folders:
+            zip_path = self._zip_folder(folder)
+            if zip_path is None:
+                continue
+            folder_name = os.path.basename(os.path.normpath(folder)) or "folder"
+            entries.append((str(zip_path), f"{folder_name}.zip", True))
+
+        if not entries:
+            # 整批都无效：不发请求，也不清空共享列表。
+            # 服务端对空 file_list 一律返回 400，本机共享列表也没必要跟着清。
+            logger.warning(
+                f"剪贴板中没有可共享的内容，本次不推送"
+                f"（跳过 {len(skipped)} 项，{len(folders)} 个文件夹打包失败）"
+            )
+            return
+
         file_list = []
-        # 推送前先清空之前的共享
+        # 推送前先清空之前的共享（上一批的临时压缩包也会一起删掉）
         if hasattr(self, 'file_server') and self.file_server:
             self.file_server.clear_files()
 
-        for path in file_paths:
-            if not os.path.isfile(path):
-                sanitized = path.encode('utf-8', 'surrogatepass').decode('utf-8', 'replace')
-                logger.warning(f"文件不存在，跳过: {sanitized}")
+        for path, name, is_temp in entries:
+            try:
+                size = os.path.getsize(path)
+            except OSError as e:
+                logger.warning(f"读取文件大小失败，跳过: {name}, 错误: {e}")
                 continue
-
-            name = os.path.basename(path)
-            size = os.path.getsize(path)
             file_id = str(uuid.uuid4())
             # 注册到 FileServer
             if hasattr(self, 'file_server') and self.file_server:
-                self.file_server.register_file(file_id, path)
+                self.file_server.register_file(file_id, path, temporary=is_temp)
             file_list.append({
                 "file_id": file_id,
                 "path": path,
                 "name": name,
                 "size": size
             })
+
+        if not file_list:
+            logger.warning("没有可共享的文件，本次不推送")
+            return
+
+        # 用于日志的文件摘要，避免依赖循环里最后一次赋值的局部变量
+        if len(file_list) == 1:
+            label = f"{file_list[0]['name']} ({file_list[0]['size']} bytes)"
+        else:
+            label = f"{file_list[0]['name']} 等 {len(file_list)} 个文件"
 
         try:
             resp = requests.post(
@@ -223,11 +317,100 @@ class SyncClient:
             )
 
             if resp.status_code == 200:
-                logger.info(f"文件路径已同步: {name} ({size} bytes)")
-            else:
-                logger.error(f"同步失败: {name}, 状态码: {resp.status_code}, 内容: {resp.text}")
+                logger.info(f"文件路径已同步: {label}")
+                return
+            logger.error(f"同步失败: {label}, 状态码: {resp.status_code}, 内容: {resp.text}")
         except Exception as e:
-            logger.error(f"同步文件路径失败: {name}, 错误: {e}")
+            logger.error(f"同步文件路径失败: {label}, 错误: {e}")
+
+        # 同步没成功：这批共享对方根本看不到，撤销登记并删掉临时压缩包，别占磁盘
+        if hasattr(self, 'file_server') and self.file_server:
+            for item in file_list:
+                self.file_server.unregister_file(item["file_id"])
+
+    def _zip_folder(self, folder_path):
+        """把文件夹打包成临时 zip，返回压缩包路径；失败返回 None。
+
+        压缩包放在 FOLDER_SHARE_TEMP_DIR，并登记到 FileServer 的临时文件集合，
+        共享结束（对方下载完 / 取消共享 / 过期 / 退出）时由 FileServer 删除。
+        """
+        folder_path = os.path.normpath(folder_path)
+        # 复制整个盘符根目录时 basename 为空，退回用盘符当目录名
+        folder_name = (
+            os.path.basename(folder_path)
+            or os.path.splitdrive(folder_path)[0].rstrip(":\\/")
+            or "folder"
+        )
+        archive_name = f"{uuid.uuid4().hex[:12]}_{folder_name}.zip"
+
+        try:
+            FOLDER_SHARE_TEMP_DIR.mkdir(parents=True, exist_ok=True)
+            zip_path = FOLDER_SHARE_TEMP_DIR / archive_name
+        except OSError as e:
+            logger.error(f"无法创建压缩包目录: {FOLDER_SHARE_TEMP_DIR}, 错误: {e}")
+            return None
+
+        started = time.time()
+        last_report = started
+        file_count = 0
+        raw_size = 0
+        logger.info(f"开始打包文件夹: {folder_path}")
+
+        try:
+            with zipfile.ZipFile(
+                zip_path, "w", zipfile.ZIP_DEFLATED,
+                compresslevel=FOLDER_ZIP_COMPRESS_LEVEL,
+            ) as zf:
+                for root, _dirs, names in os.walk(folder_path):
+                    # 相对被复制目录自身计算，包内统一保留一层同名根目录
+                    rel = os.path.relpath(root, folder_path)
+                    arc_root = folder_name if rel == "." else os.path.join(folder_name, rel)
+                    # 目录条目一并写入，保留空目录结构
+                    try:
+                        zf.write(root, arc_root + os.sep)
+                    except OSError as e:
+                        logger.warning(f"打包跳过无法读取的目录: {root}, 错误: {e}")
+                    for name in names:
+                        full_path = os.path.join(root, name)
+                        arcname = os.path.join(arc_root, name)
+                        try:
+                            zf.write(full_path, arcname)
+                            file_count += 1
+                            raw_size += os.path.getsize(full_path)
+                        except OSError as e:
+                            # 单个文件被独占/权限不足不应让整包失败
+                            logger.warning(f"打包跳过无法读取的文件: {full_path}, 错误: {e}")
+                    if time.time() - last_report >= 3:
+                        logger.info(
+                            f"打包中: {folder_name} 已处理 {file_count} 个文件, "
+                            f"{raw_size / 1048576:.1f} MB"
+                        )
+                        last_report = time.time()
+        except Exception as e:
+            logger.error(f"文件夹打包失败: {folder_path}, 错误: {e}")
+            self._remove_temp_zip(zip_path)
+            return None
+
+        try:
+            zip_size = zip_path.stat().st_size
+        except OSError:
+            zip_size = 0
+
+        logger.info(
+            f"打包完成: {folder_name}.zip, {file_count} 个文件, "
+            f"{raw_size / 1048576:.1f} MB -> {zip_size / 1048576:.1f} MB, "
+            f"耗时 {time.time() - started:.1f}s"
+        )
+        return zip_path
+
+    def _remove_temp_zip(self, zip_path):
+        """删除打包失败时残留的压缩包。"""
+        try:
+            if os.path.isfile(zip_path):
+                os.remove(zip_path)
+                logger.info(f"已清理未完成的压缩包: {zip_path}")
+        except OSError as e:
+            logger.warning(f"清理压缩包失败: {zip_path}, 错误: {e}")
 
     def _pull_loop(self):
         while self.running:
@@ -254,6 +437,18 @@ class SyncClient:
 
     def stop(self):
         self.running = False
+        # 唤醒并结束文件推送线程
+        try:
+            self._file_push_queue.put_nowait(None)
+        except queue.Full:
+            try:
+                self._file_push_queue.get_nowait()
+            except queue.Empty:
+                pass
+            try:
+                self._file_push_queue.put_nowait(None)
+            except queue.Full:
+                pass
         logger.info("客户端已停止")
 
     def get_clipboard_files(self):

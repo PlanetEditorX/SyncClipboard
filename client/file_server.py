@@ -1,6 +1,7 @@
 import os
 import json
 import time
+import shutil
 import logging
 import threading
 import pyperclip
@@ -14,10 +15,14 @@ from server.core.file_latest import (
     is_file_record_expired,
 )
 from server.core.text_tracker import TextTracker
-from flask import Flask, jsonify, send_file, after_this_request, request
+from flask import Flask, jsonify, send_file, request
 
 FILE_LATEST_FILE = BASE_DIR / "latest" / "file_latest.json"
 FILE_LATEST_FILE.parent.mkdir(parents=True, exist_ok=True)
+
+# 文件夹共享时生成的临时压缩包目录。压缩包在共享结束（对方下载完 / 取消共享 /
+# 过期 / 程序退出）后立即删除，这里只存放仍在共享中的临时文件。
+FOLDER_SHARE_TEMP_DIR = BASE_DIR / "temp" / "folder_share"
 
 logger = logging.getLogger("client")
 
@@ -44,6 +49,8 @@ class FileServer:
         self.shared_files = {}
         self.shared_file_registered_at = {}
         self._shared_files_lock = threading.RLock()
+        # 由本进程生成的临时文件（文件夹压缩包），共享结束时需要一并删除
+        self._temp_files = set()
         self._remote_text_handler = None
         self.app = Flask(__name__)
         # 关闭 Flask 默认访问日志
@@ -62,6 +69,9 @@ class FileServer:
         self.running = False
         self._server_thread = None
         self._flask_server = None
+        # 上一次异常退出可能留下未删除的临时压缩包（共享信息只存在内存里，
+        # 重启后这些包已无人引用），启动时一律清掉。
+        self._cleanup_stale_temp_files()
 
     def _register_routes(self):
         @self.app.route("/ping", methods=["GET"])
@@ -217,20 +227,35 @@ class FileServer:
 
             logger.info("文件下载请求: %s -> %s", file_id, path)
 
-            # 注册一个后置回调：文件发送完成后取消共享
-            @after_this_request
-            def after_download(response):
-                # 取消本机共享
-                self.unregister_file(file_id)
-                return response
+            response = send_file(path, as_attachment=True)
+            # 用生成器把响应体包一层：只有内容真正发送完（或连接中断）才取消共享。
+            # 临时压缩包会在取消共享时被删除，若在响应构造阶段就删，下载会被截断；
+            # 而直接依赖 call_on_close 不可行 —— send_file 返回的是
+            # direct_passthrough 响应，Werkzeug 不会回调 Response.close。
+            inner = response.response
 
-            return send_file(path, as_attachment=True)
+            def body_stream():
+                try:
+                    for chunk in inner:
+                        yield chunk
+                finally:
+                    # 先关文件句柄再删文件（Windows 下句柄未关会导致删除失败）
+                    close_inner = getattr(inner, "close", None)
+                    if callable(close_inner):
+                        try:
+                            close_inner()
+                        except Exception:
+                            pass
+                    self.unregister_file(file_id)
+
+            response.response = body_stream()
+            return response
 
     def set_remote_text_handler(self, handler):
         """将远程文字交给剪贴板监听器统一处理，避免接收后再次上传。"""
         self._remote_text_handler = handler
 
-    def register_file(self, file_id, path):
+    def register_file(self, file_id, path, temporary=False):
         """
         注册共享文件
         Parameters
@@ -239,34 +264,60 @@ class FileServer:
             文件唯一ID
         path : str
             本地文件路径
+        temporary : bool
+            是否为本次共享临时生成的文件（例如文件夹压缩包），
+            取消共享时需要删除
         """
         with self._shared_files_lock:
             self.shared_files[file_id] = path
             self.shared_file_registered_at[file_id] = time.time()
-        logger.info("注册共享文件: %s -> %s", file_id, path)
+            if temporary:
+                self._temp_files.add(path)
+        if temporary:
+            logger.info("注册共享文件(临时包): %s -> %s", file_id, path)
+        else:
+            logger.info("注册共享文件: %s -> %s", file_id, path)
+
+    def _release_file(self, file_id, reason="取消共享"):
+        """移除一条共享记录；若它是临时文件则顺手删除。"""
+        with self._shared_files_lock:
+            path = self.shared_files.pop(file_id, None)
+            self.shared_file_registered_at.pop(file_id, None)
+            is_temp = path is not None and path in self._temp_files
+            if is_temp:
+                self._temp_files.discard(path)
+        if path is None:
+            return
+        logger.info("%s文件: %s -> %s", reason, file_id, path)
+        if is_temp:
+            self._remove_temp_file(path)
 
     def unregister_file(self, file_id):
         """
         取消共享
         """
-        with self._shared_files_lock:
-            path = self.shared_files.pop(file_id, None)
-            self.shared_file_registered_at.pop(file_id, None)
-        if path is not None:
-            logger.info("取消共享文件: %s -> %s", file_id, path)
+        self._release_file(file_id, "取消共享")
 
     def clear_files(self):
         """
         清空共享列表
         """
         with self._shared_files_lock:
+            temp_paths = [
+                path for path in self.shared_files.values()
+                if path in self._temp_files
+            ]
             self.shared_files.clear()
             self.shared_file_registered_at.clear()
+            self._temp_files.clear()
         logger.info("共享文件列表已清空")
+        for path in temp_paths:
+            self._remove_temp_file(path)
 
     def _purge_expired_files(self, now=None):
         """从本机文件服务中移除已超过共享期限的文件。"""
         current_time = time.time() if now is None else now
+        expired_temp_paths = []
         with self._shared_files_lock:
             expired_ids = [
                 file_id
@@ -276,8 +327,31 @@ class FileServer:
             for file_id in expired_ids:
                 path = self.shared_files.pop(file_id, None)
                 self.shared_file_registered_at.pop(file_id, None)
+                if path is not None and path in self._temp_files:
+                    self._temp_files.discard(path)
+                    expired_temp_paths.append(path)
                 logger.info("共享文件已过期: %s -> %s", file_id, path)
+        for path in expired_temp_paths:
+            self._remove_temp_file(path)
         return len(expired_ids)
+
+    def _remove_temp_file(self, path):
+        """删除本进程生成的临时文件（压缩包），失败只记日志。"""
+        try:
+            if os.path.isfile(path):
+                os.remove(path)
+                logger.info("已删除临时压缩包: %s", path)
+        except OSError as e:
+            logger.warning("删除临时压缩包失败: %s, 错误: %s", path, e)
+
+    def _cleanup_stale_temp_files(self):
+        """清空临时压缩包目录（仅供启动时清理历史残留）。"""
+        try:
+            if FOLDER_SHARE_TEMP_DIR.exists():
+                shutil.rmtree(FOLDER_SHARE_TEMP_DIR, ignore_errors=True)
+                logger.info("已清理残留的临时压缩包目录: %s", FOLDER_SHARE_TEMP_DIR)
+        except OSError as e:
+            logger.warning("清理临时压缩包目录失败: %s", e)
 
     def get_file_path(self, file_id):
         """
@@ -333,4 +407,6 @@ class FileServer:
             if self._server_thread.is_alive():
                 logger.warning("文件服务器线程未能在5秒内停止")
 
+        # 退出前清掉仍在共享的临时压缩包，避免占用磁盘
+        self.clear_files()
         logger.info("文件服务器已停止")
