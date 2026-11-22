@@ -1,14 +1,17 @@
 # -*- coding: utf-8 -*-
-"""校验生成的快捷指令 plist：控制流配对、变量引用、动作树。
+"""校验生成的快捷指令 plist：控制流配对、变量引用、可疑参数、动作树。
 
-    python verify_shortcut.py [plist 路径]
+跨快捷指令通用，只吃一个 plist 路径：
+
+    python lib/verify.py 获取同步/获取同步-unsigned.plist
 """
 
 import collections
+import os
 import sys
 import plistlib
 
-REF = 'D:/Documents/Github/SyncClipboard/shortcuts/获取同步-unsigned.plist'
+HERE = os.path.dirname(os.path.abspath(__file__))
 
 CN = {
     'is.workflow.actions.dictionary': '词典',
@@ -38,6 +41,37 @@ def param_keys(act):
     return set(p.keys()), p.get('WFControlFlowMode')
 
 
+# 动作 → 真机导入成功过的那份导出里出现过的参数键。
+# 只用来发现「新写的动作里冒出了没见过的键」，不作为正确性判据。
+_REF_PARAMS = {
+    ('com.sindresorhus.Actions.IsHostReachable', None): {'AppIntentDescriptor', 'UUID', 'host', 'port'},
+    ('is.workflow.actions.comment', None): {'WFCommentActionText'},
+    ('is.workflow.actions.conditional', 0): {'GroupingIdentifier', 'UUID', 'WFCondition', 'WFConditionalActionString', 'WFConditions', 'WFControlFlowMode', 'WFInput', 'WFNumberValue'},
+    ('is.workflow.actions.conditional', 1): {'GroupingIdentifier', 'UUID', 'WFControlFlowMode'},
+    ('is.workflow.actions.conditional', 2): {'GroupingIdentifier', 'UUID', 'WFControlFlowMode'},
+    ('is.workflow.actions.count', None): {'Input', 'UUID'},
+    ('is.workflow.actions.delay', None): {'WFDelayTime'},
+    ('is.workflow.actions.dictionary', None): {'CustomOutputName', 'UUID', 'WFItems'},
+    ('is.workflow.actions.documentpicker.save', None): {'UUID', 'WFAskWhereToSave', 'WFFolder', 'WFInput'},
+    ('is.workflow.actions.downloadurl', None): {'ShowHeaders', 'UUID', 'WFHTTPHeaders', 'WFHTTPMethod', 'WFJSONValues', 'WFURL'},
+    ('is.workflow.actions.exit', None): {},
+    ('is.workflow.actions.getcurrentapp', None): {'UUID'},
+    ('is.workflow.actions.getdevicedetails', None): {'UUID'},
+    ('is.workflow.actions.getitemtype', None): {'UUID', 'WFInput'},
+    ('is.workflow.actions.gettext', None): {'UUID', 'WFTextActionText'},
+    ('is.workflow.actions.notification', None): {'UUID', 'WFInput', 'WFNotificationActionBody', 'WFNotificationActionSound'},
+    ('is.workflow.actions.previewdocument', None): {'WFInput'},
+    ('is.workflow.actions.repeat.count', 0): {'GroupingIdentifier', 'WFControlFlowMode', 'WFRepeatCount'},
+    ('is.workflow.actions.repeat.count', 2): {'GroupingIdentifier', 'UUID', 'WFControlFlowMode'},
+    ('is.workflow.actions.repeat.each', 0): {'GroupingIdentifier', 'UUID', 'WFControlFlowMode', 'WFInput'},
+    ('is.workflow.actions.repeat.each', 2): {'GroupingIdentifier', 'UUID', 'WFControlFlowMode'},
+    ('is.workflow.actions.setclipboard', None): {'UUID', 'WFInput'},
+    ('is.workflow.actions.setvariable', None): {'WFInput', 'WFVariableName'},
+    ('is.workflow.actions.showresult', None): {'Text'},
+    ('is.workflow.actions.unzip', None): {'UUID'},
+    ('is.workflow.actions.urlencode', None): {'UUID', 'WFInput'},
+}
+
 # 参考文件里没有、但已核实过的参数键。
 #
 # 参考文件（v1）是用户手工搭的，其中「解压缩」动作本身是我加的、当时没带
@@ -60,28 +94,24 @@ KNOWN_EXTRA_PARAMS = {
 }
 
 
-def check_params(acts, ref_path):
-    """参数名对照：凡是参考文件里同样动作从未出现过的参数键，都值得怀疑。"""
-    import os
-    if not os.path.exists(ref_path):
-        print('参数对照: 跳过（缺参考文件）')
-        return
-    known = collections.defaultdict(set)
-    for a in plistlib.load(open(ref_path, 'rb'))['WFWorkflowActions']:
-        keys, mode = param_keys(a)
-        known[(a['WFWorkflowActionIdentifier'], mode)] |= keys
+def check_params(acts):
+    """参数名对照：参考集里同样动作从未出现过的参数键，都值得怀疑。
 
+    参考集内嵌在本文件里（原来读另一份手工搭的 plist）。内嵌的理由很实在：
+    那份 plist 与构建产物同目录，一旦「只保留最新一版」把它覆盖掉，这个检查
+    就会悄悄退化；常量不会因为文件增删而失效。
+    """
     suspect = []
     for i, a in enumerate(acts):
         keys, mode = param_keys(a)
-        base = known.get((a['WFWorkflowActionIdentifier'], mode))
-        if not base:                     # 参考文件里没有这种动作/模式
+        base = _REF_PARAMS.get((a['WFWorkflowActionIdentifier'], mode))
+        if not base:                     # 参考集里没有这种动作/模式
             continue
         extra = {k for k in keys - base
                  if (a['WFWorkflowActionIdentifier'], k) not in KNOWN_EXTRA_PARAMS}
         if extra:
             suspect.append((i, a['WFWorkflowActionIdentifier'], sorted(extra)))
-    print('可疑参数（参考文件同动作未出现过）:', suspect or 'none')
+    print('可疑参数（参考集同动作未出现过）:', suspect or 'none')
 
 
 def walk_refs(node, sink):
@@ -151,7 +181,7 @@ def main(path):
     print('控制流异常:', bad_groups or 'none')
     print('定义变量:', sorted(defined))
     print('使用但未定义:', undefined or 'none')
-    check_params(acts, REF)
+    check_params(acts)
     print()
     print('================ 动作树 ================')
     indent = 0
@@ -196,5 +226,6 @@ def main(path):
 
 
 if __name__ == '__main__':
-    main(sys.argv[1] if len(sys.argv) > 1
-         else 'D:/Documents/Github/SyncClipboard/shortcuts/获取同步v3-unsigned.plist')
+    if len(sys.argv) < 2:
+        sys.exit('用法: python lib/verify.py <unsigned.plist>')
+    main(sys.argv[1])

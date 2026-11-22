@@ -11,7 +11,7 @@ Windows 上也没有本地签名手段（需 macOS 钥匙串里的 Apple ID 私�
     网络：请求会**绕过**系统 HTTP(S)_PROXY 直连。走代理时 Cloudflare 会
     回 403（Attention Required），直连才是 200。
 
-    python sign_shortcut.py [v4]
+    python lib/sign.py <unsigned.plist> [签名输出路径]
 """
 
 import json
@@ -30,10 +30,17 @@ except ImportError:               # 退而求其次：PyPI 上的 lzfse 提供�
         liblzfse = None
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-VERSION = sys.argv[1] if len(sys.argv) > 1 else 'v4'
-SRC = os.path.join(HERE, f'获取同步{VERSION}-unsigned.plist')
-DST = os.path.join(HERE, f'获取同步{VERSION}.shortcut')
-NAME = f'获取同步{VERSION}'
+if len(sys.argv) < 2:
+    sys.exit('用法: python lib/sign.py <unsigned.plist> [签名输出路径]')
+
+SRC = os.path.abspath(sys.argv[1])
+# 快捷指令名 = plist 文件名去掉「-unsigned.plist」。iOS 里按这个名字显示，
+# 也按它判断「同名已在库里」—— 换名导入才能更新已存在的那条。
+_stem = os.path.basename(SRC)
+NAME = (_stem[:-len('-unsigned.plist')] if _stem.endswith('-unsigned.plist')
+        else os.path.splitext(_stem)[0])
+DST = (sys.argv[2] if len(sys.argv) > 2
+       else os.path.join(os.path.dirname(SRC), NAME + '.shortcut'))
 
 HUBSIGN_URL = 'https://hubsign.routinehub.services/sign'
 HEADERS = {

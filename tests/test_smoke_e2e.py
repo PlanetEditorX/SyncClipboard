@@ -393,8 +393,8 @@ class TestTextOnly(_SmokeCase):
 class TestShortcutArtifact(_SmokeCase):
     """快捷指令交付物本身也要能通过冒烟：容器完好、且不含已废弃的打包链路。"""
 
-    UNSIGNED = ROOT / "shortcuts" / "获取同步v6-unsigned.plist"
-    SIGNED = ROOT / "shortcuts" / "获取同步v6.shortcut"
+    UNSIGNED = ROOT / "shortcuts" / "获取同步" / "获取同步-unsigned.plist"
+    SIGNED = ROOT / "shortcuts" / "获取同步" / "获取同步.shortcut"
 
     def _actions(self):
         import plistlib
@@ -438,19 +438,23 @@ class TestShortcutArtifact(_SmokeCase):
             self.assertTrue(params.get("WFFolder"),
                             f"[{i}] 存储到文件没指定目标目录")
 
-        # 目录分支那个「存储到文件」必须带子路径，且子路径要接上清单的 dir
-        # （dir 已含「目录名/」前缀并以 "/" 收尾，斜杠由服务端保证 —— 快捷指令
-        # 里不再自己拼字符串，拼错了真机上是「看着跑完、目录还是平的」）。
-        subpaths = [
-            (a["WFWorkflowActionParameters"] or {}).get("WFFileDestinationPath")
-            for a in self._actions()
-            if a["WFWorkflowActionIdentifier"] == "is.workflow.actions.documentpicker.save"
-        ]
-        subpaths = [s for s in subpaths if s]
-        self.assertTrue(subpaths, "目录分支缺少子路径，写文件会全平在下载根下")
-        for token in subpaths:
-            blob = json.dumps(token["Value"], ensure_ascii=False)
-            self.assertIn("dir", blob, "子路径没有接上清单里的 dir")
+        # 目录分支那个「存储到文件」必须带子路径，且子路径要接上清单的 prefix。
+        # 斜杠必须是**字面字符**：iOS 会对子路径做规范化，变量值结尾的 "/" 会被
+        # 吃掉，`目录名/` 于是退化成文件名 `目录名`，一堆文件互相覆盖（v6 真机：
+        # 最后只剩一个叫目录名的无扩展名文件）。所以 prefix 由服务端去尾斜杠给出，
+        # 斜杠写在快捷指令里。
+        folder_tokens = []
+        for i, action in enumerate(self._actions()):
+            if action["WFWorkflowActionIdentifier"] != "is.workflow.actions.documentpicker.save":
+                continue
+            token = (action.get("WFWorkflowActionParameters") or {}).get(
+                "WFFileDestinationPath")
+            if token and "prefix" in json.dumps(token["Value"], ensure_ascii=False):
+                folder_tokens.append((i, token))
+        self.assertTrue(folder_tokens, "目录分支的子路径没有接上清单的 prefix")
+        for i, token in folder_tokens:
+            self.assertIn("/", token["Value"]["string"],
+                          f"[{i}] prefix 与文件名之间必须是字面斜杠")
 
         # 子路径存在时必须打开覆盖，否则同一个文件同步两次会变成「a 1.txt」
         for action in self._actions():
