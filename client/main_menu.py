@@ -15,9 +15,11 @@ from pathlib import Path
 from datetime import datetime
 from common.utils import SAFE_POST
 from client.folder_manifest import (
+    MANIFEST_MAX_ENTRIES,
     folder_display_name,
     folder_size_bytes,
     format_size,
+    scan_folder,
 )
 from common.sync_modes import (
     MODE_BOTH,
@@ -26,7 +28,10 @@ from common.sync_modes import (
     is_send_allowed,
     normalize_mode,
 )
-from gui.main_window import DEFAULT_FOLDER_ZIP_CONFIRM_GB
+from gui.main_window import (
+    DEFAULT_FOLDER_FILE_COUNT_CONFIRM,
+    DEFAULT_FOLDER_ZIP_CONFIRM_GB,
+)
 from server.core.text_tracker import TextTracker
 
 logger = logging.getLogger("client")
@@ -47,17 +52,27 @@ def _as_float(value, default):
         return float(default)
 
 
-def confirm_large_folder(folder_name, size_text, limit_gb):
-    """原生确认框：目录超过上限时询问是否仍然压缩传输。
+def confirm_large_folder(folder_name, size_text, limit_gb, file_count, limit_count,
+                         manifest_max_entries=MANIFEST_MAX_ENTRIES):
+    """原生确认框：目录总大小或文件数超过阈值时，问是否仍然共享。
 
     客户端是独立进程（GUI 的子进程），没有现成的界面通道，这里直接用 Win32
-    消息框；非 Windows 或无法弹框时按「否」处理，避免在无人值守时悄悄传大目录。
+    消息框；非 Windows 或无法弹框时按「否」处理，避免在无人值守时悄悄共享大目录。
+    确认发生在**发送端复制时**：批准后才会登记共享并上报 /file_sync，
+    接收端在共享存活期内无需再批准一次。
     """
     message = (
-        f"目录「{folder_name}」大小为 {size_text}，"
-        f"超过设定的上限 {limit_gb:g} GB。\n\n"
-        "是否仍然压缩后传输？压缩包会在传输完成后自动删除。"
+        f"目录「{folder_name}」共有 {file_count} 个文件、总计 {size_text}，"
+        f"超过设定的阈值（{limit_count} 个文件 / {limit_gb:g} GB）。\n\n"
+        "是否仍然共享？\n"
+        "批准后才会登记并发布这个目录，共享存活期内已配对的设备都可以获取；"
+        "到期后自动取消登记，不会删除电脑上的原文件。"
     )
+    if file_count > manifest_max_entries:
+        message += (
+            f"\n\n注意：清单最多 {manifest_max_entries} 条，超出的文件不会被传输，"
+            "建议把目录拆小后再同步。"
+        )
     try:
         import ctypes
         from ctypes import wintypes
@@ -116,10 +131,15 @@ class SyncClient:
         self.text_sync_mode = normalize_mode(config.get("text_sync_mode"))
         self.file_sync_mode = normalize_mode(config.get("file_sync_mode"))
         self.folder_sync_enabled = _as_bool(config.get("folder_sync_enabled"), True)
-        # 目录体积超过这个值就弹窗询问，未超过直接后台打包
+        # 目录总大小或文件数超过任一个阈值就弹窗询问，未超过直接登记共享。
+        # 历史配置键 folder_zip_confirm_gb 保持不变（改名会破坏老配置）。
         self.folder_zip_confirm_bytes = int(
             _as_float(config.get("folder_zip_confirm_gb"), DEFAULT_FOLDER_ZIP_CONFIRM_GB)
             * 1024 ** 3
+        )
+        self.folder_file_count_limit = int(
+            _as_float(config.get("folder_file_count_confirm"),
+                      DEFAULT_FOLDER_FILE_COUNT_CONFIRM)
         )
         # 最近一次“已处理过”的剪贴板序列号，用于精确识别手动复制
         self._last_clipboard_seq = None
@@ -127,8 +147,9 @@ class SyncClient:
         self.pull_thread = None
         # 文件服务
         self.file_server = file_server
-        # 文件推送队列：文件夹要先压缩，耗时不可控，放到后台线程按“最新优先”处理，
-        # 避免卡住剪贴板轮询。队列长度 1，新内容直接顶掉还没开始的旧任务。
+        # 文件推送队列：目录要遍历统计并可能弹窗确认，耗时不可控，放到后台
+        # 线程按“最新优先”处理，避免卡住剪贴板轮询。队列长度 1，新内容直接
+        # 顶掉还没开始的旧任务。
         self._file_push_queue = queue.Queue(maxsize=1)
         self._file_push_thread = None
         # 全局锁，避免同时读写剪贴板
@@ -447,7 +468,7 @@ class SyncClient:
         except Exception as e:
             logger.error(f"同步文件路径失败: {label}, 错误: {e}")
 
-        # 同步没成功：这批共享对方根本看不到，撤销登记并删掉临时压缩包，别占磁盘
+        # 同步没成功：这批共享对方根本看不到，撤销登记即可（原文件不动）
         if hasattr(self, 'file_server') and self.file_server:
             for item in file_list:
                 self.file_server.unregister_file(item["file_id"])
@@ -456,7 +477,7 @@ class SyncClient:
         """下载中断后，把本机仍持有的共享重新登记到服务端。
 
         `/request_file` 在返回前就把文件记录清空了（一次性消费），而
-        FileServer 为了让接收端能重试，会把压缩包留到 TTL 到期。两者叠加的
+        FileServer 为了让接收端能重试，会把共享登记留到 TTL 到期。两者叠加的
         结果是：接收端下载失败后再拉一次只能拿到文本分支，只能回电脑重新
         复制一遍。这里用还留着的共享重建 file_list 再推一次，让重试可行。
         """
@@ -495,31 +516,37 @@ class SyncClient:
     def _folder_ready_for_transfer(self, folder_path):
         """判断这个目录要不要共享，并返回 (是否共享, 原始总字节数)。
 
-        这里只做体积统计（遍历元数据，不读文件内容）和超限确认；不做任何
-        打包 —— 目录始终按原始文件逐个传，接收端按清单重建结构。
+        一次遍历同时拿到总大小与文件数（只读元数据，不读文件内容），任一
+        超过阈值就弹窗确认；不做任何打包 —— 目录始终按原始文件逐个传。
         """
         if not self.folder_sync_enabled:
             logger.warning(f"目录同步已关闭，跳过: {folder_path}")
             return False, 0
 
-        size = folder_size_bytes(folder_path)
+        size, count = scan_folder(folder_path)
         size_text = format_size(size)
         limit_bytes = self.folder_zip_confirm_bytes
         limit_gb = limit_bytes / 1024 ** 3
+        limit_count = self.folder_file_count_limit
 
-        if limit_bytes > 0 and size > limit_bytes:
+        over_size = limit_bytes > 0 and size > limit_bytes
+        over_count = limit_count > 0 and count > limit_count
+        if over_size or over_count:
             folder_name = folder_display_name(folder_path)
             logger.info(
-                f"目录 {folder_name} 体积 {size_text}，超过上限 {limit_gb:g} GB，等待用户确认"
+                f"目录 {folder_name} 共 {count} 个文件 / {size_text}，"
+                f"超过阈值（{limit_count} 个 / {limit_gb:g} GB），等待用户确认"
             )
-            approved = confirm_large_folder(folder_name, size_text, limit_gb)
+            approved = confirm_large_folder(
+                folder_name, size_text, limit_gb, count, limit_count
+            )
             logger.info(
                 f"目录超限确认结果: {'同意继续共享' if approved else '用户取消，本次不传输'}"
             )
             return approved, size
 
         logger.info(
-            f"目录 {folder_path} 体积 {size_text}，在限额内，已登记共享"
+            f"目录 {folder_path} 共 {count} 个文件 / {size_text}，在阈值内，已登记共享"
             f"（接收端来取时按清单逐文件下载）"
         )
         return True, size

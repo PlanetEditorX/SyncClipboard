@@ -103,6 +103,25 @@ class FileServer:
                 return None
             if not request_key_matches(self.KEY):
                 return jsonify({"status": "error", "message": "密钥错误"}), 403
+
+            # 目录共享下载中：先按固定窗口清掉真正过期的登记，再给仍存活的
+            # 续期。顺序不能反 —— 否则 TTL 之后来的第一个请求会把过期共享复活。
+            # 逐文件传输是「一次复制 → N 个串行请求」，不续期的话后半段请求
+            # 会撞上各个路由开头的 _purge_expired_files() 而 404。
+            self._purge_expired_files()
+            path = request.path
+            folder_ids = []
+            if path.startswith("/manifest/batch"):
+                folder_ids = (request.args.get("ids") or "").split(",")
+            elif path.startswith("/manifest/"):
+                folder_ids = [path[len("/manifest/"):].split("/", 1)[0]]
+            elif path.startswith("/file/") and "/" in path[len("/file/"):]:
+                # /file/<id>/<相对路径> 才是目录成员；/file/<id> 是普通文件
+                folder_ids = [path[len("/file/"):].split("/", 1)[0]]
+            for raw in folder_ids:
+                file_id = unquote(raw.strip())
+                if file_id:
+                    self._touch_share(file_id)
             return None
 
         @self.app.route("/ping", methods=["GET"])
@@ -637,6 +656,19 @@ class FileServer:
             self.shared_folders.clear()
         logger.info("共享文件列表已清空")
 
+    def _touch_share(self, file_id):
+        """目录共享下载进行中：刷新登记时间，把 TTL 变成滑动窗口。
+
+        逐文件传输是「一次复制 → N 个串行请求」，固定 TTL 会让后半段请求撞上
+        `_purge_expired_files()` 而 404。这里只在该共享**仍然存在**时续期：
+        首次获取前的等待窗口仍是从复制起算的固定 TTL，不会让过期共享复活。
+        """
+        with self._shared_files_lock:
+            if file_id not in self.shared_file_registered_at:
+                return False
+            self.shared_file_registered_at[file_id] = time.time()
+        return True
+
     def _purge_expired_files(self, now=None):
         """从本机文件服务中移除已超过共享期限的文件/目录共享。"""
         current_time = time.time() if now is None else now
@@ -705,6 +737,6 @@ class FileServer:
             if self._server_thread.is_alive():
                 logger.warning("文件服务器线程未能在5秒内停止")
 
-        # 退出前清掉仍在共享的临时压缩包，避免占用磁盘
+        # 退出前撤销仍在共享的登记。没有临时压缩包要删，原文件保持不动
         self.clear_files()
         logger.info("文件服务器已停止")

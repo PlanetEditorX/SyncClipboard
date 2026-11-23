@@ -175,6 +175,9 @@ class FileHandler:
             return None
         if data.get("notice"):
             logger.warning("目录清单提示: %s", data["notice"])
+            # 清单被截断时只附带一句 notice，接收端必须让用户看见「没传完」，
+            # 否则会误以为整个目录已经同步完毕。
+            show_message("目录传输不完整", data["notice"])
         return data
 
     def _download_folder(self, file, save_dir, progress_dialog):

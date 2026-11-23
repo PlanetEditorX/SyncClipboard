@@ -8,7 +8,7 @@
 2. `/file_sync` 收到 `port: null` 时不能原样落库：`dict.get` 在「键存在、
    值为 None」时不回落默认值，记录会以 port=None 存下，`/request_file`
    再把每条都跳过，文件静默消失。
-3. 下载中断后客户端保留压缩包，但服务端的记录已被清空，需要重新登记一次
+3. 下载中断后客户端保留共享登记，但服务端的记录已被清空，需要重新登记一次
    共享，接收端才能直接重试。
 """
 
@@ -300,7 +300,7 @@ class TestShareReannounce(unittest.TestCase):
         self.assertEqual(entries["d1"]["kind"], "folder")
         self.assertEqual(entries["d1"]["name"], "课程")
         self.assertEqual(entries["d1"]["size"], 123)
-        # 目录上报原始路径，不能把临时压缩包路径泄给服务端
+        # 目录上报原始路径，不产生任何临时压缩包
         self.assertEqual(entries["d1"]["path"], str(self.folder))
 
     def test_download_failure_triggers_reannounce(self):

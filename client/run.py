@@ -159,6 +159,8 @@ def main():
             "file_sync_mode": getattr(config_manager, "file_sync_mode", "both"),
             "folder_sync_enabled": getattr(config_manager, "folder_sync_enabled", True),
             "folder_zip_confirm_gb": getattr(config_manager, "folder_zip_confirm_gb", 10),
+            "folder_file_count_confirm": getattr(
+                config_manager, "folder_file_count_confirm", 3000),
         },
         file_server    # 传入文件服务器对象，供客户端内部使用
     )
@@ -169,7 +171,8 @@ def main():
         f"同步方向 | 文字: {getattr(config_manager, 'text_sync_mode', 'both')} | "
         f"文件: {getattr(config_manager, 'file_sync_mode', 'both')} | "
         f"目录: {getattr(config_manager, 'folder_sync_enabled', True)} | "
-        f"目录上限: {getattr(config_manager, 'folder_zip_confirm_gb', 10)} GB | "
+        f"目录阈值: {getattr(config_manager, 'folder_zip_confirm_gb', 10)} GB / "
+        f"{getattr(config_manager, 'folder_file_count_confirm', 3000)} 个文件 | "
         f"共享存活: {getattr(config_manager, 'file_share_ttl_minutes', 30)} 分钟"
     )
     file_server.start()   # 启动文件服务器的后台线程（监听文件上传/下载请求）

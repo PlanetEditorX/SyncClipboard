@@ -49,6 +49,7 @@ from gui import qt_dialogs
 from gui.config_manager import LOCAL_SERVER_HOST
 from gui.main_window import (
     DEFAULT_FILE_SHARE_TTL_MINUTES,
+    DEFAULT_FOLDER_FILE_COUNT_CONFIRM,
     DEFAULT_FOLDER_ZIP_CONFIRM_GB,
     validate_client_settings,
 )
@@ -302,7 +303,7 @@ class MainWindow(QMainWindow):
         self.body.addLayout(row)
 
     def _build_sync_controls(self):
-        """同步控制：文字/文件的收发方向、目录打包开关与上限、共享存活时间。"""
+        """同步控制：文字/文件的收发方向、目录共享开关与确认阈值、共享存活时间。"""
         card = QFrame()
         card.setObjectName("Card")
         lay = QVBoxLayout(card)
@@ -346,9 +347,11 @@ class MainWindow(QMainWindow):
 
         pref_box = QVBoxLayout()
         pref_box.setSpacing(2)
-        pref_label = QLabel("自动打包同步复制的文件夹")
+        pref_label = QLabel("同步复制的文件夹")
         pref_label.setStyleSheet("font-weight: 600;")
-        pref_hint = QLabel("关闭后复制文件夹不会被传输；开启时超过上限会先弹窗确认")
+        pref_hint = QLabel(
+            "关闭后复制文件夹不会被同步；开启时总大小或文件数超过阈值会先弹窗确认"
+        )
         pref_hint.setObjectName("Hint")
         pref_box.addWidget(pref_label)
         pref_box.addWidget(pref_hint)
@@ -360,16 +363,19 @@ class MainWindow(QMainWindow):
         lay.addWidget(preference)
 
         numbers = QHBoxLayout()
-        numbers.setSpacing(24)
-        limit_box, self.folder_limit_edit = self._number_input("目录大小上限", "GB")
+        numbers.setSpacing(20)
+        limit_box, self.folder_limit_edit = self._number_input("目录大小阈值", "GB")
+        count_box, self.folder_count_edit = self._number_input("目录文件数阈值", "个")
         ttl_box, self.share_ttl_edit = self._number_input("共享存活时间", "分钟")
         numbers.addWidget(limit_box)
+        numbers.addWidget(count_box)
         numbers.addWidget(ttl_box)
         numbers.addStretch(1)
         lay.addLayout(numbers)
 
         tip = QLabel(
-            "目录超过上限时先弹窗询问，确认后才打包；共享到期后自动取消共享并删除临时压缩包。"
+            "超过阈值时先弹窗确认，批准后才登记共享（存活期内已配对设备均可获取）；"
+            "开始下载后每次成功请求自动续期，到期自动取消登记，不会删除原文件。"
         )
         tip.setObjectName("Hint")
         tip.setWordWrap(True)
@@ -422,9 +428,10 @@ class MainWindow(QMainWindow):
         return box, edit
 
     def _on_folder_sync_toggled(self, checked):
-        edit = getattr(self, "folder_limit_edit", None)
-        if edit is not None:
-            edit.setEnabled(bool(checked))
+        for name in ("folder_limit_edit", "folder_count_edit"):
+            edit = getattr(self, name, None)
+            if edit is not None:
+                edit.setEnabled(bool(checked))
 
     def _build_quick_actions(self):
         card = QFrame()
@@ -691,6 +698,10 @@ class MainWindow(QMainWindow):
                 getattr(self.config, "folder_zip_confirm_gb", DEFAULT_FOLDER_ZIP_CONFIRM_GB)
             )
         )
+        self.folder_count_edit.setText(
+            str(int(getattr(self.config, "folder_file_count_confirm",
+                            DEFAULT_FOLDER_FILE_COUNT_CONFIRM)))
+        )
         # setChecked 不发出 toggled，关联控件的启用状态要单独同步
         self._on_folder_sync_toggled(folder_enabled)
         self.share_ttl_edit.setText(
@@ -738,6 +749,13 @@ class MainWindow(QMainWindow):
             else getattr(self.config, "folder_zip_confirm_gb", DEFAULT_FOLDER_ZIP_CONFIRM_GB)
         )
 
+        count_edit = getattr(self, "folder_count_edit", None)
+        limit_count = (
+            count_edit.text() if count_edit is not None
+            else getattr(self.config, "folder_file_count_confirm",
+                         DEFAULT_FOLDER_FILE_COUNT_CONFIRM)
+        )
+
         ttl_edit = getattr(self, "share_ttl_edit", None)
         ttl_minutes = (
             ttl_edit.text() if ttl_edit is not None
@@ -755,6 +773,7 @@ class MainWindow(QMainWindow):
             ),
             "folder_sync_enabled": folder_enabled,
             "folder_zip_confirm_gb": limit_gb,
+            "folder_file_count_confirm": limit_count,
             "file_share_ttl_minutes": ttl_minutes,
         }
 

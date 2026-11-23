@@ -93,7 +93,7 @@ class DownloadProgressDialog(QDialog):
         self.show()
         self.raise_()
 
-    def set_busy(self, text="正在打包…"):
+    def set_busy(self, text="正在同步…"):
         """不确定进度阶段（例如等发送端压缩目录）：进度条走循环动画。"""
         if self._closed:
             return

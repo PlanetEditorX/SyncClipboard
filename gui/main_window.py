@@ -6,14 +6,22 @@
 
 from common.sync_modes import MODE_BOTH, VALID_MODES
 
-# 目录同步大小上限（GB）：超过就要先问用户
+# 目录共享确认阈值：逐文件传输下风险来自「总大小」和「文件数」两个维度，
+# 任一超阈值都要先问用户。这是确认阈值，不是硬拒绝上限。
+# `folder_zip_confirm_gb` 是历史配置键名，改名会破坏老配置，故只改显示名。
 DEFAULT_FOLDER_ZIP_CONFIRM_GB = 10
 MIN_FOLDER_ZIP_CONFIRM_GB = 0.1
 MAX_FOLDER_ZIP_CONFIRM_GB = 10240
 
-# 共享文件存活时间（分钟）。从电脑上复制那一刻起算，打包 + 下载都算在内，
-# 默认给 30 分钟；接收端（含 iOS 快捷指令）轮询打包最多等 20 分钟，
-# 剩下的时间留给下载，避免大目录下到一半 404。
+DEFAULT_FOLDER_FILE_COUNT_CONFIRM = 3000
+MIN_FOLDER_FILE_COUNT_CONFIRM = 100
+# 与 client.folder_manifest.MANIFEST_MAX_ENTRIES 对齐：文件数阈值不能越过
+# 清单硬上限，否则确认框会承诺一个根本传不完的目录。
+MAX_FOLDER_FILE_COUNT_CONFIRM = 20000
+
+# 共享存活时间（分钟）：从电脑上复制那一刻起算的「首次获取等待窗口」。
+# 目录逐文件下载开始后，每次成功请求会把窗口往后推（FileServer._touch_share），
+# 避免文件多时下到一半被清理。默认 30 分钟给两端留足余量。
 DEFAULT_FILE_SHARE_TTL_MINUTES = 30
 MIN_FILE_SHARE_TTL_MINUTES = 1
 MAX_FILE_SHARE_TTL_MINUTES = 24 * 60
@@ -30,6 +38,7 @@ def validate_client_settings(
     file_sync_mode=MODE_BOTH,
     folder_sync_enabled=True,
     folder_zip_confirm_gb=DEFAULT_FOLDER_ZIP_CONFIRM_GB,
+    folder_file_count_confirm=DEFAULT_FOLDER_FILE_COUNT_CONFIRM,
     file_share_ttl_minutes=DEFAULT_FILE_SHARE_TTL_MINUTES,
 ):
     """校验并规范化客户端设置；不合法时抛 ValueError。"""
@@ -69,6 +78,7 @@ def validate_client_settings(
         "file_sync_mode": _normalize_mode(file_sync_mode, "文件同步模式"),
         "folder_sync_enabled": _normalize_bool(folder_sync_enabled),
         "folder_zip_confirm_gb": _normalize_confirm_gb(folder_zip_confirm_gb),
+        "folder_file_count_confirm": _normalize_folder_count(folder_file_count_confirm),
         "file_share_ttl_minutes": _normalize_ttl(file_share_ttl_minutes),
     }
 
@@ -90,15 +100,28 @@ def _normalize_confirm_gb(value):
     try:
         size = float(value)
     except (TypeError, ValueError) as exc:
-        raise ValueError("目录大小上限必须是数字（GB）") from exc
+        raise ValueError("目录大小阈值必须是数字（GB）") from exc
     if not MIN_FOLDER_ZIP_CONFIRM_GB <= size <= MAX_FOLDER_ZIP_CONFIRM_GB:
         raise ValueError(
-            f"目录大小上限必须在 {MIN_FOLDER_ZIP_CONFIRM_GB:g} 到 "
+            f"目录大小阈值必须在 {MIN_FOLDER_ZIP_CONFIRM_GB:g} 到 "
             f"{MAX_FOLDER_ZIP_CONFIRM_GB:g} GB 之间"
         )
     size = round(size, 1)
     # 整数不写成 10.0，配置文件里更直观
     return int(size) if float(size).is_integer() else size
+
+
+def _normalize_folder_count(value):
+    try:
+        count = int(str(value).strip()) if isinstance(value, str) else int(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("目录文件数阈值必须是整数") from exc
+    if not MIN_FOLDER_FILE_COUNT_CONFIRM <= count <= MAX_FOLDER_FILE_COUNT_CONFIRM:
+        raise ValueError(
+            f"目录文件数阈值必须在 {MIN_FOLDER_FILE_COUNT_CONFIRM} 到 "
+            f"{MAX_FOLDER_FILE_COUNT_CONFIRM} 之间"
+        )
+    return count
 
 
 def _normalize_ttl(value):

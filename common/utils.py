@@ -176,7 +176,7 @@ def reveal_in_explorer(path: str) -> bool:
 
     target = os.path.abspath(path)
     if not os.path.exists(target):
-        # 文件被移动/删除（例如临时压缩包已被清理）时退化为打开它的直接上级目录。
+        # 文件被移动/删除（例如共享到期后源目录已被挪走）时退化为打开它的直接上级目录。
         # 只退一层：再往上翻到磁盘根目录对用户没有意义。
         folder = os.path.dirname(target)
         if not folder or not os.path.isdir(folder):

@@ -11,6 +11,7 @@ from common.sync_modes import MODE_BOTH, normalize_mode
 from common.utils import BASE_DIR
 from gui.main_window import (
     DEFAULT_FILE_SHARE_TTL_MINUTES,
+    DEFAULT_FOLDER_FILE_COUNT_CONFIRM,
     DEFAULT_FOLDER_ZIP_CONFIRM_GB,
 )
 
@@ -46,6 +47,7 @@ class ConfigManager:
         self.file_sync_mode = MODE_BOTH
         self.folder_sync_enabled = True
         self.folder_zip_confirm_gb = DEFAULT_FOLDER_ZIP_CONFIRM_GB
+        self.folder_file_count_confirm = DEFAULT_FOLDER_FILE_COUNT_CONFIRM
         self.file_share_ttl_minutes = DEFAULT_FILE_SHARE_TTL_MINUTES
         self._state_data = {}
         self._client_config_data = {}
@@ -149,6 +151,7 @@ class ConfigManager:
                 "file_sync_mode": MODE_BOTH,
                 "folder_sync_enabled": True,
                 "folder_zip_confirm_gb": DEFAULT_FOLDER_ZIP_CONFIRM_GB,
+                "folder_file_count_confirm": DEFAULT_FOLDER_FILE_COUNT_CONFIRM,
                 "file_share_ttl_minutes": DEFAULT_FILE_SHARE_TTL_MINUTES,
             }
             try:
@@ -192,6 +195,7 @@ class ConfigManager:
             "file_sync_mode": MODE_BOTH,
             "folder_sync_enabled": True,
             "folder_zip_confirm_gb": DEFAULT_FOLDER_ZIP_CONFIRM_GB,
+            "folder_file_count_confirm": DEFAULT_FOLDER_FILE_COUNT_CONFIRM,
             "file_share_ttl_minutes": DEFAULT_FILE_SHARE_TTL_MINUTES,
         }
 
@@ -229,6 +233,15 @@ class ConfigManager:
         )
         # 手工改坏（0 或负数）时退回默认，避免变成「永不需要确认」
         self.folder_zip_confirm_gb = gb if gb > 0 else DEFAULT_FOLDER_ZIP_CONFIRM_GB
+        count = int(
+            self._coerce_number(
+                config.get("folder_file_count_confirm"),
+                DEFAULT_FOLDER_FILE_COUNT_CONFIRM,
+            )
+        )
+        self.folder_file_count_confirm = (
+            count if count > 0 else DEFAULT_FOLDER_FILE_COUNT_CONFIRM
+        )
         ttl = int(
             self._coerce_number(
                 config.get("file_share_ttl_minutes"), DEFAULT_FILE_SHARE_TTL_MINUTES
@@ -243,6 +256,8 @@ class ConfigManager:
             f"读取客户端配置 | 服务器={self.server_host}:{self.server_port} | "
             f"客户端={self.local_name} | 文字={self.text_sync_mode} | "
             f"文件={self.file_sync_mode} | 目录={self.folder_sync_enabled} | "
+            f"目录阈值={self.folder_zip_confirm_gb}GB/"
+            f"{self.folder_file_count_confirm}个 | "
             f"共享存活={self.file_share_ttl_minutes}分钟"
         )
         return True
@@ -292,6 +307,7 @@ class ConfigManager:
                 "file_sync_mode": normalize_mode(self.file_sync_mode),
                 "folder_sync_enabled": bool(self.folder_sync_enabled),
                 "folder_zip_confirm_gb": self.folder_zip_confirm_gb,
+                "folder_file_count_confirm": int(self.folder_file_count_confirm),
                 "file_share_ttl_minutes": int(self.file_share_ttl_minutes),
             })
             self._atomic_write_json(ConfigManager.CLIENT_CONFIG, config)
@@ -315,6 +331,7 @@ class ConfigManager:
             "file_sync_mode",
             "folder_sync_enabled",
             "folder_zip_confirm_gb",
+            "folder_file_count_confirm",
             "file_share_ttl_minutes",
         }
         unknown = set(values) - allowed_fields

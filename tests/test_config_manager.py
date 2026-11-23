@@ -79,6 +79,7 @@ class TestConfigManager(unittest.TestCase):
                 "file_sync_mode": "both",
                 "folder_sync_enabled": True,
                 "folder_zip_confirm_gb": 10,
+                "folder_file_count_confirm": 3000,
                 "file_share_ttl_minutes": self.default_ttl
             },
             ANY,

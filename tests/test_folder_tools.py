@@ -13,6 +13,7 @@ from client.folder_manifest import (
     folder_display_name,
     folder_size_bytes,
     format_size,
+    scan_folder,
 )
 
 
@@ -40,6 +41,15 @@ class FolderSizeTest(unittest.TestCase):
 
     def test_empty_folder_is_zero(self):
         self.assertEqual(folder_size_bytes(self.root), 0)
+
+    def test_scan_folder_returns_size_and_count_in_one_walk(self):
+        (self.root / "子目录").mkdir()
+        (self.root / "a.txt").write_bytes(b"x" * 10)
+        (self.root / "子目录" / "b.bin").write_bytes(b"y" * 32)
+        self.assertEqual(scan_folder(self.root), (42, 2))
+
+    def test_scan_empty_folder(self):
+        self.assertEqual(scan_folder(self.root), (0, 0))
 
 
 class FolderDisplayNameTest(unittest.TestCase):

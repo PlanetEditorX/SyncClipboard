@@ -33,16 +33,35 @@ def format_size(num_bytes):
     return f"{size:.1f} TB"
 
 
-def folder_size_bytes(folder_path):
-    """统计目录内所有文件的总字节数（读不到的文件按 0 计）。"""
+def scan_folder(folder_path):
+    """一次遍历同时得到 (总字节数, 可传输文件数)。
+
+    复制目录时用它做「总大小 + 文件数」双阈值预检，口径与 build_manifest
+    保持一致：跳过符号链接、跳过取不到体积的文件。分开统计会扫两遍盘，
+    大目录（尤其机械盘/网络盘）复制时的卡顿感很明显。
+    """
     total = 0
-    for root, _dirs, names in os.walk(folder_path):
+    count = 0
+    for root, subdirs, names in os.walk(folder_path, followlinks=False):
+        # 剪掉指向别处的符号链接目录，后面的子目录也不会被走进去
+        subdirs[:] = [d for d in subdirs
+                      if not os.path.islink(os.path.join(root, d))]
         for name in names:
+            full = os.path.join(root, name)
+            if os.path.islink(full):
+                continue
             try:
-                total += os.path.getsize(os.path.join(root, name))
+                size = os.path.getsize(full)
             except OSError:
                 continue
-    return total
+            total += size
+            count += 1
+    return total, count
+
+
+def folder_size_bytes(folder_path):
+    """统计目录内所有文件的总字节数（读不到的文件按 0 计）。"""
+    return scan_folder(folder_path)[0]
 
 
 def folder_display_name(folder_path):

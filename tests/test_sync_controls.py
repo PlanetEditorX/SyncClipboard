@@ -63,7 +63,8 @@ class TestValidateSyncSettings(unittest.TestCase):
         self.assertEqual(values["file_sync_mode"], MODE_BOTH)
         self.assertTrue(values["folder_sync_enabled"])
         self.assertEqual(values["folder_zip_confirm_gb"], 10)
-        # 默认值：从电脑复制那一刻起算，打包 + 下载都算在内
+        self.assertEqual(values["folder_file_count_confirm"], 3000)
+        # 默认值：首次获取前的等待窗口；下载开始后会滑动续期
         self.assertEqual(values["file_share_ttl_minutes"], DEFAULT_FILE_SHARE_TTL_MINUTES)
 
     def test_custom_values_are_normalized(self):
@@ -72,12 +73,14 @@ class TestValidateSyncSettings(unittest.TestCase):
             file_sync_mode="receive",
             folder_sync_enabled=False,
             folder_zip_confirm_gb="12.5",
+            folder_file_count_confirm="5000",
             file_share_ttl_minutes="45",
         )
         self.assertEqual(values["text_sync_mode"], "send")
         self.assertEqual(values["file_sync_mode"], "receive")
         self.assertFalse(values["folder_sync_enabled"])
         self.assertEqual(values["folder_zip_confirm_gb"], 12.5)
+        self.assertEqual(values["folder_file_count_confirm"], 5000)
         self.assertEqual(values["file_share_ttl_minutes"], 45)
 
     def test_invalid_mode_is_rejected(self):
@@ -89,6 +92,14 @@ class TestValidateSyncSettings(unittest.TestCase):
             self._validate(folder_zip_confirm_gb="abc")
         with self.assertRaises(ValueError):
             self._validate(folder_zip_confirm_gb=0)
+
+    def test_invalid_folder_count_is_rejected(self):
+        with self.assertRaises(ValueError):
+            self._validate(folder_file_count_confirm="abc")
+        with self.assertRaises(ValueError):
+            self._validate(folder_file_count_confirm=0)
+        with self.assertRaises(ValueError):
+            self._validate(folder_file_count_confirm=20001)
 
     def test_invalid_ttl_is_rejected(self):
         with self.assertRaises(ValueError):
@@ -222,6 +233,46 @@ class TestFolderSyncGates(_ClientFixture):
         self.assertEqual(item["name"], "ROM")
         self.assertEqual(item["kind"], "folder")
 
+    def test_too_many_files_waits_for_confirmation(self):
+        (self.folder / "boot.img").write_bytes(b"y" * 128)
+        mock_post = self._mock_post()
+        client = self._make_client()
+        client.folder_file_count_limit = 1  # 目录里有 2 个文件
+
+        with patch("client.main_menu.confirm_large_folder", return_value=False) as ask:
+            client._push_latest_file([str(self.folder)])
+
+        ask.assert_called_once()
+        # 文件数确实传进了确认框，而不只是体积
+        self.assertEqual(ask.call_args.args[3], 2)
+        self.assertEqual(ask.call_args.args[4], 1)
+        mock_post.assert_not_called()
+        self.assertEqual(self.file_server.shared_folders, {})
+
+    def test_file_count_over_limit_shared_after_confirmation(self):
+        (self.folder / "boot.img").write_bytes(b"y" * 128)
+        mock_post = self._mock_post()
+        client = self._make_client()
+        client.folder_file_count_limit = 1
+
+        with patch("client.main_menu.confirm_large_folder", return_value=True):
+            client._push_latest_file([str(self.folder)])
+
+        mock_post.assert_called_once()
+        self.assertEqual(len(self.file_server.shared_folders), 1)
+
+    def test_confirm_message_explains_scope_and_archive_limit(self):
+        with patch("ctypes.WinDLL") as dll:
+            dll.return_value.MessageBoxW.return_value = 6  # IDYES
+            approved = main_menu_mod.confirm_large_folder(
+                "ROM", "2 KB", 10, 25000, 3000)
+
+        self.assertTrue(approved)
+        message = dll.return_value.MessageBoxW.call_args.args[1]
+        self.assertIn("批准后才会登记", message)
+        self.assertIn("20000", message)
+        self.assertNotIn("压缩", message)
+
 
 class TestFileShareTtl(unittest.TestCase):
     def setUp(self):
@@ -292,6 +343,7 @@ class TestConfigManagerSyncFields(unittest.TestCase):
         self.assertEqual(manager.file_sync_mode, MODE_BOTH)
         self.assertTrue(manager.folder_sync_enabled)
         self.assertEqual(manager.folder_zip_confirm_gb, 10)
+        self.assertEqual(manager.folder_file_count_confirm, 3000)
         self.assertEqual(manager.file_share_ttl_minutes, DEFAULT_FILE_SHARE_TTL_MINUTES)
 
         saved = json.loads(self.config_path.read_text(encoding="utf-8"))
@@ -300,6 +352,7 @@ class TestConfigManagerSyncFields(unittest.TestCase):
             "file_sync_mode",
             "folder_sync_enabled",
             "folder_zip_confirm_gb",
+            "folder_file_count_confirm",
             "file_share_ttl_minutes",
         ):
             self.assertIn(key, saved)
@@ -327,6 +380,7 @@ class TestConfigManagerSyncFields(unittest.TestCase):
         self.assertEqual(manager.text_sync_mode, MODE_BOTH)
         self.assertFalse(manager.folder_sync_enabled)
         self.assertEqual(manager.folder_zip_confirm_gb, 10)
+        self.assertEqual(manager.folder_file_count_confirm, 3000)
         self.assertEqual(manager.file_share_ttl_minutes, DEFAULT_FILE_SHARE_TTL_MINUTES)
 
     def test_update_client_config_persists_sync_fields(self):
@@ -338,6 +392,7 @@ class TestConfigManagerSyncFields(unittest.TestCase):
             "file_sync_mode": "send",
             "folder_sync_enabled": False,
             "folder_zip_confirm_gb": 3,
+            "folder_file_count_confirm": 500,
             "file_share_ttl_minutes": 30,
         }))
 
@@ -346,6 +401,7 @@ class TestConfigManagerSyncFields(unittest.TestCase):
         self.assertEqual(saved["file_sync_mode"], "send")
         self.assertFalse(saved["folder_sync_enabled"])
         self.assertEqual(saved["folder_zip_confirm_gb"], 3)
+        self.assertEqual(saved["folder_file_count_confirm"], 500)
         self.assertEqual(saved["file_share_ttl_minutes"], 30)
 
     def test_unknown_field_is_rejected(self):
