@@ -10,5 +10,6 @@
 	"folder_sync_enabled": true,
 	"folder_zip_confirm_gb": 10,
 	"folder_file_count_confirm": 3000,
-	"file_share_ttl_minutes": 30
+	"file_share_ttl_minutes": 30,
+	"share_download_limit": 0
 }

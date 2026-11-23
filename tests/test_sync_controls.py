@@ -66,6 +66,8 @@ class TestValidateSyncSettings(unittest.TestCase):
         self.assertEqual(values["folder_file_count_confirm"], 3000)
         # 默认值：首次获取前的等待窗口；下载开始后会滑动续期
         self.assertEqual(values["file_share_ttl_minutes"], DEFAULT_FILE_SHARE_TTL_MINUTES)
+        # 默认不限制下载次数：存活期内所有已配对设备都能取
+        self.assertEqual(values["share_download_limit"], 0)
 
     def test_custom_values_are_normalized(self):
         values = self._validate(
@@ -75,6 +77,7 @@ class TestValidateSyncSettings(unittest.TestCase):
             folder_zip_confirm_gb="12.5",
             folder_file_count_confirm="5000",
             file_share_ttl_minutes="45",
+            share_download_limit="2",
         )
         self.assertEqual(values["text_sync_mode"], "send")
         self.assertEqual(values["file_sync_mode"], "receive")
@@ -82,6 +85,7 @@ class TestValidateSyncSettings(unittest.TestCase):
         self.assertEqual(values["folder_zip_confirm_gb"], 12.5)
         self.assertEqual(values["folder_file_count_confirm"], 5000)
         self.assertEqual(values["file_share_ttl_minutes"], 45)
+        self.assertEqual(values["share_download_limit"], 2)
 
     def test_invalid_mode_is_rejected(self):
         with self.assertRaises(ValueError):
@@ -106,6 +110,14 @@ class TestValidateSyncSettings(unittest.TestCase):
             self._validate(file_share_ttl_minutes="0")
         with self.assertRaises(ValueError):
             self._validate(file_share_ttl_minutes=2000)
+
+    def test_invalid_download_limit_is_rejected(self):
+        with self.assertRaises(ValueError):
+            self._validate(share_download_limit="abc")
+        with self.assertRaises(ValueError):
+            self._validate(share_download_limit=-1)
+        with self.assertRaises(ValueError):
+            self._validate(share_download_limit=100)
 
 
 class _ClientFixture(unittest.TestCase):
@@ -345,6 +357,7 @@ class TestConfigManagerSyncFields(unittest.TestCase):
         self.assertEqual(manager.folder_zip_confirm_gb, 10)
         self.assertEqual(manager.folder_file_count_confirm, 3000)
         self.assertEqual(manager.file_share_ttl_minutes, DEFAULT_FILE_SHARE_TTL_MINUTES)
+        self.assertEqual(manager.share_download_limit, 0)
 
         saved = json.loads(self.config_path.read_text(encoding="utf-8"))
         for key in (
@@ -354,6 +367,7 @@ class TestConfigManagerSyncFields(unittest.TestCase):
             "folder_zip_confirm_gb",
             "folder_file_count_confirm",
             "file_share_ttl_minutes",
+            "share_download_limit",
         ):
             self.assertIn(key, saved)
 
@@ -370,6 +384,7 @@ class TestConfigManagerSyncFields(unittest.TestCase):
                 "folder_sync_enabled": "false",
                 "folder_zip_confirm_gb": "bad",
                 "file_share_ttl_minutes": "bad",
+                "share_download_limit": -5,
             }),
             encoding="utf-8",
         )
@@ -382,6 +397,7 @@ class TestConfigManagerSyncFields(unittest.TestCase):
         self.assertEqual(manager.folder_zip_confirm_gb, 10)
         self.assertEqual(manager.folder_file_count_confirm, 3000)
         self.assertEqual(manager.file_share_ttl_minutes, DEFAULT_FILE_SHARE_TTL_MINUTES)
+        self.assertEqual(manager.share_download_limit, 0)
 
     def test_update_client_config_persists_sync_fields(self):
         manager = self.manager_class()
@@ -394,6 +410,7 @@ class TestConfigManagerSyncFields(unittest.TestCase):
             "folder_zip_confirm_gb": 3,
             "folder_file_count_confirm": 500,
             "file_share_ttl_minutes": 30,
+            "share_download_limit": 2,
         }))
 
         saved = json.loads(self.config_path.read_text(encoding="utf-8"))
@@ -403,6 +420,7 @@ class TestConfigManagerSyncFields(unittest.TestCase):
         self.assertEqual(saved["folder_zip_confirm_gb"], 3)
         self.assertEqual(saved["folder_file_count_confirm"], 500)
         self.assertEqual(saved["file_share_ttl_minutes"], 30)
+        self.assertEqual(saved["share_download_limit"], 2)
 
     def test_unknown_field_is_rejected(self):
         manager = self.manager_class()

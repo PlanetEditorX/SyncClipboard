@@ -15,17 +15,21 @@ import tempfile
 import threading
 from pathlib import Path
 
+import requests
+
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QGuiApplication
 from PySide6.QtWidgets import (
     QApplication,
     QButtonGroup,
+    QDialog,
     QFrame,
     QGridLayout,
     QHBoxLayout,
     QLabel,
     QLineEdit,
     QMainWindow,
+    QPlainTextEdit,
     QPushButton,
     QScrollArea,
     QSizePolicy,
@@ -51,6 +55,8 @@ from gui.main_window import (
     DEFAULT_FILE_SHARE_TTL_MINUTES,
     DEFAULT_FOLDER_FILE_COUNT_CONFIRM,
     DEFAULT_FOLDER_ZIP_CONFIRM_GB,
+    DEFAULT_SHARE_DOWNLOAD_LIMIT,
+    MAX_SHARE_DOWNLOAD_LIMIT,
     validate_client_settings,
 )
 from gui.qt_log_view import LogViewer
@@ -373,9 +379,37 @@ class MainWindow(QMainWindow):
         numbers.addStretch(1)
         lay.addLayout(numbers)
 
+        cancel_card = QFrame()
+        cancel_card.setObjectName("Preference")
+        cancel_lay = QHBoxLayout(cancel_card)
+        cancel_lay.setContentsMargins(16, 9, 16, 9)
+        cancel_box = QVBoxLayout()
+        cancel_box.setSpacing(2)
+        cancel_label = QLabel("下载完成后自动取消共享")
+        cancel_label.setStyleSheet("font-weight: 600;")
+        cancel_hint = QLabel(
+            "关闭 = 存活期内所有已配对设备都能获取；开启 = 完成指定次数的完整下载后自动取消共享"
+        )
+        cancel_hint.setObjectName("Hint")
+        cancel_box.addWidget(cancel_label)
+        cancel_box.addWidget(cancel_hint)
+        self.share_auto_cancel_switch = ToggleSwitch(palette=self._palette)
+        self.share_auto_cancel_switch.toggled.connect(self._on_auto_cancel_toggled)
+        limit_box, self.share_limit_edit = self._number_input("可下载次数", "次")
+        self.share_limit_edit.setToolTip(
+            f"1 到 {MAX_SHARE_DOWNLOAD_LIMIT}；按设备计次，"
+            "以实际发出的字节达到共享总大小判定「下载完成」，重试不重复计数"
+        )
+        cancel_lay.addLayout(cancel_box, 1)
+        cancel_lay.addWidget(limit_box, 0, Qt.AlignVCenter)
+        cancel_lay.addWidget(self.share_auto_cancel_switch, 0, Qt.AlignVCenter)
+        lay.addWidget(cancel_card)
+
         tip = QLabel(
-            "超过阈值时先弹窗确认，批准后才登记共享（存活期内已配对设备均可获取）；"
-            "开始下载后每次成功请求自动续期，到期自动取消登记，不会删除原文件。"
+            "超过阈值时先弹窗确认，批准后才登记共享；开始下载后每次成功请求自动续期。"
+            "「下载完成后自动取消共享」按设备计次：发送端累计实际发出的字节，"
+            "普通文件发满整个文件、目录清单里的文件全部发完才算一次下载；"
+            "次数用尽后自动取消登记并拒绝新设备。到期或次数用尽只取消登记，不会删除原文件。"
         )
         tip.setObjectName("Hint")
         tip.setWordWrap(True)
@@ -433,6 +467,11 @@ class MainWindow(QMainWindow):
             if edit is not None:
                 edit.setEnabled(bool(checked))
 
+    def _on_auto_cancel_toggled(self, checked):
+        edit = getattr(self, "share_limit_edit", None)
+        if edit is not None:
+            edit.setEnabled(bool(checked))
+
     def _build_quick_actions(self):
         card = QFrame()
         card.setObjectName("Card")
@@ -460,6 +499,18 @@ class MainWindow(QMainWindow):
             row.addWidget(button, 1)
 
         lay.addLayout(row)
+
+        row2 = QHBoxLayout()
+        row2.setSpacing(10)
+        self.records_button = QPushButton("查看下载记录")
+        self.records_button.setMinimumHeight(38)
+        self.records_button.setCursor(Qt.PointingHandCursor)
+        self.records_button.clicked.connect(self._show_download_records)
+        records_hint = QLabel("谁在什么时候取走了多少字节、是否已完成下载")
+        records_hint.setObjectName("Hint")
+        row2.addWidget(self.records_button, 1)
+        row2.addWidget(records_hint, 2)
+        lay.addLayout(row2)
         self.body.addWidget(card)
 
     def _build_logs(self):
@@ -716,6 +767,17 @@ class MainWindow(QMainWindow):
             )
         )
 
+        saved_limit = int(
+            getattr(self.config, "share_download_limit", DEFAULT_SHARE_DOWNLOAD_LIMIT) or 0
+        )
+        cancel_switch = getattr(self, "share_auto_cancel_switch", None)
+        if cancel_switch is not None:
+            cancel_switch.setChecked(saved_limit > 0, animate=False)
+        limit_edit = getattr(self, "share_limit_edit", None)
+        if limit_edit is not None:
+            limit_edit.setText(str(saved_limit if saved_limit > 0 else 1))
+            limit_edit.setEnabled(saved_limit > 0)
+
         self.autostart_switch.setChecked(self.config.is_autostart_enabled(), animate=False)
 
     @staticmethod
@@ -762,6 +824,18 @@ class MainWindow(QMainWindow):
             else getattr(self.config, "file_share_ttl_minutes", DEFAULT_FILE_SHARE_TTL_MINUTES)
         )
 
+        # 开关关闭 = 0（不限制）；开启时读数字框，0 会被校验拦下
+        cancel_switch = getattr(self, "share_auto_cancel_switch", None)
+        if cancel_switch is not None and not cancel_switch.isChecked():
+            download_limit = 0
+        else:
+            limit_edit = getattr(self, "share_limit_edit", None)
+            download_limit = (
+                limit_edit.text() if limit_edit is not None
+                else getattr(self.config, "share_download_limit",
+                             DEFAULT_SHARE_DOWNLOAD_LIMIT)
+            )
+
         return {
             "text_sync_mode": self._selected_mode(
                 getattr(self, "text_mode_buttons", None),
@@ -775,6 +849,7 @@ class MainWindow(QMainWindow):
             "folder_zip_confirm_gb": limit_gb,
             "folder_file_count_confirm": limit_count,
             "file_share_ttl_minutes": ttl_minutes,
+            "share_download_limit": download_limit,
         }
 
     def save_settings(self):
@@ -928,6 +1003,97 @@ class MainWindow(QMainWindow):
             os.startfile(path)
         except Exception as exc:  # noqa: BLE001 - 需要把失败告知用户
             qt_dialogs.info_message("无法打开目录", str(exc))
+
+    def _show_download_records(self):
+        """读取本机文件服务的下载记录（只读），弹窗展示最近 200 条。"""
+        port = getattr(self.config, "file_server_port", 8899)
+        key = getattr(self.config, "key", "")
+        try:
+            resp = requests.get(
+                f"http://127.0.0.1:{port}/downloads",
+                headers={"key": str(key)},
+                timeout=(2, 5),
+            )
+            resp.raise_for_status()
+            payload = resp.json()
+        except Exception as exc:  # noqa: BLE001 - 客户端没起来时要给用户看得懂的话
+            qt_dialogs.info_message(
+                "无法读取下载记录", f"客户端未运行或连接失败：{exc}"
+            )
+            return
+
+        limit = payload.get("limit", 0)
+        records = payload.get("records") or []
+        sessions = payload.get("sessions") or []
+        event_labels = {
+            "started": "开始下载",
+            "manifest": "取清单",
+            "completed": "下载完成",
+            "interrupted": "传输中断",
+            "blocked": "被拒绝",
+            "exhausted": "次数用尽",
+            "cancelled": "取消共享",
+        }
+
+        def human(num_bytes):
+            value = float(num_bytes or 0)
+            for unit in ("B", "KB", "MB", "GB", "TB"):
+                if value < 1024 or unit == "TB":
+                    return (f"{value:.0f} {unit}" if unit in ("B", "KB")
+                            else f"{value:.1f} {unit}")
+                value /= 1024
+            return f"{value:.1f} TB"
+
+        lines = [
+            f"当前策略：{'不限制（存活期内所有设备可获取）' if not limit else str(limit) + ' 次完整下载'}",
+            f"本次运行累计发出 {human(payload.get('bytes_sent_total', 0))}"
+            f" | 已完成 {payload.get('completed_downloads', 0)} 次完整下载",
+            "按设备计次；「下载完成」= 发送端实际发出的字节达到该共享的总大小，"
+            "同一设备重试不重复计数。",
+            "记录保存在客户端内存中，重启客户端后清空；原文件永远不会被删除。",
+            "",
+        ]
+        if sessions:
+            lines.append("=== 传输进度（按设备累计已发出的字节）===")
+            for session in sessions:
+                lines.append(" | ".join((
+                    str(session.get("client", "")),
+                    str(session.get("name", "")),
+                    f"{human(session.get('sent'))} / {human(session.get('total'))}"
+                    f"（{session.get('percent', 0)}%）",
+                    f"{session.get('parts', 0)}/{session.get('files', 0)} 个文件",
+                    "已完成" if session.get("state") == "completed" else "进行中",
+                )))
+            lines.append("")
+        if not records:
+            lines.append("暂无下载事件。")
+        else:
+            lines.append("=== 最近事件 ===")
+            lines.append("时间 | 共享 | 类型 | 客户端 | 事件 | 已完成次数 | 本次字节 | 说明")
+            for item in records:
+                lines.append(" | ".join((
+                    str(item.get("time", "")),
+                    str(item.get("name", "")),
+                    "目录" if item.get("kind") == "folder" else "文件",
+                    str(item.get("client", "")),
+                    event_labels.get(item.get("event"), str(item.get("event", ""))),
+                    str(item.get("count", "")),
+                    human(item.get("bytes")),
+                    str(item.get("detail", "")),
+                )))
+
+        dialog = QDialog(self)
+        dialog.setWindowTitle("下载记录")
+        dialog.resize(1040, 560)
+        layout = QVBoxLayout(dialog)
+        view = QPlainTextEdit()
+        view.setReadOnly(True)
+        view.setPlainText("\n".join(lines))
+        layout.addWidget(view)
+        close_button = QPushButton("关闭")
+        close_button.clicked.connect(dialog.accept)
+        layout.addWidget(close_button)
+        dialog.exec()
 
     def _open_config_folder(self):
         config_dir = BASE_DIR / "config"

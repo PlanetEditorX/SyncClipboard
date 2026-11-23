@@ -144,6 +144,7 @@ def main():
         key=key,
         save_path=save_path,
         share_ttl_seconds=getattr(config_manager, "file_share_ttl_minutes", 30) * 60,
+        download_limit=getattr(config_manager, "share_download_limit", 0),
     )
 
     # 创建同步客户端实例
@@ -173,7 +174,8 @@ def main():
         f"目录: {getattr(config_manager, 'folder_sync_enabled', True)} | "
         f"目录阈值: {getattr(config_manager, 'folder_zip_confirm_gb', 10)} GB / "
         f"{getattr(config_manager, 'folder_file_count_confirm', 3000)} 个文件 | "
-        f"共享存活: {getattr(config_manager, 'file_share_ttl_minutes', 30)} 分钟"
+        f"共享存活: {getattr(config_manager, 'file_share_ttl_minutes', 30)} 分钟 | "
+        f"下载次数: {getattr(config_manager, 'share_download_limit', 0) or '不限制'}"
     )
     file_server.start()   # 启动文件服务器的后台线程（监听文件上传/下载请求）
 

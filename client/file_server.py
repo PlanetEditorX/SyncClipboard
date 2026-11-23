@@ -5,6 +5,7 @@ import logging
 import threading
 import pyperclip
 import requests
+from collections import deque
 from threading import Thread
 from urllib.parse import quote, unquote
 from common.utils import (
@@ -19,6 +20,7 @@ from client.folder_manifest import (
     MANIFEST_MAX_ENTRIES,
     build_manifest,
     folder_display_name,
+    format_size,
 )
 from server.core.file_latest import (
     get_file_share_ttl_seconds,
@@ -30,6 +32,16 @@ from flask import Flask, jsonify, send_file, request
 
 FILE_LATEST_FILE = BASE_DIR / "latest" / "file_latest.json"
 FILE_LATEST_FILE.parent.mkdir(parents=True, exist_ok=True)
+
+# 「下载完成」不需要接收端回报：字节都是从发送端本机文件服务发出的，
+# 在流式响应里累计实际 yield 的字节数，达到该共享的预期总字节就算完成。
+# 完成后留几秒给接收端把最后一个文件写完，再撤销登记。
+COMPLETED_GRACE_SECONDS = 2
+# 兜底收尾期：会话长时间没有活动（中断、进程被杀）时由这里/TTL 清理
+EXHAUSTED_GRACE_SECONDS = 30
+EXHAUSTED_SWEEP_SECONDS = 3
+# 下载记录只留在内存（客户端重启即清空），避免把设备 IP 长期写进磁盘
+DOWNLOAD_RECORD_LIMIT = 200
 
 logger = logging.getLogger("client")
 
@@ -49,10 +61,12 @@ def get_files_latest_file():
 
 class FileServer:
     """客户端网络服务"""
-    def __init__(self, port=8899, center_host="127.0.0.1", center_port=8000, local_name="PC-01", key="123456", save_path="./uploads", share_ttl_seconds=None):
+    def __init__(self, port=8899, center_host="127.0.0.1", center_port=8000, local_name="PC-01", key="123456", save_path="./uploads", share_ttl_seconds=None, download_limit=0):
         # 共享存活时间：传入则同步到全局，后续所有过期判断都用这个值
         if share_ttl_seconds is not None:
             set_file_share_ttl(share_ttl_seconds)
+        # 0 = 存活期内所有已配对设备都能取；>0 = 完成 N 次完整下载后停止
+        self.download_limit = max(0, int(download_limit or 0))
         self.port = port
         self.center_host = center_host
         self.center_port = center_port
@@ -65,6 +79,22 @@ class FileServer:
         # file_id -> 正在进行的下载数：多端同时取同一份文件时，
         # 先下完的一端不能把文件删掉，否则另一端会被截断
         self._active_downloads = {}
+        # ---- 下载记录 / 传输进度 / 配额 ----
+        # 记录只留在内存，最近 DOWNLOAD_RECORD_LIMIT 条，供面板「下载记录」查看
+        self._download_records = deque(maxlen=DOWNLOAD_RECORD_LIMIT)
+        # 本次客户端运行期间实际发给接收端的字节总数（含中断的部分传输）
+        self._bytes_sent_total = 0
+        # file_id -> {客户端标识: {"at", "delivered": {相对路径: 字节}, "completed": 时刻|None}}
+        # 按设备预留名额；「完成」由 delivered 是否覆盖预期字节判定，不看是否取过清单。
+        self._share_claims = {}
+        # file_id -> {相对路径: 预期字节数}：普通文件是 {"": size}，目录来自清单
+        self._share_expected = {}
+        # file_id -> 配额用尽时刻
+        self._share_exhausted_at = {}
+        # file_id -> 最后一次相关请求时刻（目录成员下载期间持续刷新）
+        self._share_last_activity = {}
+        self._exhausted_stop = threading.Event()
+        self._exhausted_thread = None
         self._remote_text_handler = None
         # 下载中断时用来「重新登记共享」的回调（由 SyncClient 注入）。
         # 服务端的文件记录在 /request_file 返回前就清空了，而这里会为断点
@@ -108,20 +138,72 @@ class FileServer:
             # 续期。顺序不能反 —— 否则 TTL 之后来的第一个请求会把过期共享复活。
             # 逐文件传输是「一次复制 → N 个串行请求」，不续期的话后半段请求
             # 会撞上各个路由开头的 _purge_expired_files() 而 404。
+            # 顺序不能反：先按固定窗口清掉真正过期的登记，再由「本次请求」
+            # 刷新活动时间，最后才判断配额用尽的共享是否该收尾了。
             self._purge_expired_files()
             path = request.path
+            is_batch = path.startswith("/manifest/batch")
             folder_ids = []
-            if path.startswith("/manifest/batch"):
+            member_id = None
+            if is_batch:
                 folder_ids = (request.args.get("ids") or "").split(",")
             elif path.startswith("/manifest/"):
                 folder_ids = [path[len("/manifest/"):].split("/", 1)[0]]
             elif path.startswith("/file/") and "/" in path[len("/file/"):]:
                 # /file/<id>/<相对路径> 才是目录成员；/file/<id> 是普通文件
                 folder_ids = [path[len("/file/"):].split("/", 1)[0]]
+                member_id = unquote(folder_ids[0].strip())
             for raw in folder_ids:
                 file_id = unquote(raw.strip())
                 if file_id:
                     self._touch_share(file_id)
+            self._purge_exhausted_shares()
+
+            # 只有「准入」请求预留名额：取目录清单、直接取普通文件。
+            # 目录成员（/file/<id>/<相对路径>）是同一轮下载的后续请求，
+            # 不再计次，完成与否由实际发出的字节数判定。
+            claims = []
+            if is_batch:
+                claims = [("folder", unquote(raw.strip())) for raw in folder_ids]
+            elif path.startswith("/manifest/"):
+                claims = [("folder", unquote(path[len("/manifest/"):]).strip())]
+            elif path.startswith("/file/") and "/" not in path[len("/file/"):]:
+                claims = [("file", unquote(path[len("/file/"):]).strip())]
+            client = self._client_identity()
+            # 次数限制开启时，目录成员也只发给「已准入会话」的设备。
+            # 否则别的设备拿到 URL 就能跳过准入检查，把目录逐个文件拉走。
+            if member_id and self.download_limit > 0:
+                with self._shared_files_lock:
+                    registered_folder = member_id in self.shared_folders
+                    claimed = client in self._share_claims.get(member_id, {})
+                if registered_folder and not claimed:
+                    self._record_download(
+                        member_id, client, "blocked",
+                        "未开始下载该共享，拒绝直接下载目录成员", "folder",
+                    )
+                    return jsonify({
+                        "status": "error",
+                        "message": "该共享未由本设备开始下载；请先取目录清单，"
+                                   "或回电脑重新复制一次",
+                        "file_id": member_id,
+                    }), 410
+            for kind, file_id in claims:
+                if not file_id:
+                    continue
+                with self._shared_files_lock:
+                    registered = file_id in self.shared_files
+                    is_folder = file_id in self.shared_folders
+                # 目录的 /file/<id> 是 409 死链、普通文件的 /manifest 会 404，
+                # 都不算准入；不存在的 id 交给路由自己回 404。
+                if not registered or is_folder != (kind == "folder"):
+                    continue
+                allowed, message = self._claim_download(file_id, kind, client)
+                if not allowed:
+                    return jsonify({
+                        "status": "error",
+                        "message": message,
+                        "file_id": file_id,
+                    }), 410
             return None
 
         @self.app.route("/ping", methods=["GET"])
@@ -141,6 +223,26 @@ class FileServer:
             return jsonify({
                 "count": len(shared_files),
                 "files": shared_files
+            })
+
+        @self.app.route("/downloads", methods=["GET"])
+        def download_records():
+            """最近的下载事件 + 每个会话已传输字节（只读，面板按钮用）。
+
+            只留在内存：记录里有客户端 IP 和设备名，没必要长期落盘。
+            """
+            records = self._recent_records()
+            with self._shared_files_lock:
+                bytes_sent_total = self._bytes_sent_total
+            return jsonify({
+                "status": "ok",
+                "limit": self.download_limit,
+                "records": records,
+                "sessions": self._transfer_progress(),
+                "bytes_sent_total": bytes_sent_total,
+                "completed_downloads": sum(
+                    1 for item in records if item["event"] == "completed"
+                ),
             })
 
         @self.app.route("/update/current_latest", methods=["POST"])
@@ -298,20 +400,32 @@ class FileServer:
             if not os.path.isfile(path):
                 return jsonify({"status": "error", "message": "文件不存在"}), 404
 
-            logger.info("文件下载请求: %s -> %s", file_id, path)
+            try:
+                expected_size = os.path.getsize(path)
+            except OSError:
+                expected_size = 0
+            # 普通文件只有一个成员，键用空串；目录清单的键是相对路径
+            self._set_expected(file_id, {"": expected_size})
+            logger.info("文件下载请求: %s -> %s（%s）", file_id, path,
+                        format_size(expected_size))
 
             response = send_file(path, as_attachment=True)
-            # 用生成器把响应体包一层：只有内容真正发送完才取消共享。
-            # 直接依赖 call_on_close 不可行 —— send_file 返回的是
-            # direct_passthrough 响应，Werkzeug 不会回调 Response.close。
+            # 用生成器把响应体包一层：累计真正发出的字节，只有发满整个
+            # 文件才算「下载完成」。直接依赖 call_on_close 不可行 ——
+            # send_file 返回的是 direct_passthrough 响应，Werkzeug 不会回调
+            # Response.close。
             inner = response.response
             sent_all = False
+            sent_bytes = 0
+            # request 上下文在流式响应期间可能已经弹出，客户端标识先取好
+            client = self._client_identity()
             self._begin_download(file_id)
 
             def body_stream():
-                nonlocal sent_all
+                nonlocal sent_all, sent_bytes
                 try:
                     for chunk in inner:
+                        sent_bytes += len(chunk)
                         yield chunk
                     sent_all = True
                 finally:
@@ -323,15 +437,21 @@ class FileServer:
                         except Exception:
                             pass
                     others = self._end_download(file_id)
+                    self._add_bytes_sent(sent_bytes)
                     if not sent_all:
+                        self._finish_download(file_id, client, False, sent_bytes)
                         self._keep_for_retry(file_id, path)
-                    elif others == 0:
-                        self.unregister_file(file_id)
-                    else:
+                        return
+                    self._finish_download(file_id, client, True, sent_bytes)
+                    if others > 0:
                         # 还有别的设备在取同一份内容，等它取完再清理
-                        logger.info(
-                            "其他设备仍在下同一份内容，暂不删除: %s", file_id
-                        )
+                        logger.info("其他设备仍在下同一份内容，暂不取消共享: %s", file_id)
+                    elif self._is_exhausted(file_id):
+                        # _cancel_if_idle 通常已经撤销登记，这里兜底
+                        self.unregister_file(file_id)
+                    elif file_id in self.shared_files:
+                        # 不限制次数时，存活期内所有设备都能取；到期由清理兜底
+                        logger.info("共享仍可下载，保留登记至到期: %s", file_id)
 
             response.response = body_stream()
             return response
@@ -361,6 +481,7 @@ class FileServer:
 
             base = request.host_url.rstrip("/")
             entries, empty_dirs, notices, roots = [], [], [], []
+            hit_ids = []
             total_size, total_dirs, truncated = 0, 0, False
             for file_id in ids:
                 folder = self._folder_root(file_id)
@@ -371,6 +492,7 @@ class FileServer:
                     continue
                 root = payload["root"]
                 roots.append(root)
+                hit_ids.append(file_id)
                 prefix = root.rstrip("/") + "/"
                 total_size += payload["total_size"]
                 total_dirs += len(payload["dirs"])
@@ -395,6 +517,9 @@ class FileServer:
                     entry["prefix"] = entry["dir"].rstrip("/")
                     entry["url"] = "{}/file/{}/{}".format(
                         base, file_id, quote(entry["path"], safe="/"))
+                    # 内部标记：合并截断后要按目录反推「该设备该下哪些文件」，
+                    # 才能按字节判定下载完成。接收端按 key 取值，多一个字段无影响。
+                    entry["file_id"] = file_id
                     entries.append(entry)
 
             if not entries and not roots:
@@ -420,9 +545,30 @@ class FileServer:
             for position, entry in enumerate(entries, 1):
                 entry["index"] = position
                 entry["total"] = total_entries
+            # 合并截断后重算，返回的总字节数与清单里真正能下载的条目一致
+            total_size = sum(entry["size"] for entry in entries)
 
-            logger.info("合并清单: %s -> %s 个文件 / %s 个目录（截断=%s）",
-                        ",".join(ids), len(entries), total_dirs, truncated)
+            logger.info("合并清单: %s -> %s 个文件 / %s 个目录（截断=%s，%s）",
+                        ",".join(ids), len(entries), total_dirs, truncated,
+                        format_size(total_size))
+            client = self._client_identity()
+            for file_id in hit_ids:
+                expected = {
+                    entry["path"]: entry["size"]
+                    for entry in entries if entry.get("file_id") == file_id
+                }
+                self._set_expected(file_id, expected)
+                self._record_download(
+                    file_id, client, "manifest",
+                    f"清单已交付：{len(expected)} 个文件 / "
+                    f"{format_size(sum(expected.values()))}", "folder",
+                    total=sum(expected.values()),
+                )
+                # 空目录没有成员文件可下，清单交付即是一次完整下载
+                self._check_completion(file_id, client)
+            # 内部标记不进对外清单契约，避免老接收端遍历字典键时多出一项
+            for entry in entries:
+                entry.pop("file_id", None)
             return jsonify({
                 "status": "ok",
                 "roots": roots,
@@ -469,18 +615,33 @@ class FileServer:
                 entry["url"] = "{}/file/{}/{}".format(
                     base, file_id, quote(entry["path"], safe="/"))
             payload["file_id"] = file_id
-            logger.info("目录清单: %s -> %s 个文件 / %s 个目录（截断=%s）",
-                        file_id, payload["count"], len(payload["dirs"]),
+            # 预期字节以**清单里真正列出的条目**为准：清单被截断时也按实际
+            # 可下载的部分判定完成，不会永远等那 20000 条之外的文件。
+            expected = {
+                entry["path"]: entry["size"] for entry in payload["entries"]
+            }
+            self._set_expected(file_id, expected)
+            logger.info("目录清单: %s -> %s 个文件 / %s（截断=%s）",
+                        file_id, payload["count"],
+                        format_size(payload["total_size"]),
                         payload["truncated"])
+            client = self._client_identity()
+            self._record_download(
+                file_id, client, "manifest",
+                f"清单已交付：{len(expected)} 个文件 / "
+                f"{format_size(payload['total_size'])}", "folder",
+                total=payload["total_size"],
+            )
+            self._check_completion(file_id, client)
             return jsonify(payload), 200
 
         @self.app.route("/file/<file_id>/<path:rel_path>", methods=["GET"])
         def download_member(file_id, rel_path):
             """目录共享里的单个文件。
 
-            与 `/file/<file_id>` 的区别：这里只发一个文件，且**不**在发完
-            后撤销共享 —— 一份目录要连续取很多次，撤销得等接收端自己用完
-            （或到期清理）。
+            与 `/file/<file_id>` 的区别：这里只发一个文件；每个响应累计
+            实际发出的字节，等清单里的成员全部发满才判定整轮下载完成，
+            再由配额逻辑决定是否撤销共享（或留到 TTL 到期）。
             """
             self._purge_expired_files()
             folder = self._folder_root(file_id)
@@ -490,8 +651,9 @@ class FileServer:
                     "message": "file_id 不存在或不是目录共享",
                 }), 404
 
+            rel_key = unquote(rel_path)
             base = os.path.realpath(folder)
-            target = os.path.realpath(os.path.join(base, unquote(rel_path)))
+            target = os.path.realpath(os.path.join(base, rel_key))
             # 目录穿越（../、绝对路径、指向目录外的符号链接）一律拒掉
             try:
                 inside = os.path.commonpath([base, target]) == base
@@ -506,14 +668,338 @@ class FileServer:
                 }), 404
 
             logger.info("目录内文件下载: %s -> %s", file_id, target)
-            return send_file(target, as_attachment=True,
-                             download_name=os.path.basename(target))
+            response = send_file(target, as_attachment=True,
+                                 download_name=os.path.basename(target))
+            # 目录成员是「一次准入 → N 个串行请求」：每个响应都累计实际发
+            # 出的字节，写进该设备的进度表；最后一个成员发满时判定下载完成。
+            # 同时跟踪活跃下载，避免大文件传一半时后台清理把共享撤掉。
+            inner = response.response
+            client = self._client_identity()
+            sent_all = False
+            sent_bytes = 0
+            self._begin_download(file_id)
+
+            def body_stream():
+                nonlocal sent_all, sent_bytes
+                try:
+                    for chunk in inner:
+                        sent_bytes += len(chunk)
+                        yield chunk
+                    sent_all = True
+                finally:
+                    close_inner = getattr(inner, "close", None)
+                    if callable(close_inner):
+                        try:
+                            close_inner()
+                        except Exception:
+                            pass
+                    self._end_download(file_id)
+                    self._add_bytes_sent(sent_bytes)
+                    self._touch_share(file_id)
+                    if not sent_all:
+                        self._record_download(
+                            file_id, client, "interrupted",
+                            f"成员文件传输中断（已发 {format_size(sent_bytes)}）",
+                            "folder", bytes_sent=sent_bytes,
+                        )
+                    else:
+                        self._record_transfer(file_id, client, rel_key, sent_bytes)
+
+            response.response = body_stream()
+            return response
+
+    # ---------------- 下载记录 / 传输字节 / 配额 ----------------
+
+    def _client_identity(self):
+        """客户端标识：设备名 + IP。按设备计次，同一设备重试不重复占名额。"""
+        source = unquote(request.headers.get("source", "") or "").strip()
+        ip = request.remote_addr or "?"
+        return f"{source}@{ip}" if source else ip
+
+    def _share_info(self, file_id):
+        """返回 (显示名, 类型)；已释放的共享退回 file_id。"""
+        with self._shared_files_lock:
+            info = self.shared_folders.get(file_id)
+            if info:
+                return info["name"], "folder"
+            path = self.shared_files.get(file_id)
+        if path:
+            return os.path.basename(path) or path, "file"
+        return file_id, "unknown"
+
+    def _recent_records(self):
+        with self._shared_files_lock:
+            return list(reversed(self._download_records))
+
+    def _transfer_progress(self):
+        """每个 (共享, 设备) 会话实际发出的字节 / 预期总字节。
+
+        `/downloads` 用它给出「谁已经拿走了多少数据」，面板直接展示，
+        不必等对方回报下载完成。
+        """
+        with self._shared_files_lock:
+            snapshot = {
+                fid: {
+                    client: dict(session, delivered=dict(session["delivered"]))
+                    for client, session in sessions.items()
+                }
+                for fid, sessions in self._share_claims.items()
+            }
+            expected_map = {
+                fid: dict(expected)
+                for fid, expected in self._share_expected.items()
+            }
+        rows = []
+        for file_id, sessions in snapshot.items():
+            expected = expected_map.get(file_id, {})
+            total = sum(expected.values())
+            name, kind = self._share_info(file_id)
+            for client, session in sessions.items():
+                delivered = session["delivered"]
+                sent = sum(delivered.get(rel, 0) for rel in expected)
+                rows.append({
+                    "file_id": file_id,
+                    "name": name,
+                    "kind": kind,
+                    "client": client,
+                    "sent": sent,
+                    "total": total,
+                    "percent": 100 if total <= 0
+                    else min(100, round(sent * 100 / total)),
+                    "parts": sum(1 for rel in expected if rel in delivered),
+                    "files": len(expected),
+                    "state": "completed" if session["completed"] else "active",
+                    "at": session["at"],
+                })
+        return rows
+
+    def _record_download(self, file_id, client, event, detail="", kind=None,
+                         bytes_sent=None, sent=None, total=None):
+        """追加一条下载事件并写日志。记录只在内存，重启客户端即清空。"""
+        at = time.time()
+        name, detected_kind = self._share_info(file_id)
+        with self._shared_files_lock:
+            sessions = self._share_claims.get(file_id, {})
+            # 「第几次」= 已完成完整下载的设备数，不是已准入的设备数
+            count = sum(1 for s in sessions.values() if s.get("completed"))
+            expected = self._share_expected.get(file_id, {})
+            delivered = sessions.get(client, {}).get("delivered", {})
+            if sent is None:
+                sent = sum(delivered.get(rel, 0) for rel in expected)
+            if total is None:
+                total = sum(expected.values())
+            record = {
+                "at": at,
+                "time": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(at)),
+                "file_id": file_id,
+                "name": name,
+                "kind": kind or detected_kind,
+                "client": client,
+                "event": event,
+                "detail": detail,
+                "count": count,
+                "limit": self.download_limit,
+                # 本次响应实际发出的字节，以及该设备的累计进度
+                "bytes": bytes_sent or 0,
+                "sent": sent,
+                "total": total,
+                "percent": 100 if total <= 0
+                else min(100, round(sent * 100 / total)),
+            }
+            self._download_records.append(record)
+        limit_text = "不限制" if self.download_limit == 0 else self.download_limit
+        logger.info(
+            "下载记录 | %s | %s | %s | %s | 已完成%s/%s次 | %s/%s | %s",
+            record["time"], name, client, event, count, limit_text,
+            format_size(sent), format_size(total), detail,
+        )
+        return record
+
+    def _claim_download(self, file_id, kind, client):
+        """准入一次下载会话（按设备预留名额）。返回 (是否放行, 拒绝原因)。
+
+        这里只做准入，**不**算下载完成：真正的一次下载以实际发出的字节数
+        达到共享预期总字节为准（见 `_record_transfer`）。预留名额可以避免
+        「第一个设备还在下 100MB，第二个设备也进来下完」造成超发。
+        同一设备重试 / 断点续传复用同一会话，不重复占名额。
+        """
+        limit = self.download_limit
+        now = time.time()
+        blocked = False
+        with self._shared_files_lock:
+            claims = self._share_claims.setdefault(file_id, {})
+            self._share_last_activity[file_id] = now
+            if client in claims:
+                return True, ""
+            if limit > 0 and len(claims) >= limit:
+                blocked = True
+            else:
+                claims[client] = {
+                    "at": now, "delivered": {}, "completed": None,
+                }
+        if blocked:
+            self._record_download(
+                file_id, client, "blocked", "已有设备在下载，拒绝新设备", kind
+            )
+            return False, (
+                f"该共享已由 {limit} 个设备下载中或已完成；"
+                "请在电脑上重新复制一次"
+            )
+        self._record_download(file_id, client, "started", "客户端开始下载", kind)
+        return True, ""
+
+    def _set_expected(self, file_id, expected):
+        """登记该共享的预期字节：普通文件 {"": size}，目录来自清单条目。"""
+        with self._shared_files_lock:
+            self._share_expected[file_id] = dict(expected)
+
+    def _record_transfer(self, file_id, client, rel_path, sent_bytes):
+        """累计一次**完整**发出的字节；覆盖全部预期条目即判定下载完成。
+
+        同一成员重复下载取 max 不重复累加，重试 / 断点续传不会虚增进度。
+        只有 `sent_bytes >= 该文件预期大小` 才算这个成员真的发出去了。
+        """
+        now = time.time()
+        with self._shared_files_lock:
+            sessions = self._share_claims.get(file_id, {})
+            session = sessions.get(client)
+            expected = self._share_expected.get(file_id)
+            if session is None or expected is None:
+                # 不限制时老客户端会直接拼成员 URL，没有准入会话：不统计、不拦
+                return
+            # 清单里的 path 是原始相对路径；客户端可能对 URL 做过二次编码，
+            # 两种写法都认，免得进度永远对不上、下载被判成未完成。
+            key = rel_path if rel_path in expected else unquote(rel_path)
+            session["delivered"][key] = max(
+                session["delivered"].get(key, 0), sent_bytes
+            )
+            delivered = session["delivered"]
+            done = (
+                session["completed"] is None
+                and all(rel in delivered and delivered[rel] >= size
+                        for rel, size in expected.items())
+            )
+            sent = sum(delivered.get(rel, 0) for rel in expected)
+            total = sum(expected.values())
+            parts = sum(1 for rel in expected if rel in delivered)
+            if done:
+                session["completed"] = now
+            completed_count = sum(
+                1 for s in sessions.values() if s.get("completed")
+            )
+            exhausted = False
+            if (done and self.download_limit > 0
+                    and completed_count >= self.download_limit):
+                self._share_exhausted_at[file_id] = now
+                exhausted = True
+        detail = (f"已传输 {format_size(sent)} / {format_size(total)}"
+                  f"（{parts}/{len(expected)} 个文件）")
+        if done:
+            self._record_download(
+                file_id, client, "completed", "下载完成：" + detail,
+                bytes_sent=sent_bytes, sent=sent, total=total,
+            )
+        else:
+            # 进度不写进事件列表：一个几千文件的目录会把 200 条记录刷爆，
+            # 面板改读 /downloads 的 sessions 汇总。
+            logger.info("下载进度 | %s | %s | %s", file_id, client, detail)
+        if exhausted:
+            self._record_download(
+                file_id, "-", "exhausted",
+                f"已完成 {completed_count} 次完整下载，停止接受新设备",
+                sent=total, total=total,
+            )
+            self._cancel_if_idle(file_id)
+
+    def _check_completion(self, file_id, client):
+        """清单交付后立刻判一次：空目录（无成员文件）取完清单即算完成。"""
+        self._record_transfer(file_id, client, "", 0)
+
+    def _cancel_if_idle(self, file_id):
+        """下载完成且没有其它响应在传输时立即撤销登记。
+
+        数据已经全部 yield 出去了，撤销只影响**后续**请求，不会截断当前响应；
+        若同一共享还有别的流式响应在跑，交给收尾扫描等它们结束。
+        """
+        with self._shared_files_lock:
+            busy = self._active_downloads.get(file_id, 0) > 0
+            exhausted = file_id in self._share_exhausted_at
+        if busy or not exhausted:
+            return
+        self._record_download(file_id, "-", "cancelled", "下载完成，自动取消共享")
+        self._release_file(file_id, "下载完成后自动取消共享")
+
+    def _finish_download(self, file_id, client, success, bytes_sent=0):
+        """普通文件流式响应结束：按字节记进度，或中断时归还名额。"""
+        if success:
+            self._record_transfer(file_id, client, "", bytes_sent)
+            return
+        released = False
+        with self._shared_files_lock:
+            claims = self._share_claims.get(file_id)
+            session = claims.get(client) if claims else None
+            if session is not None and not session["completed"]:
+                claims.pop(client, None)
+                released = True
+                if self.download_limit > 0 and len(claims) < self.download_limit:
+                    self._share_exhausted_at.pop(file_id, None)
+        self._record_download(
+            file_id, client, "interrupted",
+            ("传输中断，已归还下载名额" if released else "传输中断")
+            + f"（已发 {format_size(bytes_sent)}）",
+            bytes_sent=bytes_sent,
+        )
+
+    def _is_exhausted(self, file_id):
+        with self._shared_files_lock:
+            return file_id in self._share_exhausted_at
+
+    def _purge_exhausted_shares(self, now=None):
+        """配额用尽的兜底清理：正常情况下完成时已由 `_cancel_if_idle` 撤销。
+
+        完成的共享只留几秒给接收端写完最后一个文件；没有完成的僵死会话
+        （下载中断、进程被杀）留长一点，最后仍由 TTL 兜底。
+        """
+        current = time.time() if now is None else now
+        with self._shared_files_lock:
+            completed = {
+                fid for fid, sessions in self._share_claims.items()
+                if any(s.get("completed") for s in sessions.values())
+            }
+            candidates = [
+                fid for fid, at in self._share_exhausted_at.items()
+                if current - self._share_last_activity.get(fid, at)
+                >= (COMPLETED_GRACE_SECONDS if fid in completed
+                    else EXHAUSTED_GRACE_SECONDS)
+                and self._active_downloads.get(fid, 0) == 0
+            ]
+        for fid in candidates:
+            self._record_download(
+                fid, "-", "cancelled", "下载次数用尽，自动取消共享"
+            )
+            self._release_file(fid, "下载完成后自动取消共享")
+        return len(candidates)
+
+    def _sweep_exhausted(self):
+        """客户端停止发请求后也能取消共享（惰性检查只能由请求触发）。"""
+        while not self._exhausted_stop.wait(EXHAUSTED_SWEEP_SECONDS):
+            try:
+                self._purge_exhausted_shares()
+            except Exception:
+                logger.exception("清理已用尽共享失败")
 
     def _folder_root(self, file_id):
         """目录共享的本地根路径；不是目录共享则返回 None。"""
         with self._shared_files_lock:
             info = self.shared_folders.get(file_id)
         return info["path"] if info else None
+
+    def _add_bytes_sent(self, num_bytes):
+        """把一次响应真正发出的字节计入总量（下载记录与面板汇总用）。"""
+        if not num_bytes:
+            return
+        with self._shared_files_lock:
+            self._bytes_sent_total += num_bytes
 
     def _begin_download(self, file_id):
         with self._shared_files_lock:
@@ -576,7 +1062,11 @@ class FileServer:
         with self._shared_files_lock:
             shared = dict(self.shared_files)
             folders = {fid: dict(info) for fid, info in self.shared_folders.items()}
+            exhausted = set(self._share_exhausted_at)
         for file_id, path in shared.items():
+            # 次数已用尽的共享不能再广播出去，否则别的设备会拿到必然 410 的链接
+            if file_id in exhausted:
+                continue
             info = folders.get(file_id)
             if info is not None:
                 entries.append({
@@ -636,6 +1126,10 @@ class FileServer:
             path = self.shared_files.pop(file_id, None)
             self.shared_file_registered_at.pop(file_id, None)
             self.shared_folders.pop(file_id, None)
+            self._share_claims.pop(file_id, None)
+            self._share_expected.pop(file_id, None)
+            self._share_exhausted_at.pop(file_id, None)
+            self._share_last_activity.pop(file_id, None)
         if path is None:
             return
         logger.info("%s: %s -> %s", reason, file_id, path)
@@ -654,6 +1148,10 @@ class FileServer:
             self.shared_files.clear()
             self.shared_file_registered_at.clear()
             self.shared_folders.clear()
+            self._share_claims.clear()
+            self._share_expected.clear()
+            self._share_exhausted_at.clear()
+            self._share_last_activity.clear()
         logger.info("共享文件列表已清空")
 
     def _touch_share(self, file_id):
@@ -666,7 +1164,10 @@ class FileServer:
         with self._shared_files_lock:
             if file_id not in self.shared_file_registered_at:
                 return False
-            self.shared_file_registered_at[file_id] = time.time()
+            now = time.time()
+            self.shared_file_registered_at[file_id] = now
+            # 目录成员下载也算「仍在活动」，收尾期不在这期间倒计时
+            self._share_last_activity[file_id] = now
         return True
 
     def _purge_expired_files(self, now=None):
@@ -698,6 +1199,15 @@ class FileServer:
             return
 
         self.running = True
+        # 配额用尽的共享即使客户端不再发任何请求，也要能被自动取消
+        self._exhausted_stop.clear()
+        if self._exhausted_thread is None or not self._exhausted_thread.is_alive():
+            self._exhausted_thread = Thread(
+                target=self._sweep_exhausted,
+                name="share-limit-sweep",
+                daemon=True,
+            )
+            self._exhausted_thread.start()
 
         def run():
             logger.info("文件服务启动: 0.0.0.0:%s", self.port)
@@ -722,6 +1232,7 @@ class FileServer:
 
         logger.info("正在停止文件服务器...")
         self.running = False
+        self._exhausted_stop.set()
 
         # 关闭 Werkzeug 服务器
         if self._flask_server:

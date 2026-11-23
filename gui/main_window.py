@@ -26,6 +26,13 @@ DEFAULT_FILE_SHARE_TTL_MINUTES = 30
 MIN_FILE_SHARE_TTL_MINUTES = 1
 MAX_FILE_SHARE_TTL_MINUTES = 24 * 60
 
+# 共享可被完整下载的次数。0 = 不限制（存活期内所有已配对设备都能取，默认），
+# 1 = 第一个设备下完就停止共享，N = 允许 N 个设备各自完整下载一次。
+# 「完整」由发送端实际发出的字节数判定，按设备计次，重试 / 断点续传不重复占名额。
+DEFAULT_SHARE_DOWNLOAD_LIMIT = 0
+MIN_SHARE_DOWNLOAD_LIMIT = 0
+MAX_SHARE_DOWNLOAD_LIMIT = 99
+
 
 def validate_client_settings(
     server_host,
@@ -40,6 +47,7 @@ def validate_client_settings(
     folder_zip_confirm_gb=DEFAULT_FOLDER_ZIP_CONFIRM_GB,
     folder_file_count_confirm=DEFAULT_FOLDER_FILE_COUNT_CONFIRM,
     file_share_ttl_minutes=DEFAULT_FILE_SHARE_TTL_MINUTES,
+    share_download_limit=DEFAULT_SHARE_DOWNLOAD_LIMIT,
 ):
     """校验并规范化客户端设置；不合法时抛 ValueError。"""
     host = str(server_host or "").strip()
@@ -80,6 +88,7 @@ def validate_client_settings(
         "folder_zip_confirm_gb": _normalize_confirm_gb(folder_zip_confirm_gb),
         "folder_file_count_confirm": _normalize_folder_count(folder_file_count_confirm),
         "file_share_ttl_minutes": _normalize_ttl(file_share_ttl_minutes),
+        "share_download_limit": _normalize_download_limit(share_download_limit),
     }
 
 
@@ -135,3 +144,16 @@ def _normalize_ttl(value):
             f"{MAX_FILE_SHARE_TTL_MINUTES} 分钟之间"
         )
     return minutes
+
+
+def _normalize_download_limit(value):
+    try:
+        count = int(str(value).strip()) if isinstance(value, str) else int(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("共享下载次数必须是整数（0 表示不限制）") from exc
+    if not MIN_SHARE_DOWNLOAD_LIMIT <= count <= MAX_SHARE_DOWNLOAD_LIMIT:
+        raise ValueError(
+            f"共享下载次数必须在 {MIN_SHARE_DOWNLOAD_LIMIT} 到 "
+            f"{MAX_SHARE_DOWNLOAD_LIMIT} 之间（0 = 不限制）"
+        )
+    return count

@@ -13,6 +13,8 @@ from gui.main_window import (
     DEFAULT_FILE_SHARE_TTL_MINUTES,
     DEFAULT_FOLDER_FILE_COUNT_CONFIRM,
     DEFAULT_FOLDER_ZIP_CONFIRM_GB,
+    DEFAULT_SHARE_DOWNLOAD_LIMIT,
+    MAX_SHARE_DOWNLOAD_LIMIT,
 )
 
 logger = logging.getLogger("gui")
@@ -49,6 +51,8 @@ class ConfigManager:
         self.folder_zip_confirm_gb = DEFAULT_FOLDER_ZIP_CONFIRM_GB
         self.folder_file_count_confirm = DEFAULT_FOLDER_FILE_COUNT_CONFIRM
         self.file_share_ttl_minutes = DEFAULT_FILE_SHARE_TTL_MINUTES
+        # 0 = 不限制；>0 = 完成 N 次完整下载（按实际发出字节判定）后自动取消共享
+        self.share_download_limit = DEFAULT_SHARE_DOWNLOAD_LIMIT
         self._state_data = {}
         self._client_config_data = {}
         self._server_config_data = {}
@@ -153,6 +157,7 @@ class ConfigManager:
                 "folder_zip_confirm_gb": DEFAULT_FOLDER_ZIP_CONFIRM_GB,
                 "folder_file_count_confirm": DEFAULT_FOLDER_FILE_COUNT_CONFIRM,
                 "file_share_ttl_minutes": DEFAULT_FILE_SHARE_TTL_MINUTES,
+                "share_download_limit": DEFAULT_SHARE_DOWNLOAD_LIMIT,
             }
             try:
                 with open(config_file, 'w', encoding='utf-8') as f:
@@ -197,6 +202,7 @@ class ConfigManager:
             "folder_zip_confirm_gb": DEFAULT_FOLDER_ZIP_CONFIRM_GB,
             "folder_file_count_confirm": DEFAULT_FOLDER_FILE_COUNT_CONFIRM,
             "file_share_ttl_minutes": DEFAULT_FILE_SHARE_TTL_MINUTES,
+            "share_download_limit": DEFAULT_SHARE_DOWNLOAD_LIMIT,
         }
 
         for field, default_value in default_fields.items():
@@ -250,6 +256,16 @@ class ConfigManager:
         self.file_share_ttl_minutes = (
             ttl if ttl > 0 else DEFAULT_FILE_SHARE_TTL_MINUTES
         )
+        limit = int(
+            self._coerce_number(
+                config.get("share_download_limit"), DEFAULT_SHARE_DOWNLOAD_LIMIT
+            )
+        )
+        # 手工改坏（负数 / 越界）时退回默认，避免变成「永远取不到」
+        self.share_download_limit = (
+            limit if 0 <= limit <= MAX_SHARE_DOWNLOAD_LIMIT
+            else DEFAULT_SHARE_DOWNLOAD_LIMIT
+        )
         self._client_config_data = dict(config)
 
         logger.info(
@@ -258,7 +274,8 @@ class ConfigManager:
             f"文件={self.file_sync_mode} | 目录={self.folder_sync_enabled} | "
             f"目录阈值={self.folder_zip_confirm_gb}GB/"
             f"{self.folder_file_count_confirm}个 | "
-            f"共享存活={self.file_share_ttl_minutes}分钟"
+            f"共享存活={self.file_share_ttl_minutes}分钟 | "
+            f"下载次数={'不限制' if self.share_download_limit == 0 else self.share_download_limit}"
         )
         return True
 
@@ -309,6 +326,7 @@ class ConfigManager:
                 "folder_zip_confirm_gb": self.folder_zip_confirm_gb,
                 "folder_file_count_confirm": int(self.folder_file_count_confirm),
                 "file_share_ttl_minutes": int(self.file_share_ttl_minutes),
+                "share_download_limit": int(self.share_download_limit),
             })
             self._atomic_write_json(ConfigManager.CLIENT_CONFIG, config)
             self._client_config_data = config
@@ -333,6 +351,7 @@ class ConfigManager:
             "folder_zip_confirm_gb",
             "folder_file_count_confirm",
             "file_share_ttl_minutes",
+            "share_download_limit",
         }
         unknown = set(values) - allowed_fields
         if unknown:

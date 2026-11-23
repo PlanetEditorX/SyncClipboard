@@ -80,7 +80,8 @@ class TestConfigManager(unittest.TestCase):
                 "folder_sync_enabled": True,
                 "folder_zip_confirm_gb": 10,
                 "folder_file_count_confirm": 3000,
-                "file_share_ttl_minutes": self.default_ttl
+                "file_share_ttl_minutes": self.default_ttl,
+                "share_download_limit": 0
             },
             ANY,
             ensure_ascii=False,
