@@ -8,13 +8,18 @@ import tempfile
 import threading
 from pathlib import Path
 from common.sync_modes import MODE_BOTH, normalize_mode
-from common.utils import BASE_DIR, get_default_server_host
+from common.utils import BASE_DIR
 from gui.main_window import (
     DEFAULT_FILE_SHARE_TTL_MINUTES,
     DEFAULT_FOLDER_ZIP_CONFIRM_GB,
 )
 
 logger = logging.getLogger("gui")
+
+# 面板开启「本机服务器」时，客户端连的就是这台机器上的服务端。
+# 这个地址是有意为之的配置值，不能再被加载逻辑「纠正」成本机 LAN IP。
+LOCAL_SERVER_HOST = "127.0.0.1"
+
 
 class ConfigManager:
     """配置管理器"""
@@ -134,7 +139,7 @@ class ConfigManager:
         if not config_file.exists():
             logger.info("客户端配置文件不存在，正在创建默认配置...")
             default_config = {
-                "server_host": get_default_server_host(),
+                "server_host": LOCAL_SERVER_HOST,
                 "server_port": 8000,
                 "key": "123456",
                 "local_name": self.local_name,
@@ -171,10 +176,9 @@ class ConfigManager:
             config["local_name"] = self.local_name
             need_save = True
 
-        if config.get("server_host") == "127.0.0.1":
-            logger.info(f"检测到默认服务器地址 '127.0.0.1'，正在替换为真实服务器地址")
-            config["server_host"] = get_default_server_host()
-            need_save = True
+        # 127.0.0.1 是「连接本机服务器」的合法取值，由面板开关写入；
+        # 早期版本会把 127.0.0.1 自动改写成本机 LAN IP，那样开关一保存
+        # 就被覆盖，客户端下次启动又连回别的地址，因此不再做此替换。
 
         # 4. 检查并补充缺失的字段（兼容旧版本配置文件）
         default_fields = {
@@ -326,6 +330,21 @@ class ConfigManager:
             for key, value in previous.items():
                 setattr(self, key, value)
             return False
+
+    def use_local_server(self):
+        """把「连接的服务器」指向本机；返回配置是否真的发生变化。
+
+        面板或托盘开启「本机服务器」时调用。客户端进程只在启动时读配置，
+        因此返回 True 时调用方还要重启客户端，新地址才会生效。
+        """
+        if self.server_host == LOCAL_SERVER_HOST:
+            return False
+        changed = self.update_client_config({"server_host": LOCAL_SERVER_HOST})
+        if changed:
+            logger.info(
+                "已切换为连接本机服务器: %s:%s", LOCAL_SERVER_HOST, self.server_port
+            )
+        return changed
 
     def load_server_config(self):
         """加载服务器配置（自动创建默认配置）"""

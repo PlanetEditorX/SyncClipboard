@@ -193,6 +193,7 @@ class TestModernUiCompatibility(unittest.TestCase):
 
         CI 跑的是 main() -> clean_release_outputs() -> build_command()，
         因此 manifest 必须在 clean 阶段存活，否则 PyInstaller 报找不到文件。
+        旧版的 bat 注册脚本目录已移除，留着就属于残留，clean 应该清掉。
         """
         build = importlib.import_module("release.build")
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -210,8 +211,7 @@ class TestModernUiCompatibility(unittest.TestCase):
 
             self.assertTrue((release_dir / "app.manifest").exists())
             self.assertTrue((release_dir / "build.py").exists())
-            self.assertTrue((release_dir / "bat" / "start.bat").exists())
-            for removed in ("dist", "spec", "build_cache", "stale.spec"):
+            for removed in ("dist", "spec", "build_cache", "stale.spec", "bat"):
                 self.assertFalse((release_dir / removed).exists(), removed)
 
     def test_build_steps_survive_non_utf8_console(self):
@@ -226,7 +226,7 @@ class TestModernUiCompatibility(unittest.TestCase):
         real_stdout = sys.stdout
         with tempfile.TemporaryDirectory() as temp_dir:
             release_dir = Path(temp_dir) / "release"
-            (release_dir / "bat").mkdir(parents=True)
+            (release_dir / "stale_dir").mkdir(parents=True)
             (release_dir / "app.manifest").write_text("<assembly/>", encoding="utf-8")
             (release_dir / "build.py").write_text("# build", encoding="utf-8")
             (release_dir / "dist").mkdir()

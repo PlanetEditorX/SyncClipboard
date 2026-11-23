@@ -25,7 +25,7 @@ from common.ui_bridge import post_to_main_thread_no_wait, request_ui_shutdown
 from common.utils import BASE_DIR
 from gui import qt_dialogs
 from gui.clipboard_handler import ClipboardHandler
-from gui.config_manager import ConfigManager
+from gui.config_manager import LOCAL_SERVER_HOST, ConfigManager
 from gui.file_handler import FileHandler
 from gui.file_watcher_handler import FileWatcherHandler
 from gui.icon_theme import icon_path, is_active_state
@@ -129,25 +129,48 @@ class TrayManager(QObject):
         if service not in {"server", "client"}:
             raise ValueError(f"未知服务: {service}")
 
+        # 开启「本机服务器」时，客户端就该连回本机，而不是继续连着旧的中心服务器
+        switch_to_local = service == "server" and enabled
+
         def action():
+            # 配置必须先落盘再启停：客户端进程只在启动时读一次配置。
+            host_changed = switch_to_local and self.config.use_local_server()
             if service == "server":
-                (self.services.start_server if enabled else self.services.stop_server)()
+                success = (
+                    self.services.start_server() if enabled
+                    else self.services.stop_server()
+                )
             else:
-                (self.services.start_client if enabled else self.services.stop_client)()
+                success = (
+                    self.services.start_client() if enabled
+                    else self.services.stop_client()
+                )
+            if host_changed and success:
+                self._restart_running_client()
+                self._notify_local_server_host()
 
         return self._actions.submit(action)
+
+    def _restart_running_client(self):
+        """客户端只在启动时读配置，连接地址改了必须重启进程。"""
+        if not self.config.client_running:
+            return
+        if self.services.stop_client(preserve_intent=True):
+            self.services.start_client()
+
+    def _notify_local_server_host(self):
+        """把自动改写的连接地址同步回面板（Qt 控件只能在主线程碰）。"""
+        window = self.window
+        if window is not None:
+            post_to_main_thread_no_wait(
+                window.on_local_server_host_applied, LOCAL_SERVER_HOST
+            )
 
     def restart_services_async(self):
         return self._actions.submit(self.services.restart_services)
 
     def restart_client_async(self):
-        def action():
-            if not self.config.client_running:
-                return
-            if self.services.stop_client(preserve_intent=True):
-                self.services.start_client()
-
-        return self._actions.submit(action)
+        return self._actions.submit(self._restart_running_client)
 
     # ------------------------------------------------------------ 刷新界面
 

@@ -2,7 +2,7 @@
 
 ## 简介
 
-SyncClipboard 是一个跨设备实时同步剪贴板内容的工具，支持**文本**、**图片**、**文件**等多种数据类型。该项目旨在解决 Windows 电脑与 iOS 18 手机在同一局域网内的剪贴板共享需求，通过高效的实时同步机制为用户提供无缝的跨设备体验。
+SyncClipboard 是一个跨设备实时同步剪贴板内容的工具，支持**文本**、**图片**、**文件**等多种数据类型。该项目旨在解决 Windows 电脑、Android 设备与 iOS 18 手机在同一局域网内的剪贴板共享需求，通过高效的实时同步机制为用户提供无缝的跨设备体验。
 
 - **文本同步**：任意一端复制，其他设备自动更新剪贴板（实时）。
 - **文件/图片传输**：手机可按需从电脑拉取文件，也可主动发送文件到电脑保存。
@@ -13,13 +13,13 @@ SyncClipboard 是一个跨设备实时同步剪贴板内容的工具，支持**�
 
 | 功能 | 触发方式 | 行为 | 状态 |
 |------|---------|------|------|
-| 1. 文本全端实时同步 | 任意客户端复制文本 | 服务器中转，其他客户端自动拉取并写入剪贴板 |
-| 2. 服务端本机文件 → 手机 | 手机手动点击拉取指令 | 服务器直接返回文件流，下载后自动清除最新文件记录 |
-| 3. 手机文件上传至服务器 | 手机手动发送文件 | 服务器保存到预设下载目录 |
-| 4. 其他电脑文件 → 手机 | 手机手动拉取 | 服务器返回源电脑的文件地址，手机直接下载；服务器发送一次文件后自动清除记录 |
-| 5. 电脑A文件 → 电脑B | 点击图标后手动拉取 | 同手机拉取 |
+| 1. 文本全端实时同步 | 任意客户端复制文本 | 服务器中转，其他客户端自动拉取并写入剪贴板 | ✅ |
+| 2. 服务端本机文件 → 手机 | 手机手动运行「获取同步」 | 返回文件流或目录清单，接收端逐文件下载；取完或到期后自动撤销共享 | ✅ |
+| 3. 手机文件上传至服务器 | 手机手动运行「推送同步」 | 保存到配置的下载目录，完成后自动定位到文件 | ✅ |
+| 4. 其他电脑文件 → 手机 | 手机手动运行「获取同步」 | 服务器下发源电脑的下载地址，手机直连下载 | ✅ |
+| 5. 电脑A文件 → 电脑B | 点击托盘图标或通知后手动拉取 | 同手机拉取，中断可按 HTTP Range 续传 | ✅ |
 
-**注意**：多台 Windows 电脑间**不进行文件剪贴板自动同步**。原因：若任意一端复制文件就要上传至服务器并分发给所有电脑，频繁复制时会产生大量不必要的磁盘读写和网络开销，而实际可能根本不会使用这些文件。文本同步已覆盖日常需求，文件传输仅设计为主动按需获取，手机点击快捷指令后手动拉取文件，电脑其它客户端通过点击弹窗或点击任务栏图标左键后手动拉取文件。文件请求一次后就会失效，文件共享会被取消。
+**注意**：多台 Windows 电脑间**不进行文件剪贴板自动同步**。原因：若任意一端复制文件就要上传至服务器并分发给所有电脑，频繁复制时会产生大量不必要的磁盘读写和网络开销，而实际可能根本不会使用这些文件。文本同步已覆盖日常需求，文件传输仅设计为主动按需获取，手机运行快捷指令后手动拉取文件，电脑其它客户端通过点击弹窗或点击任务栏图标左键后手动拉取文件。单文件下载一次后共享即撤销；目录按清单逐文件下载，取完或到期（`file_share_ttl_minutes`，默认 30 分钟）才撤销。
 
 ---
 
@@ -27,20 +27,23 @@ SyncClipboard 是一个跨设备实时同步剪贴板内容的工具，支持**�
 
 ### 电脑端
 
-1. 启动**服务器**（SyncClipboard Server）和**客户端**（SyncClipboard Client）。
-2. 复制任意文字，其他电脑客户端和手机都会在几秒内自动同步。
-3. 复制文件后（在任意电脑上）：
+1. 启动 SyncClipboard（托盘面板），按需开启「本机服务器」与「同步客户端」。
+2. 在面板打开「本机服务器」时，会自动把「连接设置 → 服务器地址」改成 `127.0.0.1` 并重启客户端；关闭服务器不会自动改回，需要连回远端服务器时手动填回地址并保存。
+3. 复制任意文字，其他电脑客户端和手机都会在几秒内自动同步。
+4. 复制文件后（在任意电脑上）：
    - 服务器本机文件：手机直接拉取即可下载。
    - 其他电脑文件：手机拉取时会自动跳转到源电脑下载。
-4. 手机发送的文件默认保存到客户端配置的 `save_path` 目录下。
-5. 点击任务栏图标左键，会自动同步下载其它客户端上传的文件，没有文件就同步最新的文字内容。
-6. 排查问题时，主界面「运行日志」区可分别查看**服务日志**、**客户端日志**和**界面日志**（文件在 `log/` 目录）；打开后每 2 秒自动刷新，窗口关闭即停止读取，不在后台占用资源。
+5. 手机发送的文件默认保存到客户端配置的 `save_path` 目录下。
+6. 点击任务栏图标左键，会自动同步下载其它客户端上传的文件，没有文件就同步最新的文字内容。
+7. 排查问题时，主界面「运行日志」区可分别查看**服务日志**、**客户端日志**和**界面日志**（文件在 `log/` 目录）；打开后每 2 秒自动刷新，窗口关闭即停止读取，不在后台占用资源。
 
-### 手机端（iOS 18）
+### 手机端
 
-- **文字同步**：打开设置了自动化的 App（如微信、浏览器）时，快捷指令自动运行，拉取最新文本并写入剪贴板；手机复制文字也会自动推送到电脑。
-- **获取文件**：手动点击控制中心的「获取文件」快捷指令，从电脑下载最近复制的文件/图片。
-- **发送文件**：手动点击「发送文件」快捷指令，将手机上的文件/图片发送到电脑下载目录。
+- **文字同步**（iOS）：打开设置了自动化的 App（如微信、浏览器）时，快捷指令自动运行，拉取最新文本并写入剪贴板；手机复制文字也会自动推送到电脑。
+- **获取同步**：手动点击控制中心的「获取同步」，从电脑拉取最新文字、文件或整个目录。
+- **推送同步**：手动点击「推送同步」，把手机上的文字 / 文件 / 图片发送到电脑下载目录。
+- **短信同步**：收到验证码短信时自动抽码写入电脑剪贴板（自动化需单独添加）。
+- Android 端：见下方「手机配置 → Android端」。
 
 ---
 
@@ -48,8 +51,19 @@ SyncClipboard 是一个跨设备实时同步剪贴板内容的工具，支持**�
 
 ### 系统要求
 
-- **操作系统**：Windows 10+，iOS 18。
+- **操作系统**：Windows 10+，iOS 18（Android 客户端见 `android/README.md`）。
 - **网络**：所有设备处于同一局域网。
+
+### 从源码运行（Windows）
+
+```bash
+pip install -r requirements.txt
+python gui/run.py       # 托盘 + 面板，按上次的开关状态拉起服务端/客户端（推荐）
+python server/run.py    # 只跑中心服务端
+python client/run.py    # 只跑剪贴板客户端
+```
+
+配置文件首次运行会自动生成在 `config/`，模板见 `config/example/`。
 
 ### Docker 部署示例
 
@@ -94,11 +108,11 @@ docker build -f docker/Dockerfile -t syncclipboard-server .
 
 JSON body 里的 `key` 与 `?key=` 仍被同一个校验函数接受，但只是等价入口，新接入方请只用请求头。升级后请把**所有端一起升级**：只升级服务端而留着旧快捷指令/旧 APK，下载地址会拿到 403。
 
-本次契约更新重新生成了 4 份 `shortcuts/*/*-unsigned.plist`。仓库里的 `.shortcut` 是 Apple 签名产物，本机无法重签，需要把新的 unsigned plist 重新签名后导入 iOS（旧 `.shortcut` 已过期，导入后下载会 403）。
+统一鉴权契约时同步重生成了 4 份 `shortcuts/*/*-unsigned.plist` 与对应的 `.shortcut` 签名产物（文件路径见「手机配置」）。`.shortcut` 是 Apple 签名产物，本机无法自行重签；改动 plist 参数后需重新签名再导入 iOS。旧版 `.shortcut` 导入后下载会 403。
 
 ### 电脑配置
 
-1. 从 [Releases](https://github.com/PlanetEditorX/SyncClipboard/releases) 下载 `SyncClipboard.zip`。
+1. 从 [Releases](https://github.com/PlanetEditorX/SyncClipboard/releases) 下载 `SyncClipboard-Windows-<tag>.zip`（例如 `SyncClipboard-Windows-v1.12.13.zip`），解压到任意目录后运行 `SyncClipboard.exe`。旧版可直接解压覆盖：安装包只带 `config/example` 模板，不会覆盖已有的 `config/*.json` 个人配置与 `log/` 日志。
 2. 解压后编辑 `server_config.json`：
 
    ```json
@@ -121,7 +135,7 @@ JSON body 里的 `key` 与 `?key=` 仍被同一个校验函数接受，但只是
    }
    ```
 
-4. 根据需求设置开机启动、启动服务器、启动客户端。
+4. 在面板按需开启「本机服务器」「同步客户端」和开机启动。开启本机服务器会自动把 `server_host` 写为 `127.0.0.1`（见下节）。
 
 **多 Windows + 单 iOS 文字同步**：每台电脑使用不同的 `local_name` 即可，任意一端复制文字，其他端自动同步。
 
@@ -157,6 +171,16 @@ JSON body 里的 `key` 与 `?key=` 仍被同一个校验函数接受，但只是
 
 `file_share_ttl_minutes` 会同时写入 `server_config.json`，Docker/Linux 部署可只改服务器配置里的这一项。
 
+### 服务开关与连接地址
+
+| 操作 | 自动行为 |
+| --- | --- |
+| 打开「本机服务器」（面板或托盘） | 把 `client_config.json` 的 `server_host` 写为 `127.0.0.1`，面板「服务器地址」同步刷新；正在运行的客户端自动重启，连上刚启动的本机服务端 |
+| 关闭「本机服务器」 | 只停服务端进程，**不改动**连接地址；要连回局域网里另一台服务器，在「连接设置」手动改地址并保存 |
+| 地址本来就是 `127.0.0.1` | 不写配置、不重启客户端，避免无谓的进程抖动 |
+
+服务端始终监听 `0.0.0.0`，因此手机和其他电脑仍通过本机 LAN IP 接入；`127.0.0.1` 只决定**这台电脑上的客户端**连到哪台服务器。首次生成的 `client_config.json` 默认就是 `127.0.0.1`。
+
 ### 手机配置
 
 #### iOS端
@@ -165,13 +189,19 @@ JSON body 里的 `key` 与 `?key=` 仍被同一个校验函数接受，但只是
    - 如果未安装过，可能需要借助 [ipatool](https://github.com/majd/ipatool) 购买历史版本。
    - 若实在无法安装，可手动删除快捷指令中涉及 Actions 的部分。
 
-2. **添加快捷指令**（4 条，仓库 `shortcuts/` 下各有 `build.py` 与产物）
-   - 文字同步：常驻轮询，双向同步剪贴板文字
-   - 推送同步：把剪贴板内容（文字 / 文件）推给电脑
-   - 获取同步：拉取文字、文件、目录（按合并清单逐文件落地）
-   - 短信同步：从验证码短信里抽数字推到电脑剪贴板
-   - 仓库里的 `.shortcut` 已按本次契约**重新签名**，可直接导入；`*-unsigned.plist` 是对应的源文件（改参数后用 `shortcuts/lib/sign.py` 重签）。所有请求一律带 `key` 请求头，旧版 `.shortcut` 导入后下载会 403，务必整组替换。
-   - 每个 GitHub Release 也附带 `SyncClipboard-iOS-Shortcuts-<tag>.zip`，含 4 条签名产物；导入后在每条指令的「配置」词典里改主机、端口、密钥。
+2. **添加快捷指令**（4 条，直接导入仓库里的签名文件，不要再找旧的在线分享链接）
+
+   | 快捷指令 | 文件 | 作用 |
+   | --- | --- | --- |
+   | 文字同步 | [`shortcuts/文字同步/文字同步.shortcut`](shortcuts/文字同步/文字同步.shortcut) | 常驻轮询，双向同步剪贴板文字 |
+   | 推送同步 | [`shortcuts/推送同步/推送同步.shortcut`](shortcuts/推送同步/推送同步.shortcut) | 把剪贴板内容（文字 / 文件）推给电脑 |
+   | 获取同步 | [`shortcuts/获取同步/获取同步.shortcut`](shortcuts/获取同步/获取同步.shortcut) | 拉取文字、文件、目录（按合并清单逐文件落地） |
+   | 短信同步 | [`shortcuts/短信同步/短信同步.shortcut`](shortcuts/短信同步/短信同步.shortcut) | 从验证码短信里抽数字推到电脑剪贴板 |
+
+   - 每条指令的源文件是同目录下的 `*-unsigned.plist`，可用 `shortcuts/<名字>/build.py` 重建；改参数后用 `shortcuts/lib/sign.py` 重签。
+   - 4 条 `.shortcut` 已按统一鉴权契约重新签名，所有请求一律带 `key` 请求头；旧版产物导入后下载会 403，务必整组替换。
+   - 离线整包分发可用 Release 里的 `SyncClipboard-iOS-Shortcuts-<tag>.zip`，内容与上述 4 个文件同源；导入后在每条指令的「配置」词典里改主机、端口、密钥。
+
 3. **修改快捷指令参数**
    - 主机地址、密钥、端口，与服务器配置保持一致。
    - 停止自动更新的电量阈值（如 40%），低于该电量不执行同步。
@@ -186,13 +216,10 @@ JSON body 里的 `key` 与 `?key=` 仍被同一个校验函数接受，但只是
    - 设置为“立即运行”，关闭“运行时通知”
    - 选择常用 App（如微信、浏览器等），运行「文字同步」快捷指令
 
-5. **无需手动注册**
-   - 服务端对任何带正确 `key`、能报出设备名的请求自动登记 / 续期；一周无活跃证据才清理。旧文档里的「注册服务」快捷指令已不存在。
-
-6. **控制中心**
+5. **控制中心**
    - 添加「推送同步」和「获取同步」快捷指令，方便手动触发文件传输。
 
-7. **关闭多余通知**
+6. **关闭多余通知**
    - 进入 设置 → 屏幕使用时间 → 查看所有 App 与网站活动 → 通知
    - 将快捷指令的通知改为仅横幅，关闭其他提醒。
 
@@ -254,54 +281,64 @@ git push origin v1.0.0
 ```
 SyncClipboard/
 ├── client/
-│   ├── autorun.py              # 开机自启动
-│   ├── file_server.py          # 客户端路由
-│   ├── main_menu.py            # 客户端主逻辑
-│   ├── run.py                  # 客户端主入口
-│   └── settings.py             # 客户端配置操作
+│   ├── run.py                 # 客户端主入口
+│   ├── main_menu.py           # 剪贴板同步主循环
+│   ├── file_server.py         # 本机文件服务 / 目录清单路由
+│   ├── folder_manifest.py     # 目录清单生成
+│   └── settings.py            # 客户端配置读写
 ├── common/
-│   ├── file_watcher.py         # 文件监控
-│   ├── notification.py         # 通知
-│   └── utils.py                # 工具类
-├── config/
-│   ├── client_config.json      # 客户端配置
-│   ├── client_ip.json          # 注册客户端IP信息
-│   ├── gui_state.json          # 托盘状态
-│   ├── server_config.json      # 服务器配置
-│   └── example/                # 配置模板文件
+│   ├── utils.py               # 通用工具 / 安全请求
+│   ├── ui_bridge.py           # 主线程任务队列
+│   ├── sync_modes.py          # 文字 / 文件收发方向
+│   ├── notification.py        # Windows 桌面通知
+│   ├── file_watcher.py        # 文件监控
+│   ├── log_files.py           # 日志文件定义
+│   ├── single_instance.py     # 单实例与唤出
+│   ├── updater.py             # 版本检查
+│   └── update_apply.py        # 自更新解包
+├── config/                    # 运行期配置（首次启动自动生成）
+│   ├── client_config.json     # 客户端：连接地址 / 端口 / 密钥 / 同步开关
+│   ├── server_config.json     # 服务端：端口 / 密钥 / 下载目录
+│   ├── client_ip.json         # 在线设备表（服务端自动维护）
+│   ├── gui_state.json         # 服务开关与外观状态
+│   └── example/               # 打包用配置模板
 ├── gui/
-│   ├── run.py                    # 托盘主入口
-│   ├── tray_manager.py           # 托盘管理器
-│   ├── tray_menu.py              # 菜单构建
-│   ├── config_manager.py         # 配置管理
-│   ├── clipboard_handler.py      # 剪贴板处理
-│   ├── service_manager.py        # 服务启停管理
-│   ├── file_handler.py           # 文件下载处理
-│   ├── file_watcher_handler.py   # 文件监控处理
-│   ├── download_dialog.py        # 下载进度对话框
-│   └── icon/
-│       ├── icon-active.png       # 运行图标
-│       └── icon-stop.png         # 停止图标
-├── latest/
-│   ├── text_latest.json          # 最新文字信息
-│   └── file_latest.json          # 最新文件信息
-├── log/
-│   ├── client.log                # 客户端日志
-│   ├── gui.log                   # 托盘日志
-│   └── server.log                # 服务器日志
+│   ├── run.py                 # 托盘主入口
+│   ├── tray_manager.py        # 托盘 / 面板 / 服务编排
+│   ├── qt_main_window.py      # 面板：状态 / 同步控制 / 连接设置 / 日志
+│   ├── qt_theme.py            # 主题与自定义控件
+│   ├── qt_dialogs.py          # 对话框
+│   ├── qt_log_view.py         # 日志查看器
+│   ├── qt_download_dialog.py  # 下载进度
+│   ├── config_manager.py      # 配置读写（含本机服务器地址联动）
+│   ├── service_manager.py     # 服务进程启停
+│   ├── service_queue.py       # 服务操作串行队列
+│   ├── clipboard_handler.py   # 剪贴板处理
+│   ├── file_handler.py        # 文件下载 / 断点续传
+│   ├── file_watcher_handler.py
+│   ├── main_window.py         # 设置校验（纯逻辑）
+│   ├── icon_theme.py
+│   └── icon/                  # 托盘图标（浅色 / 深色）
+├── server/
+│   ├── run.py                 # 服务端主入口（监听 0.0.0.0）
+│   ├── linux_run.py           # Linux / Docker 入口
+│   ├── api/flask_app.py       # HTTP 路由与统一鉴权
+│   └── core/                  # 文字 / 文件状态与落盘
+├── shortcuts/                 # 4 条 iOS 快捷指令：build.py + unsigned plist + .shortcut
+│   ├── lib/                   # 公共构建 / 校验 / 签名脚本
+│   ├── 文字同步/
+│   ├── 推送同步/
+│   ├── 获取同步/
+│   └── 短信同步/
+├── android/                   # Android 客户端（见 android/README.md）
+├── docker/                    # Dockerfile / entrypoint / 服务端依赖
+├── docs/                      # 快捷指令与边界测试文档
+├── tests/                     # 单元测试：python -m unittest discover -s tests
+├── tools/                     # 辅助脚本
 ├── release/
-│   ├── build.py                  # 编译exe
-│   ├── bat/
-│   │   ├── RegisterApp.bat       # 添加到注册表
-│   │   └── UnregisterApp.bat     # 从注册表移除
-└── server/
-    ├── run.py                    # 服务器主入口
-    ├── api/
-    │   └── flask_app.py          # 服务器路由
-    └──core/
-        ├── item_builder.py       # 构建item字典
-        ├── text_tracker.py       # 最新文字信息的相关操作
-        ├── file_latest.py        # 最新文件信息的相关操作
-        ├── file_sync.py          # 最新文件信息同步
-        └── file_handler.py       # 文件写入封装
+│   ├── build.py               # PyInstaller 打包
+│   └── app.manifest           # DPI 感知清单
+├── latest/                    # 运行期：最新文字 / 文件记录
+├── log/                       # 运行期：server / client / gui / ios_shortcut 日志
+└── .github/workflows/         # Windows 打包、Docker 镜像、Android 构建
 ```

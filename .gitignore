@@ -18,7 +18,6 @@ log/
 release/*
 !release/build.py
 !release/app.manifest
-!release/bat
 .workbuddy/
 
 # ---- 调试/打包临时产物护栏 ----

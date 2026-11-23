@@ -143,8 +143,8 @@ jobs:
           generate_release_notes: true
           append_body: true
           body: |
-            > **破坏性协议变更**：所有 HTTP 请求统一带 `key` 请求头。服务端、电脑端、iOS 快捷指令、Android 客户端必须**同时升级**，只升一端会让下载地址返回 403。
-            > iOS 用户请下载 `SyncClipboard-iOS-Shortcuts-${{ github.ref_name }}.zip`，把 4 条快捷指令全部重新导入（旧的会 403）。
-            > 安卓端如有改动，请在 Actions 页手动运行 **Build Android** 工作流，它会用本版本号构建 APK 并挂到这条 Release 上。
+            > **升级说明**：Windows 用户下载 `SyncClipboard-Windows-${{ github.ref_name }}.zip` 解压覆盖；iOS 用户下载 `SyncClipboard-iOS-Shortcuts-${{ github.ref_name }}.zip`，重新导入 4 条快捷指令。
+            > 服务端与电脑端请保持同一版本，跨版本混用可能出现下载地址 403。通知来源已由程序在首次弹窗时自动注册，无需再运行任何注册脚本。
+            > 安卓端如需出包，在 Actions 页手动运行 **Build Android** 工作流，它会用本版本号构建 APK 并挂到这条 Release 上。
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

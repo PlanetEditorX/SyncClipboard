@@ -46,6 +46,7 @@ from common.update_apply import (
 from common.updater import APP_VERSION, check_for_update, download_file
 from common.utils import BASE_DIR, post_to_main_thread_no_wait
 from gui import qt_dialogs
+from gui.config_manager import LOCAL_SERVER_HOST
 from gui.main_window import (
     DEFAULT_FILE_SHARE_TTL_MINUTES,
     DEFAULT_FOLDER_ZIP_CONFIRM_GB,
@@ -285,7 +286,10 @@ class MainWindow(QMainWindow):
         row.setSpacing(14)
 
         self.server_card = ServiceCard(
-            "本机服务器", "为局域网设备中转剪贴板内容", "S", self._palette
+            "本机服务器", "为局域网中转剪贴板，开启后自动连回本机", "S", self._palette
+        )
+        self.server_card.setToolTip(
+            f"开启后自动把「服务器地址」改为 {LOCAL_SERVER_HOST}，并重启正在运行的客户端"
         )
         self.client_card = ServiceCard(
             "同步客户端", "监听并同步本机剪贴板变化", "C", self._palette
@@ -865,6 +869,17 @@ class MainWindow(QMainWindow):
         port = self.config.server_port or "-"
         name = self.config.local_name or "未命名设备"
         return f"连接到 {host}:{port} · 设备 {name}"
+
+    def on_local_server_host_applied(self, host=LOCAL_SERVER_HOST):
+        """本机服务器开启后，连接地址已被自动改写；同步面板输入框与提示。"""
+        edit = getattr(self, "server_host_edit", None)
+        if edit is not None:
+            edit.setText(host)
+            edit.setCursorPosition(0)
+        self.welcome_detail.setText(self._connection_summary())
+        self._set_settings_message(
+            f"已切换为连接本机服务器（{host}）", self._palette["success"]
+        )
 
     # ---------------------------------------------------------------- 交互
 

@@ -94,9 +94,9 @@ def build_command():
 
 
 # release/ 目录下会被 clean 步骤保留的源文件（其余都是构建产物，可删）。
-# 老实现只保留了 build.py 与 bat，导致新增的 app.manifest 被删掉后
+# 老实现只保留了 build.py，导致新增的 app.manifest 被删掉后
 # build_command() 再去引用它时 PyInstaller 直接报「找不到 manifest」。
-SOURCE_ARTIFACTS = {"build.py", "bat", "app.manifest"}
+SOURCE_ARTIFACTS = {"build.py", "app.manifest"}
 
 
 def clean_release_outputs():
@@ -133,12 +133,6 @@ def copy_runtime_assets():
         if source.suffix.lower() in {".png", ".ico"}:
             shutil.copy2(source, dst_icon / source.name)
     print(f"  [OK] 图标 -> {dst_icon}")
-
-    src_bat = RELEASE_DIR / "bat"
-    if src_bat.exists():
-        for file in src_bat.glob("*.bat"):
-            shutil.copy2(file, APP_DIR / file.name)
-        print(f"  [OK] bat 文件 -> {APP_DIR}")
 
     prune_qt_payload(APP_DIR)
     return exe_path
