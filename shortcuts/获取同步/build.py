@@ -57,7 +57,7 @@ SHORTCUTS_ROOT = os.path.dirname(HERE)      # shortcuts/
 sys.path.insert(0, SHORTCUTS_ROOT)
 
 from lib.sc import *  # noqa: E402,F401  (SC/tok/att/act_out/pick/var/dkey/OBJ/U)
-from lib.sc import DEFAULT_META  # noqa: E402
+from lib.sc import DEFAULT_META, set_icon  # noqa: E402
 
 OUT = os.path.join(HERE, '获取同步-unsigned.plist')
 
@@ -379,6 +379,7 @@ b.comment('结束。平时看进度通知即可；排查时把「配置」里的
 # ------------------------------------------------------------------ 输出
 
 meta = dict(DEFAULT_META)
+set_icon(meta, 59711)          # 剪贴板 —— 真机导出样本里的图标
 meta['WFWorkflowActions'] = b.a
 
 with open(OUT, 'wb') as f:

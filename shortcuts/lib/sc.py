@@ -631,11 +631,56 @@ class SC:
                           'WFControlFlowMode': 2})
 
 
+# ------------------------------------------------------------------ 图标
+
+# 快捷指令「库」里的图标 = 调色板颜色 + 内置图形编号，两项写在 WFWorkflowIcon
+# 里，随 .shortcut 文件一起导入。之前四份脚本都沿用下面这组占位值
+# （255 深灰 + 59711 剪贴板），所以导入后四条长得一模一样，像默认图标。
+#
+# 下面四个 glyph 编号来自真机导出样本（在 iOS 里手动选好图标后导出的
+# .shortcut 解包所得），不是猜的：
+#   文字同步 59403 双气泡 / 获取同步 59711 剪贴板
+#   短信同步 59773 信封   / 推送同步 59708 向上箭头（分享）
+# 颜色沿用样本里的 255（深灰）。
+#
+# 注意：从相册选的照片图标属于「添加到主屏幕」的书签，不属于 .shortcut；
+# WFWorkflowIconImageData 即便写进去，跨设备导入也不保证保留。库内图标
+# 只能用「调色板颜色 + 内置图形」，照片图标只能导入后在手机上手动选。
+
+ICON_COLORS = {
+    '红': 4282601983, '深橙': 4251333119, '橙': 4271458815,
+    '黄': 4274264319, '绿': 4292093695, '青': 431817727,
+    '浅蓝': 1440408063, '蓝': 463140863, '深蓝': 946986751,
+    '紫罗兰': 2071128575, '紫': 3679049983, '粉': 3980825855,
+    '深灰': 255, '灰绿': 3031607807, '褐': 2846468607,
+}
+
+ICON_GLYPHS = {
+    'clipboard': 59711, 'messageBubbles': 59403, 'textBubble': 59779,
+    'sendMessage': 61467, 'envelope': 59773, 'picture': 59784,
+    'document': 59725, 'documentOutline': 59727, 'squareStack': 61457,
+    'uploadArrow': 59708, 'downloadArrow': 59693, 'paperAirplane': 59836,
+    'cloud': 59714, 'syncArrows': 59846, 'shortcuts': 61440,
+}
+
+
+def set_icon(meta, glyph, color='深灰'):
+    """设置库内图标。glyph / color 可传上面表里的名字，也可直接传整数。"""
+    g = ICON_GLYPHS.get(glyph, glyph) if isinstance(glyph, str) else glyph
+    c = ICON_COLORS.get(color, color) if isinstance(color, str) else color
+    meta['WFWorkflowIcon'] = {
+        'WFWorkflowIconGlyphNumber': g,
+        'WFWorkflowIconStartColor': c,
+    }
+    return meta
+
+
 DEFAULT_META = {
     'WFQuickActionSurfaces': [],
     'WFWorkflowClientVersion': '3612.0.1.3',
     'WFWorkflowHasOutputFallback': False,
     'WFWorkflowHasShortcutInputVariables': False,
+    # 兜底默认值；各 build.py 必须调用 set_icon() 覆盖成自己的图标。
     'WFWorkflowIcon': {'WFWorkflowIconGlyphNumber': 59711,
                        'WFWorkflowIconStartColor': 255},
     'WFWorkflowImportQuestions': [],

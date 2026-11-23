@@ -133,7 +133,7 @@ SHORTCUTS_ROOT = os.path.dirname(HERE)      # shortcuts/
 sys.path.insert(0, SHORTCUTS_ROOT)
 
 from lib.sc import *  # noqa: E402,F401  (SC/tok/att/act_out/pick/var/dkey/条件码)
-from lib.sc import DEFAULT_META  # noqa: E402
+from lib.sc import DEFAULT_META, set_icon  # noqa: E402
 
 OUT = os.path.join(HERE, '文字同步-unsigned.plist')
 
@@ -515,6 +515,7 @@ b.endif(g_fore)      # 0. 前台 App 白名单
 # ------------------------------------------------------------------ 输出
 
 meta = dict(DEFAULT_META)
+set_icon(meta, 59403)          # 双气泡 —— 真机导出样本里的图标
 meta['WFWorkflowActions'] = b.a
 
 with open(OUT, 'wb') as f:
