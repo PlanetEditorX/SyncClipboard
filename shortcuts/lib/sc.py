@@ -10,6 +10,11 @@
     cond_input          「如果」动作的被判断对象（按比较类型决定是否转字符串）
     FOLDER_DOWNLOAD     「存储到文件」的默认目标目录描述
     DEFAULT_META        工作流顶层元数据
+    条件码               IS/IS_NOT/GT/LT/LTE/GTE/ANY/NO_VALUE，见下方常量
+
+拉取型（获取同步）用 post_json + repeat_each；轮询驻留型（文字同步）还会用到
+get_clipboard / item_type / stored_get / stored_set / reachable / repeat_count /
+calculate / delay / run_self。
 
 具体流程写在各子目录的 `build.py` 里（如 `获取同步/build.py`）。
 """
@@ -108,19 +113,28 @@ def cond_input(subj, coerce=True):
     文本比较必须带 WFStringContentItem 强制转换（放在 Aggrandizements 最后），
     否则 iOS 判断不出参数类型，动作会标红报「请为此操作中的每个参数选取值」。
     数值比较（大于/小于）不能加，加了就变字符串比大小。
+
+    「有没有值」同样要强转，但原因不同：iOS 的内容项类型决定了条件菜单里能选
+    什么 —— **App 类型的内容项没有「没有值」这一项**，选中就报参数缺失。所以
+    「获取当前App」这类输出在判空之前必须先转成文本（原版也是这么写的）。
     """
     if coerce:
-        subj = act_out(subj, agg=as_text())
+        existing = subj.get('Aggrandizements') or [] if isinstance(subj, dict) else []
+        already = any(a.get('CoercionItemClass') == 'WFStringContentItem'
+                      for a in existing)
+        if not already:
+            subj = act_out(subj, agg=as_text())
     return {'Type': 'Variable', 'Variable': att(subj)}
 
 
 def dict_field(pairs):
+    """拼词典字面量。值可以是单个 part，也可以是 parts 列表（含变量时用）。"""
     items = []
     for k, v in pairs:
         items.append({
             'WFItemType': 0,
             'WFKey': tok([k]),
-            'WFValue': tok([v]),
+            'WFValue': tok(v if isinstance(v, list) else [v]),
         })
     return {'Value': {'WFDictionaryFieldValueItems': items},
             'WFSerializationType': 'WFDictionaryFieldValue'}
@@ -140,8 +154,14 @@ FOLDER_DOWNLOAD = {
     },
 }
 
-# 条件码
+# 条件码。前四个与 NSPredicate 的比较算子一一对应（真机验证过的只有 2 与 4/5）：
+#   0 <   1 ≤   2 >   3 ≥   4 是   5 不是   100 有任何值   101 没有任何值
+# 「有没有内容」一律用 100/101，不要用数字比较 —— 字段缺省时取到空值，
+# 空值去比大小会让 iOS 弹「请为此操作中的每个参数选取值」并中断整条指令。
 IS, IS_NOT, GT = 4, 5, 2
+LT, LTE, GTE = 0, 1, 3
+ANY, NO_VALUE = 100, 101
+ANY_OF, ALL_OF = 0, 1      # WFActionParameterFilterPrefix：0 = 任一，1 = 全部
 
 
 class SC:
@@ -197,10 +217,19 @@ class SC:
         return act_out(uid, '设备名称')
 
     # -- 网络 ------------------------------------------------------------
-    def get(self, url_subject):
+    def get(self, url_subject, headers=None):
+        """获取 URL 内容（GET）。
+
+        url_subject 传单个引用时按原样用；传 parts 列表（含字面量与变量）时整串
+        拼进 WFURL —— 拼查询串（`{地址}?source={设备名}`）时用这个，省掉一个
+        额外的「文本」动作。headers 是 [(键, 值)] 列表，值可以是引用。
+        """
         uid = U()
-        self._add('is.workflow.actions.downloadurl',
-                  {'UUID': uid, 'ShowHeaders': True, 'WFURL': tok([url_subject])})
+        parts = url_subject if isinstance(url_subject, list) else [url_subject]
+        p = {'UUID': uid, 'ShowHeaders': True, 'WFURL': tok(parts)}
+        if headers:
+            p['WFHTTPHeaders'] = dict_field(headers)
+        self._add('is.workflow.actions.downloadurl', p)
         return act_out(uid, 'URL的内容')
 
     def post_json(self, url_subject, headers, body):
@@ -228,6 +257,116 @@ class SC:
     def clipboard(self, subject):
         self._add('is.workflow.actions.setclipboard',
                   {'UUID': U(), 'WFInput': att(subject)})
+
+    def get_clipboard(self):
+        """读剪贴板（不是「拷贝到剪贴板」）。"""
+        uid = U()
+        self._add('is.workflow.actions.getclipboard', {'UUID': uid})
+        return act_out(uid, '剪贴板')
+
+    def item_type(self, subject):
+        """获取项目类型：返回本地化名字（文本 / URL / 多信息文本 / 图像…）。"""
+        uid = U()
+        self._add('is.workflow.actions.getitemtype',
+                  {'UUID': uid, 'WFInput': att(subject)})
+        return act_out(uid, '类型')
+
+    def detect_dict(self, subject):
+        """转换为词典：响应体是 JSON 文本时解析成词典，已是词典则原样透传。"""
+        uid = U()
+        self._add('is.workflow.actions.detect.dictionary',
+                  {'UUID': uid, 'WFInput': att(subject)})
+        return act_out(uid, '词典')
+
+    def get_value(self, subject, key):
+        """按词典键取值（动作版）。"""
+        uid = U()
+        self._add('is.workflow.actions.getvalueforkey',
+                  {'UUID': uid, 'WFInput': att(subject),
+                   'WFDictionaryKey': key})
+        return act_out(uid, key)
+
+    def stored_get(self, key):
+        """读设备本地「存储内容」（快捷指令的 key-value，跨运行保留）。"""
+        uid = U()
+        self._add('is.workflow.actions.getstoredcontent',
+                  {'UUID': uid, 'WFStoredContentKey': key})
+        return act_out(uid, key)
+
+    def stored_set(self, subject, key):
+        """写「存储内容」。值包成文本 token，跟 iOS 自己导出的形状一致。"""
+        self._add('is.workflow.actions.setstoredcontent',
+                  {'WFInput': tok([subject]), 'WFStoredContentKey': key})
+
+    def date_now(self):
+        uid = U()
+        self._add('is.workflow.actions.date', {'UUID': uid})
+        return act_out(uid, '日期')
+
+    def battery_level(self):
+        uid = U()
+        self._add('is.workflow.actions.getbatterylevel', {'UUID': uid})
+        return act_out(uid, '电池电量')
+
+    def wifi_info(self):
+        """当前 Wi-Fi 的详细信息；没连 Wi-Fi 时输出为空值。"""
+        uid = U()
+        self._add('is.workflow.actions.getwifi', {'UUID': uid})
+        return act_out(uid, '网络的详细信息')
+
+    def current_app(self, text=False):
+        """当前前台 App。
+
+        text=True 时在输出上挂 WFStringContentItem 强转。判「有没有值」必须用
+        它：App 类型的内容项在 iOS 的条件菜单里没有「没有值」，选中就标红。
+        做「是 某个 App 名」比较时不用管，比较那边会自己加强转。
+        """
+        uid = U()
+        self._add('is.workflow.actions.getcurrentapp', {'UUID': uid})
+        return act_out(uid, '当前App', agg=as_text() if text else None)
+
+    def reachable(self, url_subject, timeout=3):
+        """主机可达性检查（Actions 的 App Intent），返回「是 / 否」。
+
+        不用「获取 URL 内容」探活：那条动作在连不上时直接抛错并中断整条指令，
+        轮询里一旦断网就没有第二次机会。
+
+        参数形状照 Actions 自己导出的样子：`host` 是**文本 token**（不是
+        attachment），`timeout` 是**字符串**。它是 App Intent 的参数，类型不对
+        时 App 里那句参数会显示成空白、跑起来恒判不可达。
+        """
+        uid = U()
+        self._add('com.sindresorhus.Actions.IsReachableIntent', {
+            'UUID': uid,
+            'AppIntentDescriptor': {
+                'AppIntentIdentifier': 'IsReachableIntent',
+                'BundleIdentifier': 'com.sindresorhus.Actions',
+                'Name': 'Actions',
+                'TeamIdentifier': 'YG56YK5RN5',
+            },
+            'host': tok([url_subject]),
+            'requireSuccessStatusCode': True,
+            'timeout': str(timeout),
+        })
+        return act_out(uid, 'Is Web Server Reachable')
+
+    def calculate(self, parts):
+        """计算表达式，parts 是文本 parts 列表（可用变量），返回动作输出。"""
+        uid = U()
+        self._add('is.workflow.actions.calculateexpression',
+                  {'UUID': uid, 'Input': tok(parts)})
+        return act_out(uid, '计算结果')
+
+    def delay(self, seconds):
+        p = {'WFDelayTime': att(seconds) if isinstance(seconds, dict) else seconds}
+        self._add('is.workflow.actions.delay', p)
+
+    def run_self(self):
+        """调用自己（续跑）。isSelf 不写名字/UUID：导入后自动指向当前快捷指令。"""
+        self._add('is.workflow.actions.runworkflow', {
+            'UUID': U(),
+            'WFWorkflow': {'isSelf': True},
+        })
 
     def exit(self):
         self._add('is.workflow.actions.exit', {})
@@ -267,6 +406,19 @@ class SC:
 
     # -- 控制流 ----------------------------------------------------------
     def if_(self, subject, cond, string=None, number=None):
+        """单条件「如果」。
+
+        string 可以是普通字符串，也可以是 `tok([...])` 造出来的引用串（比较对象
+        本身是个变量时就这么用）；number 同理，可以是数字字符串，也可以是
+        `act_out(...)`/`var(...)` 引用（目标值取自配置词典时）。
+
+        「有任何值 / 没有任何值」(100/101) 例外：这两种条件 iOS 只认表模板
+        （WFConditions → WFActionParameterFilterTemplates）形态，单条件形态
+        导入后动作会标红「请为此操作中的每个参数选取值」。原版里这两条也是
+        表模板。
+        """
+        if cond in (ANY, NO_VALUE) and string is None and number is None:
+            return self.if_conds([{'subject': subject, 'cond': cond}])
         g = U()
         p = {'GroupingIdentifier': g, 'UUID': U(), 'WFControlFlowMode': 0,
              'WFCondition': cond,
@@ -274,34 +426,52 @@ class SC:
         if string is not None:
             p['WFConditionalActionString'] = string
         if number is not None:
-            p['WFNumberValue'] = str(number)
+            p['WFNumberValue'] = att(number) if isinstance(number, dict) else str(number)
         self._add('is.workflow.actions.conditional', p)
         return g
 
-    def if_any(self, subject, strings):
-        """「如果 … 是 A 或 B」。subject 需已是 var()/act_out() 描述。"""
+    def _tpl(self, c):
+        """把 {subject, cond, string, number, date} 拼成一个条件模板。"""
+        # 只有文本比较要强制转字符串：数值/日期比较带上强制转换会变成字符串比大小
+        tpl = {'WFCondition': c['cond'],
+               'WFInput': cond_input(c['subject'], coerce='string' in c)}
+        if 'string' in c:
+            tpl['WFConditionalActionString'] = c['string']
+        if 'number' in c:
+            v = c['number']
+            tpl['WFNumberValue'] = att(v) if isinstance(v, dict) else str(v)
+        if 'date' in c:
+            tpl['WFDate'] = c['date']
+        return tpl
+
+    def if_conds(self, conds, mode=ANY_OF):
+        """多条件「如果」：conds 是 [{subject, cond, string|number|date}, …]。
+
+        mode=ANY_OF（0）= 任一满足，ALL_OF（1）= 全部满足。多个条件可以是不同
+        的判断对象 —— 这正是它跟 if_any 的区别（后者只支持「同一个东西是 A 或
+        B」）。守卫那种「电量低 或 没 Wi-Fi 或 服务不可达」就用它。
+        """
         g = U()
-        templates = []
-        for s in strings:
-            templates.append({
-                'WFCondition': IS,
-                'WFConditionalActionString': s,
-                'WFInput': cond_input(subject, coerce=True),
-            })
         self._add('is.workflow.actions.conditional', {
             'GroupingIdentifier': g,
             'UUID': U(),
             'WFControlFlowMode': 0,
             'WFConditions': {
                 'Value': {
-                    'WFActionParameterFilterPrefix': 0,
-                    'WFActionParameterFilterTemplates': templates,
+                    'WFActionParameterFilterPrefix': mode,
+                    'WFActionParameterFilterTemplates':
+                        [self._tpl(c) for c in conds],
                     'WFContentPredicateBoundedDate': False,
                 },
                 'WFSerializationType': 'WFContentPredicateTableTemplate',
             },
         })
         return g
+
+    def if_any(self, subject, strings):
+        """「如果 <同一个东西> 是 A 或 B」。subject 需已是 var()/act_out() 描述。"""
+        return self.if_conds([{'subject': subject, 'cond': IS, 'string': s}
+                              for s in strings], ANY_OF)
 
     def else_(self, g):
         self._add('is.workflow.actions.conditional',
@@ -316,6 +486,15 @@ class SC:
         self._add('is.workflow.actions.repeat.each', {
             'GroupingIdentifier': g, 'UUID': U(), 'WFControlFlowMode': 0,
             'WFInput': att(subject),
+        })
+        return g
+
+    def repeat_count(self, count):
+        """重复 N 次。count 可以是数字字符串，也可以是 var()/act_out() 引用。"""
+        g = U()
+        self._add('is.workflow.actions.repeat.count', {
+            'GroupingIdentifier': g, 'UUID': U(), 'WFControlFlowMode': 0,
+            'WFRepeatCount': att(count) if isinstance(count, dict) else str(count),
         })
         return g
 

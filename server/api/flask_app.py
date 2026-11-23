@@ -1147,6 +1147,23 @@ def clear_latest():
     notify_clients("clear")
     return jsonify({"status": "ok"}), 200
 
+def _same_ios_log_run(path, text):
+    """这次推来的日志，跟磁盘上那份是不是同一次运行。
+
+    快捷指令在每轮结束时把**累积的完整日志**整份推上来，所以同一次运行里后一次
+    的内容一定以前一次那份为前缀（只追加、不删改）。是前缀就说明还是同一次运行，
+    直接覆盖；不是就说明开了新的一次，旧的该留档了。
+    """
+    try:
+        with open(path, encoding="utf-8") as handle:
+            old = handle.read(4096)
+    except OSError:
+        return False
+    if not old.strip():
+        return False
+    return text.startswith(old)
+
+
 @app.route('/ios_log', methods=['POST'])
 def ios_log():
     """接收 iOS 快捷指令的运行日志，整份覆盖写进 `log/ios_shortcut.log`。
@@ -1191,6 +1208,15 @@ def ios_log():
     path = os.path.join(BASE_DIR, "log", "ios_shortcut.log")
     try:
         os.makedirs(os.path.dirname(path), exist_ok=True)
+        # 同一轮运行里每轮都会推一次全量快照，内容只增不减：旧内容是新内容的前缀
+        # 就说明是同一次运行，直接覆盖；否则（新一轮运行）把上一份留成 .1。
+        # 排查「这次为什么没同步」时，上一次的完整记录往往是唯一能对照的样本，
+        # 不留就只剩这一次的残片。
+        if not _same_ios_log_run(path, text):
+            try:
+                os.replace(path, path + ".1")
+            except OSError:
+                pass
         with open(path, "w", encoding="utf-8") as handle:
             handle.write(text)
     except OSError as exc:

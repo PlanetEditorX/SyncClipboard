@@ -92,6 +92,30 @@ class IosLogTest(unittest.TestCase):
         with open(self.log_path, encoding="utf-8") as handle:
             self.assertIn("192.168.1.23:8000", handle.read())
 
+    def test_new_run_keeps_previous_as_backup(self):
+        """新的一次运行开始时，上一次的日志留成 .1。
+
+        同一轮运行里每轮都推全量快照（只追加），所以要按「是不是前缀」区分：
+        是前缀 → 覆盖，不是 → 说明开了新的一次运行，旧的留档。不留的话，
+        排查「这次为什么没同步」时连一份正常样本都对照不了。
+        """
+        self._post("=== 文字同步开始 ===\n[1] 文本未变 → 拉取")
+        self._post("=== 文字同步开始 ===\n[1] 文本未变 → 拉取\n[2] 已写回剪贴板")
+        backup = self.log_path + ".1"
+        self.assertFalse(os.path.exists(backup),
+                         "同一次运行不该产生备份，否则备份会一直变")
+        with open(self.log_path, encoding="utf-8") as handle:
+            self.assertIn("[2] 已写回剪贴板", handle.read())
+
+        # 第二次运行：开头依然是「=== 文字同步开始 ===」，但内容不是上一份的
+        # 前缀（上一份多了 [2] 那行）
+        self._post("=== 文字同步开始 ===\n地址 http://192.168.1.23:8000")
+        self.assertTrue(os.path.exists(backup), "新一次运行没把上一份留档")
+        with open(backup, encoding="utf-8") as handle:
+            self.assertIn("[2] 已写回剪贴板", handle.read())
+        with open(self.log_path, encoding="utf-8") as handle:
+            self.assertIn("192.168.1.23:8000", handle.read())
+
     def test_dotdot_in_log_is_harmless(self):
         """日志内容只是写进固定文件的数据，不参与路径拼接。"""
         self._post("../../etc/passwd\n<b>不转义</b>")

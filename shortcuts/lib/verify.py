@@ -29,11 +29,26 @@ CN = {
     'is.workflow.actions.documentpicker.save': '存储到文件',
     'is.workflow.actions.unzip': '解压缩',
     'is.workflow.actions.setclipboard': '拷贝到剪贴板',
+    'is.workflow.actions.getclipboard': '获取剪贴板',
     'is.workflow.actions.getdevicedetails': '获取设备详细信息',
     'is.workflow.actions.urlencode': 'URL编码',
     'is.workflow.actions.comment': '注释',
+    'is.workflow.actions.getitemtype': '获取项目类型',
+    'is.workflow.actions.detect.dictionary': '转换为词典',
+    'is.workflow.actions.getvalueforkey': '获取词典值',
+    'is.workflow.actions.getstoredcontent': '获取存储内容',
+    'is.workflow.actions.setstoredcontent': '设置存储内容',
+    'is.workflow.actions.date': '当前日期',
+    'is.workflow.actions.getbatterylevel': '获取电池电量',
+    'is.workflow.actions.getwifi': '获取网络详细信息',
+    'is.workflow.actions.getcurrentapp': '获取当前App',
+    'is.workflow.actions.calculateexpression': '计算表达式',
+    'is.workflow.actions.runworkflow': '运行快捷指令',
+    'com.sindresorhus.Actions.IsReachableIntent': '服务是否可达（Actions）',
+    'com.sindresorhus.Actions.IsHostReachable': '主机是否可达（Actions）',
 }
-COND = {4: '是', 5: '不是', 2: '大于', 3: '小于', 8: '包含', 9: '不包含'}
+COND = {0: '小于', 1: '小于等于', 2: '大于', 3: '大于等于', 4: '是', 5: '不是',
+        8: '包含', 9: '不包含', 100: '有任何值', 101: '没有任何值'}
 
 
 def param_keys(act):
@@ -45,27 +60,38 @@ def param_keys(act):
 # 用途：生成的动作里冒出了这里没有的键时提示一声；只作参考，不作正确性判据。
 _REF_PARAMS = {
     ('com.sindresorhus.Actions.IsHostReachable', None): {'AppIntentDescriptor', 'UUID', 'host', 'port'},
+    ('com.sindresorhus.Actions.IsReachableIntent', None): {'AppIntentDescriptor', 'UUID', 'host', 'requireSuccessStatusCode', 'timeout'},
+    ('is.workflow.actions.calculateexpression', None): {'Input', 'UUID'},
     ('is.workflow.actions.comment', None): {'WFCommentActionText'},
     ('is.workflow.actions.conditional', 0): {'GroupingIdentifier', 'UUID', 'WFCondition', 'WFConditionalActionString', 'WFConditions', 'WFControlFlowMode', 'WFInput', 'WFNumberValue'},
     ('is.workflow.actions.conditional', 1): {'GroupingIdentifier', 'UUID', 'WFControlFlowMode'},
     ('is.workflow.actions.conditional', 2): {'GroupingIdentifier', 'UUID', 'WFControlFlowMode'},
     ('is.workflow.actions.count', None): {'Input', 'UUID'},
+    ('is.workflow.actions.date', None): {'UUID'},
     ('is.workflow.actions.delay', None): {'WFDelayTime'},
+    ('is.workflow.actions.detect.dictionary', None): {'UUID', 'WFInput'},
     ('is.workflow.actions.dictionary', None): {'CustomOutputName', 'UUID', 'WFItems'},
     ('is.workflow.actions.documentpicker.save', None): {'UUID', 'WFAskWhereToSave', 'WFFolder', 'WFInput'},
     ('is.workflow.actions.downloadurl', None): {'ShowHeaders', 'UUID', 'WFHTTPHeaders', 'WFHTTPMethod', 'WFJSONValues', 'WFURL'},
     ('is.workflow.actions.exit', None): {},
+    ('is.workflow.actions.getbatterylevel', None): {'UUID'},
+    ('is.workflow.actions.getclipboard', None): {'UUID'},
     ('is.workflow.actions.getcurrentapp', None): {'UUID'},
     ('is.workflow.actions.getdevicedetails', None): {'UUID'},
     ('is.workflow.actions.getitemtype', None): {'UUID', 'WFInput'},
+    ('is.workflow.actions.getstoredcontent', None): {'UUID', 'WFStoredContentKey'},
     ('is.workflow.actions.gettext', None): {'UUID', 'WFTextActionText'},
+    ('is.workflow.actions.getvalueforkey', None): {'UUID', 'WFInput', 'WFDictionaryKey'},
+    ('is.workflow.actions.getwifi', None): {'UUID'},
     ('is.workflow.actions.notification', None): {'UUID', 'WFInput', 'WFNotificationActionBody', 'WFNotificationActionSound'},
     ('is.workflow.actions.previewdocument', None): {'WFInput'},
     ('is.workflow.actions.repeat.count', 0): {'GroupingIdentifier', 'WFControlFlowMode', 'WFRepeatCount'},
     ('is.workflow.actions.repeat.count', 2): {'GroupingIdentifier', 'UUID', 'WFControlFlowMode'},
     ('is.workflow.actions.repeat.each', 0): {'GroupingIdentifier', 'UUID', 'WFControlFlowMode', 'WFInput'},
     ('is.workflow.actions.repeat.each', 2): {'GroupingIdentifier', 'UUID', 'WFControlFlowMode'},
+    ('is.workflow.actions.runworkflow', None): {'UUID', 'WFInput', 'WFWorkflow', 'WFWorkflowName'},
     ('is.workflow.actions.setclipboard', None): {'UUID', 'WFInput'},
+    ('is.workflow.actions.setstoredcontent', None): {'WFInput', 'WFStoredContentKey'},
     ('is.workflow.actions.setvariable', None): {'WFInput', 'WFVariableName'},
     ('is.workflow.actions.showresult', None): {'Text'},
     ('is.workflow.actions.unzip', None): {'UUID'},
@@ -113,6 +139,42 @@ def check_params(acts):
     print('可疑参数（参考集同动作未出现过）:', suspect or 'none')
 
 
+def check_conditions(acts):
+    """条件完整性：「如果」缺了必填参数，iOS 导入后会标红并不让运行。
+
+    两类真会出事的情况：
+
+    * 「有任何值 / 没有任何值」(100/101) 写成单条件 —— iOS 只认表模板
+      (`WFConditions`)，单条件形态在真机上显示「请为此操作中的每个参数选取值」。
+    * 文本比较 (是/不是/包含) 没有比较值、数值比较没有数值 —— 同样是空参数。
+    """
+    TEXT_CMP = {4, 5, 8, 9}
+    NUM_CMP = {0, 1, 2, 3}
+    bad = []
+    for i, a in enumerate(acts):
+        if a['WFWorkflowActionIdentifier'] != 'is.workflow.actions.conditional':
+            continue
+        p = a.get('WFWorkflowActionParameters') or {}
+        if p.get('WFControlFlowMode') != 0:
+            continue
+        if 'WFConditions' in p:
+            for t in p['WFConditions']['Value']['WFActionParameterFilterTemplates']:
+                c = t.get('WFCondition')
+                if c in TEXT_CMP and 'WFConditionalActionString' not in t:
+                    bad.append((i, c, '缺比较值'))
+                elif c in NUM_CMP and not ({'WFNumberValue', 'WFDate'} & set(t)):
+                    bad.append((i, c, '缺数值'))
+        else:
+            c = p.get('WFCondition')
+            if c in (100, 101):
+                bad.append((i, c, '存在性判断必须是表模板'))
+            elif c in TEXT_CMP and 'WFConditionalActionString' not in p:
+                bad.append((i, c, '缺比较值'))
+            elif c in NUM_CMP and not ({'WFNumberValue', 'WFDate'} & set(p)):
+                bad.append((i, c, '缺数值'))
+    print('条件缺参数:', bad or 'none')
+
+
 def walk_refs(node, sink):
     if isinstance(node, dict):
         if node.get('Type') in ('ActionOutput', 'Variable'):
@@ -122,6 +184,45 @@ def walk_refs(node, sink):
     elif isinstance(node, list):
         for v in node:
             walk_refs(v, sink)
+
+
+def ref_name(node):
+    """把 WFInput 里的引用渲染成「变量名.词典键.属性」，认不出就返回 '?'。"""
+    node = node or {}
+    v = node.get('Variable', node)
+    if isinstance(v, dict) and 'Value' in v:
+        v = v['Value']
+    name = v.get('VariableName') or v.get('OutputName') or '?'
+    for ag in v.get('Aggrandizements') or []:
+        if 'DictionaryKey' in ag:
+            name += '.' + ag['DictionaryKey']
+        elif ag.get('PropertyName'):
+            name += '.' + ag['PropertyName']
+    return name
+
+
+def val_text(v):
+    """条件里的比较值：字面量原样，引用渲染成 {变量.键}。"""
+    if isinstance(v, dict):
+        if v.get('WFSerializationType') == 'WFTextTokenString':
+            s = v.get('Value', {}).get('string', '')
+            for rng, a in (v['Value'].get('attachmentsByRange') or {}).items():
+                idx = int(rng.strip('{}').split(',')[0])
+                s = s[:idx] + '{' + ref_name({'Variable': a}) + '}' + s[idx + 1:]
+            return s
+        return '{' + ref_name({'Variable': v}) + '}'
+    return str(v)
+
+
+def cond_text(tpl):
+    """渲染一个条件：tpl 可以是带 WFInput 的模板，也可以直接是 WFInput。"""
+    inp = tpl.get('WFInput') or tpl
+    cond = tpl.get('WFCondition')
+    s = '%s %s' % (ref_name(inp), COND.get(cond, cond))
+    for k in ('WFConditionalActionString', 'WFNumberValue', 'WFDate'):
+        if k in tpl:
+            return s + ' ' + val_text(tpl[k])
+    return s
 
 
 def main(path):
@@ -181,6 +282,7 @@ def main(path):
     print('定义变量:', sorted(defined))
     print('使用但未定义:', undefined or 'none')
     check_params(acts)
+    check_conditions(acts)
     print()
     print('================ 动作树 ================')
     indent = 0
@@ -200,21 +302,15 @@ def main(path):
         extra = ''
         if ident == 'is.workflow.actions.conditional':
             if 'WFConditions' in p:
-                tpl = p['WFConditions']['Value']['WFActionParameterFilterTemplates']
-                subj = tpl[0]['WFInput']['Variable']['Value'].get('VariableName') \
-                    or tpl[0]['WFInput']['Variable']['Value'].get('OutputName')
-                extra = ' ' + subj + ' 是 ' + ' 或 '.join(
-                    repr(t['WFConditionalActionString']) for t in tpl)
+                val = p['WFConditions']['Value']
+                join = ' 或 ' if val.get('WFActionParameterFilterPrefix') == 0 else ' 且 '
+                extra = ' ' + join.join(
+                    cond_text(t) for t in val['WFActionParameterFilterTemplates'])
             else:
-                subj = p['WFInput']['Variable']['Value']
-                s = subj.get('VariableName') or subj.get('OutputName')
-                extra = f' {s} {COND.get(p.get("WFCondition"), p.get("WFCondition"))}'
-                if 'WFConditionalActionString' in p:
-                    extra += ' ' + repr(p['WFConditionalActionString'])
-                if 'WFNumberValue' in p:
-                    extra += ' ' + p['WFNumberValue']
+                extra = ' ' + cond_text(p)
         if ident == 'is.workflow.actions.repeat.count':
-            extra = f' {int(p.get("WFRepeatCount", 0))} 次'
+            n = p.get('WFRepeatCount')
+            extra = ' %s 次' % (val_text(n) if isinstance(n, dict) else int(n or 0))
         if ident == 'is.workflow.actions.setvariable':
             extra = ' → ' + p['WFVariableName']
         if ident == 'is.workflow.actions.comment':
