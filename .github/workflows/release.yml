@@ -88,6 +88,12 @@ jobs:
   build-android:
     name: Build Android
     uses: ./.github/workflows/android.yml
+    # 被调用的工作流声明了 contents: write（手动运行时它要自己把 APK 挂到
+    # Release 上），调用方默认只给 read 会让整个工作流在启动阶段就判定为
+    # 无效：The workflow is requesting 'contents: write', but is only allowed
+    # 'contents: read'。这里显式抬到 write，否则推 tag 后直接 startup failure。
+    permissions:
+      contents: write
     secrets: inherit
 
   # ==============================
