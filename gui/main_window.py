@@ -5,6 +5,15 @@
 """
 
 from common.sync_modes import MODE_BOTH, VALID_MODES
+from common.updater import (
+    DEFAULT_UPDATE_MIRROR_PREFIX,
+    DEFAULT_UPDATE_PROXY,
+    DEFAULT_UPDATE_SOURCE,
+    PROXY_SCHEMES,
+    UPDATE_SOURCE_MANUAL,
+    UPDATE_SOURCE_MIRROR,
+    VALID_UPDATE_SOURCES,
+)
 
 # 目录共享确认阈值：逐文件传输下风险来自「总大小」和「文件数」两个维度，
 # 任一超阈值都要先问用户。这是确认阈值，不是硬拒绝上限。
@@ -33,6 +42,12 @@ DEFAULT_SHARE_DOWNLOAD_LIMIT = 0
 MIN_SHARE_DOWNLOAD_LIMIT = 0
 MAX_SHARE_DOWNLOAD_LIMIT = 99
 
+# 目录超限确认弹窗的存活时间（秒）。到点没有点「允许共享」就按不共享处理，
+# 避免复制完大目录后界面一直挂着等一个不会来的点击。
+DEFAULT_FOLDER_CONFIRM_TIMEOUT_SECONDS = 15
+MIN_FOLDER_CONFIRM_TIMEOUT_SECONDS = 3
+MAX_FOLDER_CONFIRM_TIMEOUT_SECONDS = 300
+
 
 def validate_client_settings(
     server_host,
@@ -48,6 +63,10 @@ def validate_client_settings(
     folder_file_count_confirm=DEFAULT_FOLDER_FILE_COUNT_CONFIRM,
     file_share_ttl_minutes=DEFAULT_FILE_SHARE_TTL_MINUTES,
     share_download_limit=DEFAULT_SHARE_DOWNLOAD_LIMIT,
+    folder_confirm_timeout_seconds=DEFAULT_FOLDER_CONFIRM_TIMEOUT_SECONDS,
+    update_source=DEFAULT_UPDATE_SOURCE,
+    update_mirror_prefix=DEFAULT_UPDATE_MIRROR_PREFIX,
+    update_proxy=DEFAULT_UPDATE_PROXY,
 ):
     """校验并规范化客户端设置；不合法时抛 ValueError。"""
     host = str(server_host or "").strip()
@@ -75,6 +94,10 @@ def validate_client_settings(
     if not 1 <= file_port_value <= 65535:
         raise ValueError("文件服务端口必须在 1 到 65535 之间")
 
+    source_mode, mirror_prefix, proxy = _normalize_update_source(
+        update_source, update_mirror_prefix, update_proxy
+    )
+
     return {
         "server_host": host,
         "server_port": server_port_value,
@@ -89,6 +112,12 @@ def validate_client_settings(
         "folder_file_count_confirm": _normalize_folder_count(folder_file_count_confirm),
         "file_share_ttl_minutes": _normalize_ttl(file_share_ttl_minutes),
         "share_download_limit": _normalize_download_limit(share_download_limit),
+        "folder_confirm_timeout_seconds": _normalize_folder_confirm_timeout(
+            folder_confirm_timeout_seconds
+        ),
+        "update_source": source_mode,
+        "update_mirror_prefix": mirror_prefix,
+        "update_proxy": proxy,
     }
 
 
@@ -157,3 +186,49 @@ def _normalize_download_limit(value):
             f"{MAX_SHARE_DOWNLOAD_LIMIT} 之间（0 = 不限制）"
         )
     return count
+
+
+def _normalize_folder_confirm_timeout(value):
+    try:
+        seconds = int(str(value).strip()) if isinstance(value, str) else int(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("确认弹窗持续时间必须是整数秒") from exc
+    if not (
+        MIN_FOLDER_CONFIRM_TIMEOUT_SECONDS
+        <= seconds
+        <= MAX_FOLDER_CONFIRM_TIMEOUT_SECONDS
+    ):
+        raise ValueError(
+            f"确认弹窗持续时间必须在 {MIN_FOLDER_CONFIRM_TIMEOUT_SECONDS} 到 "
+            f"{MAX_FOLDER_CONFIRM_TIMEOUT_SECONDS} 秒之间"
+        )
+    return seconds
+
+
+def _normalize_update_source(mode, mirror_prefix, proxy):
+    """校验更新源三档，返回 (模式, 镜像前缀, 代理地址)。
+
+    只有当前选中的那一档必须填好：直连不校验另两个输入框，切过去时保留
+    用户上次填的值，省得来回切换要重填。
+    """
+    text = str(mode or "").strip().lower()
+    if text not in VALID_UPDATE_SOURCES:
+        raise ValueError("更新源只能是 GitHub 直连、镜像加速或手动代理")
+
+    prefix = str(mirror_prefix or "").strip().rstrip("/")
+    proxy_text = str(proxy or "").strip()
+
+    if text == UPDATE_SOURCE_MIRROR:
+        if not prefix:
+            raise ValueError("镜像加速需要填写镜像地址，例如 https://gh-proxy.com")
+        if not prefix.lower().startswith(("http://", "https://")):
+            raise ValueError("镜像地址必须以 http:// 或 https:// 开头")
+    elif text == UPDATE_SOURCE_MANUAL:
+        if not proxy_text:
+            raise ValueError("手动代理需要填写代理地址，例如 http://127.0.0.1:7890")
+        if not proxy_text.lower().startswith(PROXY_SCHEMES):
+            raise ValueError(
+                "代理地址必须以 http:// 或 https:// 开头（不支持 SOCKS5）"
+            )
+
+    return text, prefix, proxy_text

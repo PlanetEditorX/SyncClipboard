@@ -13,6 +13,7 @@ import win32api
 import win32clipboard
 from pathlib import Path
 from datetime import datetime
+from common.notification import show_confirm_notification
 from common.utils import SAFE_POST
 from client.folder_manifest import (
     MANIFEST_MAX_ENTRIES,
@@ -29,6 +30,7 @@ from common.sync_modes import (
     normalize_mode,
 )
 from gui.main_window import (
+    DEFAULT_FOLDER_CONFIRM_TIMEOUT_SECONDS,
     DEFAULT_FOLDER_FILE_COUNT_CONFIRM,
     DEFAULT_FOLDER_ZIP_CONFIRM_GB,
 )
@@ -52,16 +54,72 @@ def _as_float(value, default):
         return float(default)
 
 
-def confirm_large_folder(folder_name, size_text, limit_gb, file_count, limit_count,
-                         manifest_max_entries=MANIFEST_MAX_ENTRIES):
-    """原生确认框：目录总大小或文件数超过阈值时，问是否仍然共享。
+def _confirm_with_native_dialog(message, title, timeout_seconds):
+    """通知发不出来时的退路：带超时的原生框，超时按「否」处理。
 
-    客户端是独立进程（GUI 的子进程），没有现成的界面通道，这里直接用 Win32
-    消息框；非 Windows 或无法弹框时按「否」处理，避免在无人值守时悄悄共享大目录。
-    确认发生在**发送端复制时**：批准后才会登记共享并上报 /file_sync，
-    接收端在共享存活期内无需再批准一次。
+    ``MessageBoxTimeoutW`` 没有公开文档但 user32 里一直存在；取不到时退回
+    普通的 ``MessageBoxW``（会一直等人点，但至少比静默拒绝好）。
     """
-    message = (
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        user32 = ctypes.WinDLL("user32", use_last_error=True)
+        MB_YESNO = 0x00000004
+        MB_ICONWARNING = 0x00000030
+        MB_DEFBUTTON2 = 0x00000100
+        MB_TOPMOST = 0x00040000
+        MB_SETFOREGROUND = 0x00010000
+        IDYES = 6
+        flags = MB_YESNO | MB_ICONWARNING | MB_DEFBUTTON2 | MB_TOPMOST | MB_SETFOREGROUND
+        milliseconds = max(1, int(timeout_seconds)) * 1000
+
+        try:
+            timeout_box = user32.MessageBoxTimeoutW
+        except AttributeError:
+            timeout_box = None
+
+        if timeout_box is not None:
+            timeout_box.restype = ctypes.c_int
+            timeout_box.argtypes = (
+                wintypes.HWND, wintypes.LPCWSTR, wintypes.LPCWSTR,
+                wintypes.UINT, wintypes.WORD, wintypes.DWORD,
+            )
+            result = timeout_box(None, message, title, flags, 0, milliseconds)
+        else:
+            user32.MessageBoxW.restype = ctypes.c_int
+            user32.MessageBoxW.argtypes = (
+                wintypes.HWND, wintypes.LPCWSTR, wintypes.LPCWSTR, wintypes.UINT,
+            )
+            result = user32.MessageBoxW(None, message, title, flags)
+        return result == IDYES
+    except Exception as exc:  # noqa: BLE001
+        logger.error("目录超限确认框弹出失败，按取消处理: %s", exc)
+        return False
+
+
+def confirm_large_folder(folder_name, size_text, limit_gb, file_count, limit_count,
+                         manifest_max_entries=MANIFEST_MAX_ENTRIES,
+                         timeout_seconds=15):
+    """确认是否共享超阈值目录：右下角通知 + 倒计时，超时按不共享处理。
+
+    客户端是独立进程（GUI 的子进程），没有现成界面通道，所以走 Windows
+    通知（与「手机文件已保存」同一条链路），带「允许共享 / 暂不共享」按钮。
+    到点没点允许就当作用户不想要这个目录，既不登记也不上报 —— 客户端
+    因此完全看不到它。通知发不出来时退回带超时的原生框。
+
+    ``timeout_seconds`` 来自面板设置，复制目录的线程会一直等到出结果或超时。
+    """
+    title = "SyncClipboard · 目录超出阈值"
+    timeout = max(1, int(timeout_seconds or 0))
+
+    # 通知横幅放不下长文本，这里给短版；原生框用完整说明
+    short_message = (
+        f"「{folder_name}」共 {file_count} 个文件、{size_text}，"
+        f"超过阈值（{limit_count} 个 / {limit_gb:g} GB）。\n"
+        f"{timeout} 秒内点「允许共享」才会发布，到期只取消登记，不动原文件。"
+    )
+    long_message = (
         f"目录「{folder_name}」共有 {file_count} 个文件、总计 {size_text}，"
         f"超过设定的阈值（{limit_count} 个文件 / {limit_gb:g} GB）。\n\n"
         "是否仍然共享？\n"
@@ -69,35 +127,32 @@ def confirm_large_folder(folder_name, size_text, limit_gb, file_count, limit_cou
         "到期后自动取消登记，不会删除电脑上的原文件。"
     )
     if file_count > manifest_max_entries:
-        message += (
+        note = (
             f"\n\n注意：清单最多 {manifest_max_entries} 条，超出的文件不会被传输，"
             "建议把目录拆小后再同步。"
         )
-    try:
-        import ctypes
-        from ctypes import wintypes
+        short_message += note
+        long_message += note
 
-        user32 = ctypes.WinDLL("user32", use_last_error=True)
-        user32.MessageBoxW.restype = ctypes.c_int
-        user32.MessageBoxW.argtypes = (
-            wintypes.HWND, wintypes.LPCWSTR, wintypes.LPCWSTR, wintypes.UINT,
+    logger.info(
+        "目录 %s 超出阈值，等待确认（%s 秒）", folder_name, timeout
+    )
+    approved = show_confirm_notification(
+        title,
+        short_message,
+        timeout=timeout,
+        allow_label="允许共享",
+        deny_label="暂不共享",
+    )
+    if approved is not None:
+        logger.info(
+            "目录超限确认结果: %s",
+            "允许共享" if approved else f"{timeout} 秒内未批准，本次不共享",
         )
-        MB_YESNO = 0x00000004
-        MB_ICONWARNING = 0x00000030
-        MB_DEFBUTTON2 = 0x00000100
-        MB_TOPMOST = 0x00040000
-        MB_SETFOREGROUND = 0x00010000
-        IDYES = 6
-        result = user32.MessageBoxW(
-            None,
-            message,
-            "SyncClipboard · 目录超出上限",
-            MB_YESNO | MB_ICONWARNING | MB_DEFBUTTON2 | MB_TOPMOST | MB_SETFOREGROUND,
-        )
-        return result == IDYES
-    except Exception as exc:
-        logger.error("目录超限确认框弹出失败，按取消处理: %s", exc)
-        return False
+        return bool(approved)
+
+    logger.info("通知不可用，退回原生确认框（%s 秒超时）", timeout)
+    return _confirm_with_native_dialog(long_message, title, timeout)
 
 
 def get_clipboard_sequence():
@@ -131,7 +186,7 @@ class SyncClient:
         self.text_sync_mode = normalize_mode(config.get("text_sync_mode"))
         self.file_sync_mode = normalize_mode(config.get("file_sync_mode"))
         self.folder_sync_enabled = _as_bool(config.get("folder_sync_enabled"), True)
-        # 目录总大小或文件数超过任一个阈值就弹窗询问，未超过直接登记共享。
+        # 目录总大小或文件数超过任一个阈值就弹通知问，未超过直接登记共享。
         # 历史配置键 folder_zip_confirm_gb 保持不变（改名会破坏老配置）。
         self.folder_zip_confirm_bytes = int(
             _as_float(config.get("folder_zip_confirm_gb"), DEFAULT_FOLDER_ZIP_CONFIRM_GB)
@@ -141,15 +196,20 @@ class SyncClient:
             _as_float(config.get("folder_file_count_confirm"),
                       DEFAULT_FOLDER_FILE_COUNT_CONFIRM)
         )
+        # 目录超限确认通知存在多久：到点没点「允许共享」就按不共享处理
+        self.folder_confirm_timeout = int(
+            _as_float(config.get("folder_confirm_timeout_seconds"),
+                      DEFAULT_FOLDER_CONFIRM_TIMEOUT_SECONDS)
+        )
         # 最近一次“已处理过”的剪贴板序列号，用于精确识别手动复制
         self._last_clipboard_seq = None
         self.push_thread = None
         self.pull_thread = None
         # 文件服务
         self.file_server = file_server
-        # 文件推送队列：目录要遍历统计并可能弹窗确认，耗时不可控，放到后台
-        # 线程按“最新优先”处理，避免卡住剪贴板轮询。队列长度 1，新内容直接
-        # 顶掉还没开始的旧任务。
+        # 文件推送队列：目录要遍历统计，超阈值还要等通知确认（最长十几秒），
+        # 耗时不可控，放到后台线程按“最新优先”处理，避免卡住剪贴板轮询。
+        # 队列长度 1，新内容直接顶掉还没开始的旧任务。
         self._file_push_queue = queue.Queue(maxsize=1)
         self._file_push_thread = None
         # 全局锁，避免同时读写剪贴板
@@ -517,7 +577,7 @@ class SyncClient:
         """判断这个目录要不要共享，并返回 (是否共享, 原始总字节数)。
 
         一次遍历同时拿到总大小与文件数（只读元数据，不读文件内容），任一
-        超过阈值就弹窗确认；不做任何打包 —— 目录始终按原始文件逐个传。
+        超过阈值就在右下角弹通知确认；不做任何打包 —— 目录始终按原始文件逐个传。
         """
         if not self.folder_sync_enabled:
             logger.warning(f"目录同步已关闭，跳过: {folder_path}")
@@ -538,7 +598,8 @@ class SyncClient:
                 f"超过阈值（{limit_count} 个 / {limit_gb:g} GB），等待用户确认"
             )
             approved = confirm_large_folder(
-                folder_name, size_text, limit_gb, count, limit_count
+                folder_name, size_text, limit_gb, count, limit_count,
+                timeout_seconds=self.folder_confirm_timeout,
             )
             logger.info(
                 f"目录超限确认结果: {'同意继续共享' if approved else '用户取消，本次不传输'}"

@@ -11,10 +11,17 @@ from common.sync_modes import MODE_BOTH, normalize_mode
 from common.utils import BASE_DIR
 from gui.main_window import (
     DEFAULT_FILE_SHARE_TTL_MINUTES,
+    DEFAULT_FOLDER_CONFIRM_TIMEOUT_SECONDS,
     DEFAULT_FOLDER_FILE_COUNT_CONFIRM,
     DEFAULT_FOLDER_ZIP_CONFIRM_GB,
     DEFAULT_SHARE_DOWNLOAD_LIMIT,
+    DEFAULT_UPDATE_MIRROR_PREFIX,
+    DEFAULT_UPDATE_PROXY,
+    DEFAULT_UPDATE_SOURCE,
+    MAX_FOLDER_CONFIRM_TIMEOUT_SECONDS,
     MAX_SHARE_DOWNLOAD_LIMIT,
+    MIN_FOLDER_CONFIRM_TIMEOUT_SECONDS,
+    VALID_UPDATE_SOURCES,
 )
 
 logger = logging.getLogger("gui")
@@ -53,6 +60,12 @@ class ConfigManager:
         self.file_share_ttl_minutes = DEFAULT_FILE_SHARE_TTL_MINUTES
         # 0 = 不限制；>0 = 完成 N 次完整下载（按实际发出字节判定）后自动取消共享
         self.share_download_limit = DEFAULT_SHARE_DOWNLOAD_LIMIT
+        # 目录超限确认通知的存活秒数：到点没点「允许共享」就按不共享处理
+        self.folder_confirm_timeout_seconds = DEFAULT_FOLDER_CONFIRM_TIMEOUT_SECONDS
+        # ---- 检查更新的网络路径（direct / mirror / manual）----
+        self.update_source = DEFAULT_UPDATE_SOURCE
+        self.update_mirror_prefix = DEFAULT_UPDATE_MIRROR_PREFIX
+        self.update_proxy = DEFAULT_UPDATE_PROXY
         self._state_data = {}
         self._client_config_data = {}
         self._server_config_data = {}
@@ -158,6 +171,10 @@ class ConfigManager:
                 "folder_file_count_confirm": DEFAULT_FOLDER_FILE_COUNT_CONFIRM,
                 "file_share_ttl_minutes": DEFAULT_FILE_SHARE_TTL_MINUTES,
                 "share_download_limit": DEFAULT_SHARE_DOWNLOAD_LIMIT,
+                "folder_confirm_timeout_seconds": DEFAULT_FOLDER_CONFIRM_TIMEOUT_SECONDS,
+                "update_source": DEFAULT_UPDATE_SOURCE,
+                "update_mirror_prefix": DEFAULT_UPDATE_MIRROR_PREFIX,
+                "update_proxy": DEFAULT_UPDATE_PROXY,
             }
             try:
                 with open(config_file, 'w', encoding='utf-8') as f:
@@ -203,6 +220,10 @@ class ConfigManager:
             "folder_file_count_confirm": DEFAULT_FOLDER_FILE_COUNT_CONFIRM,
             "file_share_ttl_minutes": DEFAULT_FILE_SHARE_TTL_MINUTES,
             "share_download_limit": DEFAULT_SHARE_DOWNLOAD_LIMIT,
+            "folder_confirm_timeout_seconds": DEFAULT_FOLDER_CONFIRM_TIMEOUT_SECONDS,
+            "update_source": DEFAULT_UPDATE_SOURCE,
+            "update_mirror_prefix": DEFAULT_UPDATE_MIRROR_PREFIX,
+            "update_proxy": DEFAULT_UPDATE_PROXY,
         }
 
         for field, default_value in default_fields.items():
@@ -266,6 +287,32 @@ class ConfigManager:
             limit if 0 <= limit <= MAX_SHARE_DOWNLOAD_LIMIT
             else DEFAULT_SHARE_DOWNLOAD_LIMIT
         )
+        timeout = int(
+            self._coerce_number(
+                config.get("folder_confirm_timeout_seconds"),
+                DEFAULT_FOLDER_CONFIRM_TIMEOUT_SECONDS,
+            )
+        )
+        self.folder_confirm_timeout_seconds = (
+            timeout
+            if MIN_FOLDER_CONFIRM_TIMEOUT_SECONDS
+            <= timeout
+            <= MAX_FOLDER_CONFIRM_TIMEOUT_SECONDS
+            else DEFAULT_FOLDER_CONFIRM_TIMEOUT_SECONDS
+        )
+        source_mode = str(
+            config.get("update_source") or DEFAULT_UPDATE_SOURCE
+        ).strip().lower()
+        self.update_source = (
+            source_mode if source_mode in VALID_UPDATE_SOURCES else DEFAULT_UPDATE_SOURCE
+        )
+        self.update_mirror_prefix = (
+            str(config.get("update_mirror_prefix") or "").strip().rstrip("/")
+            or DEFAULT_UPDATE_MIRROR_PREFIX
+        )
+        self.update_proxy = str(
+            config.get("update_proxy") or DEFAULT_UPDATE_PROXY
+        ).strip()
         self._client_config_data = dict(config)
 
         logger.info(
@@ -275,7 +322,9 @@ class ConfigManager:
             f"目录阈值={self.folder_zip_confirm_gb}GB/"
             f"{self.folder_file_count_confirm}个 | "
             f"共享存活={self.file_share_ttl_minutes}分钟 | "
-            f"下载次数={'不限制' if self.share_download_limit == 0 else self.share_download_limit}"
+            f"下载次数={'不限制' if self.share_download_limit == 0 else self.share_download_limit} | "
+            f"确认超时={self.folder_confirm_timeout_seconds}秒 | "
+            f"更新源={self.update_source}"
         )
         return True
 
@@ -327,6 +376,12 @@ class ConfigManager:
                 "folder_file_count_confirm": int(self.folder_file_count_confirm),
                 "file_share_ttl_minutes": int(self.file_share_ttl_minutes),
                 "share_download_limit": int(self.share_download_limit),
+                "folder_confirm_timeout_seconds": int(
+                    self.folder_confirm_timeout_seconds
+                ),
+                "update_source": self.update_source,
+                "update_mirror_prefix": self.update_mirror_prefix,
+                "update_proxy": self.update_proxy,
             })
             self._atomic_write_json(ConfigManager.CLIENT_CONFIG, config)
             self._client_config_data = config
@@ -352,6 +407,10 @@ class ConfigManager:
             "folder_file_count_confirm",
             "file_share_ttl_minutes",
             "share_download_limit",
+            "folder_confirm_timeout_seconds",
+            "update_source",
+            "update_mirror_prefix",
+            "update_proxy",
         }
         unknown = set(values) - allowed_fields
         if unknown:

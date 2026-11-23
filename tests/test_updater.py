@@ -1,4 +1,5 @@
 import tempfile
+import threading
 import unittest
 import zipfile
 from pathlib import Path
@@ -15,9 +16,12 @@ from common.update_apply import (
 from common.updater import (
     APP_VERSION,
     RELEASES_API,
+    UpdateCancelled,
+    UpdateSource,
     check_for_update,
     download_file,
     is_newer,
+    mirror_url,
     parse_version,
     select_windows_asset,
 )
@@ -176,6 +180,169 @@ class TestDownloadAndApply(unittest.TestCase):
     def test_resolve_app_dir_requires_frozen_executable(self):
         with self.assertRaises(UpdateError):
             resolve_app_dir()
+
+
+class TestUpdateSource(unittest.TestCase):
+    def test_mirror_url_joins_prefix_and_original(self):
+        self.assertEqual(
+            mirror_url("https://github.com/a/b.zip", "https://gh-proxy.com"),
+            "https://gh-proxy.com/https://github.com/a/b.zip",
+        )
+
+    def test_mirror_url_tolerates_trailing_slash_and_blank_prefix(self):
+        self.assertEqual(
+            mirror_url("https://x/y", "https://m/"), "https://m/https://x/y"
+        )
+        self.assertEqual(mirror_url("https://x/y", ""), "https://x/y")
+        self.assertEqual(mirror_url("https://x/y", None), "https://x/y")
+
+    def test_direct_source_keeps_url_and_has_no_proxy(self):
+        source = UpdateSource()
+        self.assertEqual(source.mode, "direct")
+        self.assertEqual(source.resolve("https://x/y"), "https://x/y")
+        self.assertIsNone(source.proxies)
+
+    def test_manual_source_sets_proxies_for_both_schemes(self):
+        source = UpdateSource(mode="manual", proxy="http://127.0.0.1:7890")
+        self.assertEqual(
+            source.proxies,
+            {"http": "http://127.0.0.1:7890", "https": "http://127.0.0.1:7890"},
+        )
+        # 手动代理不改 URL，只挂 proxies
+        self.assertEqual(source.resolve("https://x/y"), "https://x/y")
+
+    def test_mirror_source_rewrites_api_url(self):
+        source = UpdateSource(mode="mirror", mirror_prefix="https://ghfast.top")
+        self.assertEqual(
+            source.resolve(RELEASES_API), f"https://ghfast.top/{RELEASES_API}"
+        )
+
+    def test_empty_proxy_in_manual_mode_yields_no_proxies(self):
+        self.assertIsNone(UpdateSource(mode="manual", proxy="  ").proxies)
+
+
+class TestCheckForUpdateWithSource(unittest.TestCase):
+    @staticmethod
+    def _response(payload):
+        response = MagicMock()
+        response.json.return_value = payload
+        response.raise_for_status.return_value = None
+        return response
+
+    def test_mirror_is_used_for_the_request(self):
+        payload = {"tag_name": "v1.9.0", "assets": []}
+        source = UpdateSource(mode="mirror", mirror_prefix="https://ghfast.top")
+        with patch(
+            "common.updater.requests.get", return_value=self._response(payload)
+        ) as get:
+            result = check_for_update("1.8.0", source=source)
+
+        self.assertEqual(get.call_args.args[0], f"https://ghfast.top/{RELEASES_API}")
+        self.assertTrue(result.has_update)
+        self.assertEqual(result.source_mode, "mirror")
+
+    def test_mirror_falls_back_to_direct_when_dead(self):
+        payload = {"tag_name": "v1.9.0", "assets": []}
+        source = UpdateSource(mode="mirror", mirror_prefix="https://dead.example")
+        with patch(
+            "common.updater.requests.get",
+            side_effect=[requests.RequestException("boom"), self._response(payload)],
+        ) as get:
+            result = check_for_update("1.8.0", source=source)
+
+        self.assertTrue(result.has_update)
+        # 第二次回到了原始地址
+        self.assertEqual(get.call_args_list[1].args[0], RELEASES_API)
+
+    def test_manual_proxy_is_passed_through(self):
+        payload = {"tag_name": "v1.9.0", "assets": []}
+        source = UpdateSource(mode="manual", proxy="http://127.0.0.1:7890")
+        with patch(
+            "common.updater.requests.get", return_value=self._response(payload)
+        ) as get:
+            check_for_update("1.8.0", source=source)
+
+        self.assertEqual(
+            get.call_args.kwargs["proxies"]["https"], "http://127.0.0.1:7890"
+        )
+
+    def test_direct_source_does_not_pass_proxies(self):
+        payload = {"tag_name": "v1.9.0", "assets": []}
+        with patch(
+            "common.updater.requests.get", return_value=self._response(payload)
+        ) as get:
+            check_for_update("1.8.0")
+
+        self.assertNotIn("proxies", get.call_args.kwargs)
+
+
+class TestDownloadWithSource(unittest.TestCase):
+    @staticmethod
+    def _stream_response(chunks):
+        response = MagicMock()
+        response.headers = {"Content-Length": str(sum(len(chunk) for chunk in chunks))}
+        response.iter_content.return_value = chunks
+        response.raise_for_status.return_value = None
+        response.__enter__.return_value = response
+        response.__exit__.return_value = False
+        return response
+
+    def test_cancel_interrupts_download(self):
+        cancel = threading.Event()
+        chunks = [b"x" * 16] * 4
+
+        def progress(_downloaded, _total):
+            # 第一块写入后立刻取消，模拟用户点「取消下载」
+            cancel.set()
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            target = Path(temp_dir) / "update.zip"
+            with patch(
+                "common.updater.requests.get",
+                return_value=self._stream_response(chunks),
+            ):
+                with self.assertRaises(UpdateCancelled):
+                    download_file(
+                        "https://example.com/win.zip",
+                        target,
+                        progress=progress,
+                        cancel_event=cancel,
+                    )
+            # 已经写了一半也不能算下载完成，文件不该是完整大小
+            self.assertLess(target.stat().st_size, 16 * 4)
+
+    def test_mirror_download_falls_back_to_original_url(self):
+        chunks = [b"abc"]
+        source = UpdateSource(mode="mirror", mirror_prefix="https://dead.example")
+        url = "https://github.com/a/b.zip"
+        with tempfile.TemporaryDirectory() as temp_dir:
+            target = Path(temp_dir) / "update.zip"
+            with patch(
+                "common.updater.requests.get",
+                side_effect=[
+                    requests.RequestException("mirror dead"),
+                    self._stream_response(chunks),
+                ],
+            ) as get:
+                written = download_file(url, target, source=source)
+
+            self.assertEqual(written, 3)
+            self.assertEqual(get.call_args_list[0].args[0], f"https://dead.example/{url}")
+            self.assertEqual(get.call_args_list[1].args[0], url)
+
+    def test_mirror_download_uses_mirror_url_first(self):
+        chunks = [b"abc"]
+        source = UpdateSource(mode="mirror", mirror_prefix="https://ghfast.top")
+        url = "https://github.com/a/b.zip"
+        with tempfile.TemporaryDirectory() as temp_dir:
+            target = Path(temp_dir) / "update.zip"
+            with patch(
+                "common.updater.requests.get",
+                return_value=self._stream_response(chunks),
+            ) as get:
+                download_file(url, target, source=source)
+
+        self.assertEqual(get.call_args.args[0], f"https://ghfast.top/{url}")
 
 
 if __name__ == "__main__":

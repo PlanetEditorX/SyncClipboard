@@ -15,21 +15,18 @@ import tempfile
 import threading
 from pathlib import Path
 
-import requests
-
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QGuiApplication
 from PySide6.QtWidgets import (
     QApplication,
     QButtonGroup,
-    QDialog,
+    QComboBox,
     QFrame,
     QGridLayout,
     QHBoxLayout,
     QLabel,
     QLineEdit,
     QMainWindow,
-    QPlainTextEdit,
     QPushButton,
     QScrollArea,
     QSizePolicy,
@@ -47,18 +44,31 @@ from common.update_apply import (
     launch_updater,
     resolve_app_dir,
 )
-from common.updater import APP_VERSION, check_for_update, download_file
+from common.updater import (
+    APP_VERSION,
+    UPDATE_MIRROR_PRESETS,
+    UPDATE_SOURCE_DIRECT,
+    UPDATE_SOURCE_MANUAL,
+    UPDATE_SOURCE_MIRROR,
+    UpdateCancelled,
+    UpdateSource,
+    check_for_update,
+    download_file,
+)
 from common.utils import BASE_DIR, post_to_main_thread_no_wait
 from gui import qt_dialogs
 from gui.config_manager import LOCAL_SERVER_HOST
 from gui.main_window import (
     DEFAULT_FILE_SHARE_TTL_MINUTES,
+    DEFAULT_FOLDER_CONFIRM_TIMEOUT_SECONDS,
     DEFAULT_FOLDER_FILE_COUNT_CONFIRM,
     DEFAULT_FOLDER_ZIP_CONFIRM_GB,
     DEFAULT_SHARE_DOWNLOAD_LIMIT,
+    DEFAULT_UPDATE_MIRROR_PREFIX,
     MAX_SHARE_DOWNLOAD_LIMIT,
     validate_client_settings,
 )
+from gui.qt_download_records import DownloadRecordsDialog
 from gui.qt_log_view import LogViewer
 from gui.qt_theme import (
     APPEARANCE_LABELS,
@@ -157,11 +167,15 @@ class MainWindow(QMainWindow):
         self._secret_visible = False
         self._allow_close = False
 
+        # 下载记录窗口复用同一个实例：关掉再开不叠窗口，定时器也随窗口停止
+        self._download_records_dialog = None
         self._update_state = "idle"
         self._update_result = None
         self._pending_payload = None
         self._pending_work_dir = None
         self._last_download_percent = -1
+        # 下载中时非空：置位即请求中断，下载线程负责清理临时目录
+        self._update_cancel_event = None
         self._log_viewer = None
 
         self.setWindowTitle("SyncClipboard")
@@ -356,9 +370,13 @@ class MainWindow(QMainWindow):
         pref_label = QLabel("同步复制的文件夹")
         pref_label.setStyleSheet("font-weight: 600;")
         pref_hint = QLabel(
-            "关闭后复制文件夹不会被同步；开启时总大小或文件数超过阈值会先弹窗确认"
+            "关闭后复制文件夹不会被同步；开启时总大小或文件数超过阈值，"
+            "会在右下角弹通知确认"
         )
         pref_hint.setObjectName("Hint")
+        # 长提示不换行会把整张卡片的最小宽度顶到窗口最小宽度以上，
+        # 而滚动区关掉了横向滚动条，超出部分直接被裁掉
+        pref_hint.setWordWrap(True)
         pref_box.addWidget(pref_label)
         pref_box.addWidget(pref_hint)
 
@@ -368,15 +386,25 @@ class MainWindow(QMainWindow):
         pref_lay.addWidget(self.folder_sync_switch, 0, Qt.AlignVCenter)
         lay.addWidget(preference)
 
-        numbers = QHBoxLayout()
-        numbers.setSpacing(20)
+        # 四个数字框排两列两行：一行放四个会在最小宽度（780）下横向溢出，
+        # 而滚动区刻意关掉了横向滚动条，溢出部分会被直接裁掉。
+        numbers = QGridLayout()
+        numbers.setHorizontalSpacing(24)
+        numbers.setVerticalSpacing(8)
         limit_box, self.folder_limit_edit = self._number_input("目录大小阈值", "GB")
         count_box, self.folder_count_edit = self._number_input("目录文件数阈值", "个")
+        confirm_box, self.folder_confirm_edit = self._number_input(
+            "确认弹窗持续时间", "秒"
+        )
+        self.folder_confirm_edit.setToolTip(
+            "目录超出阈值时在右下角弹出通知，这么多秒内没点「允许共享」就不共享"
+        )
         ttl_box, self.share_ttl_edit = self._number_input("共享存活时间", "分钟")
-        numbers.addWidget(limit_box)
-        numbers.addWidget(count_box)
-        numbers.addWidget(ttl_box)
-        numbers.addStretch(1)
+        numbers.addWidget(limit_box, 0, 0)
+        numbers.addWidget(count_box, 0, 1)
+        numbers.addWidget(confirm_box, 1, 0)
+        numbers.addWidget(ttl_box, 1, 1)
+        numbers.setColumnStretch(2, 1)
         lay.addLayout(numbers)
 
         cancel_card = QFrame()
@@ -391,6 +419,7 @@ class MainWindow(QMainWindow):
             "关闭 = 存活期内所有已配对设备都能获取；开启 = 完成指定次数的完整下载后自动取消共享"
         )
         cancel_hint.setObjectName("Hint")
+        cancel_hint.setWordWrap(True)
         cancel_box.addWidget(cancel_label)
         cancel_box.addWidget(cancel_hint)
         self.share_auto_cancel_switch = ToggleSwitch(palette=self._palette)
@@ -406,7 +435,8 @@ class MainWindow(QMainWindow):
         lay.addWidget(cancel_card)
 
         tip = QLabel(
-            "超过阈值时先弹窗确认，批准后才登记共享；开始下载后每次成功请求自动续期。"
+            "超过阈值时在右下角弹出通知，点「允许共享」才登记共享；"
+            "到「确认弹窗持续时间」还没点就按不共享处理。开始下载后每次成功请求自动续期。"
             "「下载完成后自动取消共享」按设备计次：发送端累计实际发出的字节，"
             "普通文件发满整个文件、目录清单里的文件全部发完才算一次下载；"
             "次数用尽后自动取消登记并拒绝新设备。到期或次数用尽只取消登记，不会删除原文件。"
@@ -462,7 +492,7 @@ class MainWindow(QMainWindow):
         return box, edit
 
     def _on_folder_sync_toggled(self, checked):
-        for name in ("folder_limit_edit", "folder_count_edit"):
+        for name in ("folder_limit_edit", "folder_count_edit", "folder_confirm_edit"):
             edit = getattr(self, name, None)
             if edit is not None:
                 edit.setEnabled(bool(checked))
@@ -506,7 +536,7 @@ class MainWindow(QMainWindow):
         self.records_button.setMinimumHeight(38)
         self.records_button.setCursor(Qt.PointingHandCursor)
         self.records_button.clicked.connect(self._show_download_records)
-        records_hint = QLabel("谁在什么时候取走了多少字节、是否已完成下载")
+        records_hint = QLabel("实时查看谁在取、已经取走多少字节、是否已完成下载")
         records_hint.setObjectName("Hint")
         row2.addWidget(self.records_button, 1)
         row2.addWidget(records_hint, 2)
@@ -684,6 +714,8 @@ class MainWindow(QMainWindow):
         lay.setContentsMargins(0, 2, 0, 0)
         lay.setSpacing(6)
 
+        lay.addLayout(self._build_update_source_row())
+
         row = QHBoxLayout()
         row.setSpacing(12)
         hint = QLabel("关闭窗口后应用仍会在系统托盘中运行")
@@ -711,6 +743,119 @@ class MainWindow(QMainWindow):
         lay.addWidget(self.update_message)
 
         self.body.addWidget(footer)
+
+    def _build_update_source_row(self):
+        """更新源的网络路径：直连 / 镜像加速 / 手动代理。
+
+        三档共用一行：分段按钮选档位，右侧同一个位置按档位显示「镜像前缀」
+        下拉或「代理地址」输入框，避免面板纵向再长一截。
+        """
+        source_row = QHBoxLayout()
+        source_row.setSpacing(10)
+
+        caption = QLabel("更新源")
+        caption.setObjectName("FieldLabel")
+
+        bar = QFrame()
+        bar.setObjectName("SegmentBar")
+        bar.setFixedHeight(34)
+        bar_lay = QHBoxLayout(bar)
+        bar_lay.setContentsMargins(3, 3, 3, 3)
+        bar_lay.setSpacing(2)
+
+        group = QButtonGroup(self)
+        group.setExclusive(True)
+        self.update_source_buttons = {}
+        for mode, text in (
+            (UPDATE_SOURCE_DIRECT, "GitHub 直连"),
+            (UPDATE_SOURCE_MIRROR, "镜像加速"),
+            (UPDATE_SOURCE_MANUAL, "手动代理"),
+        ):
+            button = QPushButton(text)
+            button.setObjectName("Segment")
+            button.setCheckable(True)
+            button.setCursor(Qt.PointingHandCursor)
+            button.setMinimumWidth(76)
+            button.setFixedHeight(26)
+            group.addButton(button)
+            bar_lay.addWidget(button)
+            self.update_source_buttons[mode] = button
+            button.clicked.connect(
+                lambda _checked=False, mode=mode: self._on_update_source_changed(mode)
+            )
+        self.update_source_group = group
+
+        self.mirror_combo = QComboBox()
+        self.mirror_combo.setEditable(True)
+        self.mirror_combo.addItems(UPDATE_MIRROR_PRESETS)
+        self.mirror_combo.setMinimumHeight(34)
+        self.mirror_combo.setMinimumWidth(168)
+        self.mirror_combo.setToolTip(
+            "镜像地址前缀：请求会被改写成「前缀 + 原始地址」。"
+            "这些都是第三方服务，随时可能失效，也可以自己输入一个。"
+        )
+
+        self.proxy_edit = QLineEdit()
+        self.proxy_edit.setPlaceholderText("http://127.0.0.1:7890")
+        self.proxy_edit.setMinimumHeight(34)
+        self.proxy_edit.setMinimumWidth(168)
+        self.proxy_edit.setToolTip("只支持 HTTP/HTTPS 代理，不支持 SOCKS5")
+
+        source_row.addWidget(caption)
+        source_row.addWidget(bar)
+        source_row.addWidget(self.mirror_combo, 1)
+        source_row.addWidget(self.proxy_edit, 1)
+
+        hint = QLabel("")
+        hint.setObjectName("Hint")
+        hint.setWordWrap(True)
+        self.update_source_hint = hint
+
+        box = QVBoxLayout()
+        box.setSpacing(4)
+        box.addLayout(source_row)
+        box.addWidget(hint)
+        return box
+
+    def _on_update_source_changed(self, mode):
+        self.mirror_combo.setVisible(mode == UPDATE_SOURCE_MIRROR)
+        self.proxy_edit.setVisible(mode == UPDATE_SOURCE_MANUAL)
+        hints = {
+            UPDATE_SOURCE_DIRECT: "直连 GitHub 官方地址；国内网络可能很慢或直接超时。",
+            UPDATE_SOURCE_MIRROR: (
+                "检查与下载都改走镜像前缀，镜像失效会自动退回直连一次。"
+                "这些是第三方公共服务，随时可能失效，选不到就自己填一个。"
+            ),
+            UPDATE_SOURCE_MANUAL: (
+                "只给请求挂 HTTP/HTTPS 代理（本地代理软件一般同时开 127.0.0.1:7890）。"
+                "不支持 SOCKS5 —— 那要额外装依赖，包体积会变大。"
+            ),
+        }
+        self.update_source_hint.setText(hints.get(mode, ""))
+
+    def _collect_update_source(self):
+        """读出更新源设置；控件缺失（裸窗口的测试）时退回配置值。"""
+        mode = getattr(self.config, "update_source", UPDATE_SOURCE_DIRECT)
+        for key, button in (getattr(self, "update_source_buttons", None) or {}).items():
+            if button.isChecked():
+                mode = key
+                break
+
+        combo = getattr(self, "mirror_combo", None)
+        prefix = (
+            combo.currentText() if combo is not None
+            else getattr(self.config, "update_mirror_prefix", DEFAULT_UPDATE_MIRROR_PREFIX)
+        )
+        proxy_edit = getattr(self, "proxy_edit", None)
+        proxy = (
+            proxy_edit.text() if proxy_edit is not None
+            else getattr(self.config, "update_proxy", "")
+        )
+        return {
+            "update_source": mode,
+            "update_mirror_prefix": prefix,
+            "update_proxy": proxy,
+        }
 
     # ------------------------------------------------------- 设置读写与状态
 
@@ -755,6 +900,19 @@ class MainWindow(QMainWindow):
         )
         # setChecked 不发出 toggled，关联控件的启用状态要单独同步
         self._on_folder_sync_toggled(folder_enabled)
+        confirm_edit = getattr(self, "folder_confirm_edit", None)
+        if confirm_edit is not None:
+            confirm_edit.setText(
+                str(
+                    int(
+                        getattr(
+                            self.config,
+                            "folder_confirm_timeout_seconds",
+                            DEFAULT_FOLDER_CONFIRM_TIMEOUT_SECONDS,
+                        )
+                    )
+                )
+            )
         self.share_ttl_edit.setText(
             str(
                 int(
@@ -777,6 +935,25 @@ class MainWindow(QMainWindow):
         if limit_edit is not None:
             limit_edit.setText(str(saved_limit if saved_limit > 0 else 1))
             limit_edit.setEnabled(saved_limit > 0)
+
+        # 更新源：三档分段 + 镜像下拉 + 代理输入框
+        source_mode = getattr(self.config, "update_source", UPDATE_SOURCE_DIRECT)
+        buttons = getattr(self, "update_source_buttons", None) or {}
+        target = buttons.get(source_mode) or buttons.get(UPDATE_SOURCE_DIRECT)
+        if target is not None:
+            target.setChecked(True)
+        combo = getattr(self, "mirror_combo", None)
+        if combo is not None:
+            combo.setCurrentText(
+                getattr(
+                    self.config, "update_mirror_prefix", DEFAULT_UPDATE_MIRROR_PREFIX
+                )
+            )
+        proxy_edit = getattr(self, "proxy_edit", None)
+        if proxy_edit is not None:
+            proxy_edit.setText(getattr(self.config, "update_proxy", ""))
+        if buttons:
+            self._on_update_source_changed(source_mode)
 
         self.autostart_switch.setChecked(self.config.is_autostart_enabled(), animate=False)
 
@@ -818,6 +995,13 @@ class MainWindow(QMainWindow):
                          DEFAULT_FOLDER_FILE_COUNT_CONFIRM)
         )
 
+        confirm_edit = getattr(self, "folder_confirm_edit", None)
+        confirm_timeout = (
+            confirm_edit.text() if confirm_edit is not None
+            else getattr(self.config, "folder_confirm_timeout_seconds",
+                         DEFAULT_FOLDER_CONFIRM_TIMEOUT_SECONDS)
+        )
+
         ttl_edit = getattr(self, "share_ttl_edit", None)
         ttl_minutes = (
             ttl_edit.text() if ttl_edit is not None
@@ -836,6 +1020,11 @@ class MainWindow(QMainWindow):
                              DEFAULT_SHARE_DOWNLOAD_LIMIT)
             )
 
+        # 更新源控件可能不存在（裸窗口的测试只关心同步项），缺了就用配置值
+        source_values = {}
+        if hasattr(self, "_collect_update_source"):
+            source_values = self._collect_update_source()
+
         return {
             "text_sync_mode": self._selected_mode(
                 getattr(self, "text_mode_buttons", None),
@@ -848,8 +1037,10 @@ class MainWindow(QMainWindow):
             "folder_sync_enabled": folder_enabled,
             "folder_zip_confirm_gb": limit_gb,
             "folder_file_count_confirm": limit_count,
+            "folder_confirm_timeout_seconds": confirm_timeout,
             "file_share_ttl_minutes": ttl_minutes,
             "share_download_limit": download_limit,
+            **source_values,
         }
 
     def save_settings(self):
@@ -1005,95 +1196,22 @@ class MainWindow(QMainWindow):
             qt_dialogs.info_message("无法打开目录", str(exc))
 
     def _show_download_records(self):
-        """读取本机文件服务的下载记录（只读），弹窗展示最近 200 条。"""
+        """下载记录窗口：打开后每秒刷新，实时看进度与事件。
+
+        窗口是非模态的，可以一边开着一边操作主界面；重复点击只是把它提到
+        前面，不会叠出第二个。端口 / 密钥改过之后按新值重新拉取。
+        """
         port = getattr(self.config, "file_server_port", 8899)
         key = getattr(self.config, "key", "")
-        try:
-            resp = requests.get(
-                f"http://127.0.0.1:{port}/downloads",
-                headers={"key": str(key)},
-                timeout=(2, 5),
+        if self._download_records_dialog is None:
+            self._download_records_dialog = DownloadRecordsDialog(
+                self, port=port, key=key
             )
-            resp.raise_for_status()
-            payload = resp.json()
-        except Exception as exc:  # noqa: BLE001 - 客户端没起来时要给用户看得懂的话
-            qt_dialogs.info_message(
-                "无法读取下载记录", f"客户端未运行或连接失败：{exc}"
-            )
-            return
-
-        limit = payload.get("limit", 0)
-        records = payload.get("records") or []
-        sessions = payload.get("sessions") or []
-        event_labels = {
-            "started": "开始下载",
-            "manifest": "取清单",
-            "completed": "下载完成",
-            "interrupted": "传输中断",
-            "blocked": "被拒绝",
-            "exhausted": "次数用尽",
-            "cancelled": "取消共享",
-        }
-
-        def human(num_bytes):
-            value = float(num_bytes or 0)
-            for unit in ("B", "KB", "MB", "GB", "TB"):
-                if value < 1024 or unit == "TB":
-                    return (f"{value:.0f} {unit}" if unit in ("B", "KB")
-                            else f"{value:.1f} {unit}")
-                value /= 1024
-            return f"{value:.1f} TB"
-
-        lines = [
-            f"当前策略：{'不限制（存活期内所有设备可获取）' if not limit else str(limit) + ' 次完整下载'}",
-            f"本次运行累计发出 {human(payload.get('bytes_sent_total', 0))}"
-            f" | 已完成 {payload.get('completed_downloads', 0)} 次完整下载",
-            "按设备计次；「下载完成」= 发送端实际发出的字节达到该共享的总大小，"
-            "同一设备重试不重复计数。",
-            "记录保存在客户端内存中，重启客户端后清空；原文件永远不会被删除。",
-            "",
-        ]
-        if sessions:
-            lines.append("=== 传输进度（按设备累计已发出的字节）===")
-            for session in sessions:
-                lines.append(" | ".join((
-                    str(session.get("client", "")),
-                    str(session.get("name", "")),
-                    f"{human(session.get('sent'))} / {human(session.get('total'))}"
-                    f"（{session.get('percent', 0)}%）",
-                    f"{session.get('parts', 0)}/{session.get('files', 0)} 个文件",
-                    "已完成" if session.get("state") == "completed" else "进行中",
-                )))
-            lines.append("")
-        if not records:
-            lines.append("暂无下载事件。")
         else:
-            lines.append("=== 最近事件 ===")
-            lines.append("时间 | 共享 | 类型 | 客户端 | 事件 | 已完成次数 | 本次字节 | 说明")
-            for item in records:
-                lines.append(" | ".join((
-                    str(item.get("time", "")),
-                    str(item.get("name", "")),
-                    "目录" if item.get("kind") == "folder" else "文件",
-                    str(item.get("client", "")),
-                    event_labels.get(item.get("event"), str(item.get("event", ""))),
-                    str(item.get("count", "")),
-                    human(item.get("bytes")),
-                    str(item.get("detail", "")),
-                )))
-
-        dialog = QDialog(self)
-        dialog.setWindowTitle("下载记录")
-        dialog.resize(1040, 560)
-        layout = QVBoxLayout(dialog)
-        view = QPlainTextEdit()
-        view.setReadOnly(True)
-        view.setPlainText("\n".join(lines))
-        layout.addWidget(view)
-        close_button = QPushButton("关闭")
-        close_button.clicked.connect(dialog.accept)
-        layout.addWidget(close_button)
-        dialog.exec()
+            self._download_records_dialog.set_endpoint(port=port, key=key)
+        self._download_records_dialog.show()
+        self._download_records_dialog.raise_()
+        self._download_records_dialog.activateWindow()
 
     def _open_config_folder(self):
         config_dir = BASE_DIR / "config"
@@ -1168,8 +1286,11 @@ class MainWindow(QMainWindow):
     # ------------------------------------------------------- 更新流程
 
     def check_for_updates(self):
-        """按钮唯一入口：按当前状态决定检查、下载还是重启更新。"""
-        if self._update_state in {"checking", "downloading"}:
+        """按钮唯一入口：按当前状态决定检查、下载、取消还是重启更新。"""
+        if self._update_state == "checking":
+            return
+        if self._update_state in {"downloading", "cancelling"}:
+            self._cancel_update()
             return
         if self._update_state == "available":
             self._start_update_download()
@@ -1188,8 +1309,18 @@ class MainWindow(QMainWindow):
         self.update_button.setText(button_text or "检查更新")
         self.update_button.setEnabled(enabled)
 
+    def _current_update_source(self):
+        """把面板里选的三档转成 updater 认识的对象。"""
+        return UpdateSource(
+            mode=getattr(self.config, "update_source", UPDATE_SOURCE_DIRECT),
+            mirror_prefix=getattr(
+                self.config, "update_mirror_prefix", DEFAULT_UPDATE_MIRROR_PREFIX
+            ),
+            proxy=getattr(self.config, "update_proxy", ""),
+        )
+
     def _run_update_check(self):
-        result = check_for_update()
+        result = check_for_update(source=self._current_update_source())
         post_to_main_thread_no_wait(self._render_update_result, result)
 
     def _render_update_result(self, result):
@@ -1222,35 +1353,78 @@ class MainWindow(QMainWindow):
 
     def _start_update_download(self):
         self._last_download_percent = -1
+        # 每次下载一个新的取消令牌；取消后这个 Event 就作废
+        self._update_cancel_event = threading.Event()
         self._set_update_state(
             "downloading",
             "正在下载更新…",
             self._palette["warning"],
-            button_text="下载中…",
-            enabled=False,
+            button_text="取消下载",
+            enabled=True,
         )
         threading.Thread(
             target=self._download_update, name="update-download", daemon=True
         ).start()
 
+    def _cancel_update(self):
+        """取消正在进行的下载：置位令牌，下载线程会抛 UpdateCancelled。
+
+        临时目录的清理放在下载线程的 except 分支里做 —— 只有那边知道
+        work_dir 的确切路径，也只有那边能确认文件句柄已经关掉。
+        """
+        event = getattr(self, "_update_cancel_event", None)
+        if event is None or event.is_set():
+            return
+        event.set()
+        self._set_update_state(
+            "cancelling",
+            "正在取消下载…",
+            self._palette["warning"],
+            button_text="取消中…",
+            enabled=False,
+        )
+
     def _download_update(self):
         work_dir = Path(tempfile.mkdtemp(prefix="syncclipboard_update_"))
+        cancel_event = getattr(self, "_update_cancel_event", None)
         try:
             zip_path = work_dir / "update.zip"
             download_file(
                 self._update_result.download_url,
                 zip_path,
                 progress=self._on_download_progress,
+                source=self._current_update_source(),
+                cancel_event=cancel_event,
             )
             payload = extract_package(zip_path, work_dir / "payload")
+        except UpdateCancelled:
+            logger.info("用户取消更新下载，清理临时目录: %s", work_dir)
+            shutil.rmtree(work_dir, ignore_errors=True)
+            post_to_main_thread_no_wait(self._on_update_cancelled)
+            return
         except Exception as exc:  # noqa: BLE001
             logger.warning("下载更新失败: %s", exc)
             shutil.rmtree(work_dir, ignore_errors=True)
-            post_to_main_thread_no_wait(
-                self._set_update_state, "idle", f"更新失败：{exc}", self._palette["danger"]
-            )
+            post_to_main_thread_no_wait(self._on_update_failed, str(exc))
             return
         post_to_main_thread_no_wait(self._finish_download, payload, work_dir)
+
+    def _on_update_cancelled(self):
+        self._update_cancel_event = None
+        self._last_download_percent = -1
+        latest = getattr(self._update_result, "latest_version", "") or ""
+        self._set_update_state(
+            "available",
+            f"已取消下载，临时文件已清理；可重新下载 v{latest}",
+            self._palette["muted"],
+            button_text=f"更新到 v{latest}" if latest else "重新下载",
+        )
+
+    def _on_update_failed(self, message):
+        self._update_cancel_event = None
+        self._set_update_state(
+            "idle", f"更新失败：{message}", self._palette["danger"]
+        )
 
     def _on_download_progress(self, downloaded, total):
         if not total:

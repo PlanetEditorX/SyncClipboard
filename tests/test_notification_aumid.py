@@ -6,6 +6,7 @@
 
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -118,6 +119,83 @@ class TestToasterRegistrationOrder(unittest.TestCase):
             notification._get_toaster()
 
         ensure.assert_called_once_with()
+
+
+class TestConfirmNotification(unittest.TestCase):
+    """目录超限确认通知：点按钮 / 超时 / 发不出来三种结局。"""
+
+    def setUp(self):
+        self.saved = (notification._toaster, notification._toaster_ready)
+        # 直接给定成品，跳过真实 WinRT 初始化
+        notification._toaster = None
+        notification._toaster_ready = True
+        self.addCleanup(self._restore)
+
+    def _restore(self):
+        notification._toaster, notification._toaster_ready = self.saved
+
+    @staticmethod
+    def _fake_toasts():
+        created = {}
+
+        class _Toast:
+            def __init__(self, **kwargs):
+                self.kwargs = kwargs
+                self.on_activated = kwargs.get("on_activated")
+                created["toast"] = self
+
+        module = SimpleNamespace(
+            Toast=_Toast,
+            ToastButton=lambda content="", arguments="": (content, arguments),
+            ToastDuration=SimpleNamespace(Long="long"),
+        )
+        toaster = MagicMock()
+        return module, toaster, created
+
+    def test_unavailable_notifier_returns_none(self):
+        # 返回 None 而不是 False：调用方据此决定退回原生框还是直接不共享
+        self.assertIsNone(
+            notification.show_confirm_notification("标题", "内容", timeout=1)
+        )
+
+    def test_timeout_counts_as_not_shared(self):
+        module, toaster, _created = self._fake_toasts()
+        notification._toaster = toaster
+        with patch.dict(sys.modules, {"windows_toasts": module}):
+            started = time.time()
+            allowed = notification.show_confirm_notification("标题", "内容", timeout=1)
+            elapsed = time.time() - started
+
+        self.assertFalse(allowed)
+        self.assertLess(elapsed, 6)
+        # 到点要主动清掉通知，别留在通知中心又被点到
+        self.assertTrue(toaster.clear_toasts.called)
+
+    def test_clicking_allow_returns_true(self):
+        module, toaster, created = self._fake_toasts()
+
+        def _click_allow(toast):
+            toast.on_activated(SimpleNamespace(arguments="syncclipboard-allow"))
+
+        toaster.show_toast.side_effect = _click_allow
+        notification._toaster = toaster
+        with patch.dict(sys.modules, {"windows_toasts": module}):
+            allowed = notification.show_confirm_notification("标题", "内容", timeout=5)
+
+        self.assertTrue(allowed)
+        self.assertEqual(created["toast"].kwargs["duration"], "long")
+        self.assertEqual(len(created["toast"].kwargs["actions"]), 2)
+
+    def test_clicking_deny_returns_false(self):
+        module, toaster, _created = self._fake_toasts()
+        toaster.show_toast.side_effect = lambda toast: toast.on_activated(
+            SimpleNamespace(arguments="syncclipboard-deny")
+        )
+        notification._toaster = toaster
+        with patch.dict(sys.modules, {"windows_toasts": module}):
+            allowed = notification.show_confirm_notification("标题", "内容", timeout=5)
+
+        self.assertFalse(allowed)
 
 
 if __name__ == "__main__":

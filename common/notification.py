@@ -131,3 +131,98 @@ def show_notification_with_click(title, msg, callback):
         _schedule_clear(toaster)
     except Exception as exc:
         logger.error("带点击通知失败: %s", exc)
+
+
+def _clear_toasts_quietly(toaster):
+    try:
+        toaster.clear_toasts()
+    except Exception:
+        logger.debug("清理确认通知失败", exc_info=True)
+
+
+def show_confirm_notification(title, msg, timeout=15,
+                              allow_label="允许共享", deny_label="暂不共享"):
+    """右下角通知 + 两个按钮，等用户在 timeout 秒内做决定。
+
+    返回 True（点了允许）/ False（点了拒绝或超时）/ None（通知发不出来）。
+
+    与 ``show_notification_with_click`` 的区别是这里**要等结果**，所以：
+    - 用 ``ToastDuration.Long``，否则 Windows 会把横幅 5 秒就收走；
+    - 只认「点按钮」和「超时」两种结局。用户把横幅划掉不单独处理，
+      到点自然算作不共享 —— 这样不必依赖 activated / dismissed 的先后顺序，
+      少一个竞态。
+    - 超时后主动清掉通知，避免它留在通知中心又被点到。
+
+    发不出通知时返回 None 而不是 False：调用方据此决定退回原生对话框还是
+    直接按不共享处理，这里不替调用方拍板。
+    """
+    toaster = _get_toaster()
+    if toaster is None:
+        logger.info("[确认通知不可用] %s: %s", title, msg)
+        return None
+
+    try:
+        from windows_toasts import Toast, ToastButton, ToastDuration
+    except Exception as exc:  # noqa: BLE001 - 缺库时同样退化为「发不出」
+        logger.warning("确认通知不可用: %s", exc)
+        return None
+
+    allow_arg = "syncclipboard-allow"
+    deny_arg = "syncclipboard-deny"
+    state = {"allowed": None}
+    done = threading.Event()
+    lock = threading.Lock()
+
+    def settle(allowed):
+        with lock:
+            if state["allowed"] is not None:
+                return
+            state["allowed"] = bool(allowed)
+        done.set()
+
+    def _activated(event_args):
+        # 点按钮会带回 arguments；点通知本体没有 arguments，按允许处理
+        arguments = str(getattr(event_args, "arguments", "") or "")
+        if deny_arg in arguments:
+            settle(False)
+        elif allow_arg in arguments:
+            settle(True)
+        else:
+            settle(True)
+
+    toast = Toast(
+        text_fields=[title, msg],
+        duration=ToastDuration.Long,
+        on_activated=_activated,
+        actions=[
+            ToastButton(content=allow_label, arguments=allow_arg),
+            ToastButton(content=deny_label, arguments=deny_arg),
+        ],
+    )
+
+    try:
+        toaster.show_toast(toast)
+    except Exception as exc:  # noqa: BLE001
+        logger.error("确认通知弹出失败: %s", exc)
+        return None
+
+    def _expire():
+        settle(False)
+        _clear_toasts_quietly(toaster)
+
+    timer = threading.Timer(max(1, int(timeout)), _expire)
+    timer.daemon = True
+    timer.start()
+    try:
+        # 多等几秒：定时器到点会 settle，这里只是兜底不要永久挂住
+        done.wait(max(1, int(timeout)) + 5)
+    finally:
+        timer.cancel()
+        _clear_toasts_quietly(toaster)
+
+    allowed = bool(state["allowed"])
+    logger.info(
+        "确认通知: %s → %s（%s 秒内未点击即按不共享处理）",
+        title, "允许" if allowed else "不共享", timeout,
+    )
+    return allowed

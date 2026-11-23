@@ -119,6 +119,67 @@ class TestValidateSyncSettings(unittest.TestCase):
         with self.assertRaises(ValueError):
             self._validate(share_download_limit=100)
 
+    def test_folder_confirm_timeout_defaults_and_bounds(self):
+        values = self._validate()
+        self.assertEqual(values["folder_confirm_timeout_seconds"], 15)
+        self.assertEqual(
+            self._validate(folder_confirm_timeout_seconds="30")[
+                "folder_confirm_timeout_seconds"
+            ],
+            30,
+        )
+        with self.assertRaises(ValueError):
+            self._validate(folder_confirm_timeout_seconds="abc")
+        with self.assertRaises(ValueError):
+            self._validate(folder_confirm_timeout_seconds=2)
+        with self.assertRaises(ValueError):
+            self._validate(folder_confirm_timeout_seconds=301)
+
+    def test_update_source_defaults_to_direct(self):
+        values = self._validate()
+        self.assertEqual(values["update_source"], "direct")
+        self.assertEqual(values["update_mirror_prefix"], "https://gh-proxy.com")
+        self.assertEqual(values["update_proxy"], "")
+
+    def test_update_source_mirror_requires_prefix(self):
+        values = self._validate(
+            update_source="mirror", update_mirror_prefix="https://ghfast.top/"
+        )
+        self.assertEqual(values["update_source"], "mirror")
+        # 尾部斜杠会被归一掉，拼接时统一只留一个
+        self.assertEqual(values["update_mirror_prefix"], "https://ghfast.top")
+        with self.assertRaises(ValueError):
+            self._validate(update_source="mirror", update_mirror_prefix="")
+
+    def test_update_source_mirror_rejects_non_http_prefix(self):
+        with self.assertRaises(ValueError):
+            self._validate(update_source="mirror", update_mirror_prefix="gh-proxy.com")
+
+    def test_manual_proxy_requires_http_scheme(self):
+        values = self._validate(
+            update_source="manual", update_proxy="http://127.0.0.1:7890"
+        )
+        self.assertEqual(values["update_proxy"], "http://127.0.0.1:7890")
+        with self.assertRaises(ValueError):
+            self._validate(update_source="manual", update_proxy="")
+        with self.assertRaises(ValueError):
+            self._validate(update_source="manual", update_proxy="127.0.0.1:7890")
+
+    def test_socks5_proxy_is_rejected_to_keep_package_small(self):
+        # 不支持 SOCKS5：那要额外装 PySocks，安装包会变大
+        with self.assertRaises(ValueError):
+            self._validate(update_source="manual", update_proxy="socks5://127.0.0.1:7891")
+
+    def test_direct_mode_ignores_blank_mirror_and_proxy(self):
+        values = self._validate(
+            update_source="direct", update_mirror_prefix="", update_proxy=""
+        )
+        self.assertEqual(values["update_source"], "direct")
+
+    def test_unknown_update_source_is_rejected(self):
+        with self.assertRaises(ValueError):
+            self._validate(update_source="tor")
+
 
 class _ClientFixture(unittest.TestCase):
     """带临时目录与 FileServer 的 SyncClient。"""
@@ -273,17 +334,42 @@ class TestFolderSyncGates(_ClientFixture):
         mock_post.assert_called_once()
         self.assertEqual(len(self.file_server.shared_folders), 1)
 
-    def test_confirm_message_explains_scope_and_archive_limit(self):
-        with patch("ctypes.WinDLL") as dll:
-            dll.return_value.MessageBoxW.return_value = 6  # IDYES
-            approved = main_menu_mod.confirm_large_folder(
-                "ROM", "2 KB", 10, 25000, 3000)
+    def test_confirm_falls_back_to_native_dialog_with_timeout(self):
+        # 通知发不出来时（非 Windows / 缺通知支持）才走原生框，且要带上超时
+        with patch("client.main_menu.show_confirm_notification", return_value=None):
+            with patch("ctypes.WinDLL") as dll:
+                dll.return_value.MessageBoxTimeoutW.return_value = 6  # IDYES
+                approved = main_menu_mod.confirm_large_folder(
+                    "ROM", "2 KB", 10, 25000, 3000, timeout_seconds=9)
 
         self.assertTrue(approved)
-        message = dll.return_value.MessageBoxW.call_args.args[1]
+        call = dll.return_value.MessageBoxTimeoutW.call_args
+        message = call.args[1]
         self.assertIn("批准后才会登记", message)
         self.assertIn("20000", message)
         self.assertNotIn("压缩", message)
+        # 第 6 个参数是超时毫秒数
+        self.assertEqual(call.args[5], 9000)
+
+    def test_confirm_uses_notification_when_available(self):
+        with patch(
+            "client.main_menu.show_confirm_notification", return_value=True
+        ) as notice:
+            approved = main_menu_mod.confirm_large_folder(
+                "ROM", "2 KB", 10, 5000, 3000, timeout_seconds=15)
+
+        self.assertTrue(approved)
+        self.assertEqual(notice.call_args.kwargs["timeout"], 15)
+        self.assertEqual(notice.call_args.kwargs["allow_label"], "允许共享")
+
+    def test_timeout_means_not_shared(self):
+        with patch(
+            "client.main_menu.show_confirm_notification", return_value=False
+        ):
+            approved = main_menu_mod.confirm_large_folder(
+                "ROM", "2 KB", 10, 5000, 3000, timeout_seconds=15)
+
+        self.assertFalse(approved)
 
 
 class TestFileShareTtl(unittest.TestCase):
