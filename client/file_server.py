@@ -7,7 +7,7 @@ import pyperclip
 import requests
 from threading import Thread
 from urllib.parse import quote, unquote
-from common.utils import BASE_DIR, reveal_in_explorer
+from common.utils import BASE_DIR, reveal_in_explorer, fix_mojibake_filename
 from common.notification import show_notification_with_click
 from client.folder_manifest import (
     MANIFEST_MAX_ENTRIES,
@@ -163,7 +163,7 @@ class FileServer:
 
             # 从 URL 参数获取文件名，例如 ?filename=my%20file.txt
             encoded_filename = request.args.get('filename', 'uploaded_file')
-            filename = unquote(encoded_filename)  # 解码 %20 为空格
+            filename = fix_mojibake_filename(unquote(encoded_filename))  # 解码 %20 为空格
 
             # 安全处理文件名：去除空字符，替换反斜杠，提取最后一部分作为纯文件名
             filename = filename.replace('\x00', '')

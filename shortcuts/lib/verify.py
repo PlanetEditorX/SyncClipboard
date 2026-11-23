@@ -34,6 +34,7 @@ CN = {
     'is.workflow.actions.urlencode': 'URL编码',
     'is.workflow.actions.comment': '注释',
     'is.workflow.actions.getitemtype': '获取项目类型',
+    'is.workflow.actions.properties.files': '获取文件的详细信息',
     'is.workflow.actions.detect.dictionary': '转换为词典',
     'is.workflow.actions.getvalueforkey': '获取词典值',
     'is.workflow.actions.getstoredcontent': '获取存储内容',
@@ -44,6 +45,8 @@ CN = {
     'is.workflow.actions.getcurrentapp': '获取当前App',
     'is.workflow.actions.calculateexpression': '计算表达式',
     'is.workflow.actions.runworkflow': '运行快捷指令',
+    'is.workflow.actions.alert': '显示提醒',
+    'is.workflow.actions.choosefromlist': '从列表中选取',
     'com.sindresorhus.Actions.IsReachableIntent': '服务是否可达（Actions）',
     'com.sindresorhus.Actions.IsHostReachable': '主机是否可达（Actions）',
 }
@@ -61,12 +64,15 @@ def param_keys(act):
 _REF_PARAMS = {
     ('com.sindresorhus.Actions.IsHostReachable', None): {'AppIntentDescriptor', 'UUID', 'host', 'port'},
     ('com.sindresorhus.Actions.IsReachableIntent', None): {'AppIntentDescriptor', 'UUID', 'host', 'requireSuccessStatusCode', 'timeout'},
+    ('is.workflow.actions.alert', None): {'UUID', 'WFAlertActionMessage', 'WFAlertActionTitle'},
     ('is.workflow.actions.calculateexpression', None): {'Input', 'UUID'},
+    ('is.workflow.actions.choosefromlist', None): {'UUID', 'WFChooseFromListActionPrompt', 'WFInput'},
     ('is.workflow.actions.comment', None): {'WFCommentActionText'},
     ('is.workflow.actions.conditional', 0): {'GroupingIdentifier', 'UUID', 'WFCondition', 'WFConditionalActionString', 'WFConditions', 'WFControlFlowMode', 'WFInput', 'WFNumberValue'},
     ('is.workflow.actions.conditional', 1): {'GroupingIdentifier', 'UUID', 'WFControlFlowMode'},
     ('is.workflow.actions.conditional', 2): {'GroupingIdentifier', 'UUID', 'WFControlFlowMode'},
-    ('is.workflow.actions.count', None): {'Input', 'UUID'},
+    ('is.workflow.actions.count', None): {'Input', 'UUID', 'WFCountType'},
+    ('is.workflow.actions.properties.files', None): {'UUID', 'WFInput', 'WFContentItemPropertyName'},
     ('is.workflow.actions.date', None): {'UUID'},
     ('is.workflow.actions.delay', None): {'WFDelayTime'},
     ('is.workflow.actions.detect.dictionary', None): {'UUID', 'WFInput'},
@@ -95,7 +101,7 @@ _REF_PARAMS = {
     ('is.workflow.actions.setvariable', None): {'WFInput', 'WFVariableName'},
     ('is.workflow.actions.showresult', None): {'Text'},
     ('is.workflow.actions.unzip', None): {'UUID'},
-    ('is.workflow.actions.urlencode', None): {'UUID', 'WFInput'},
+    ('is.workflow.actions.urlencode', None): {'UUID', 'WFInput', 'WFEncodeMode'},
 }
 
 # 参考文件里没有、但已核实过的参数键。
@@ -117,6 +123,12 @@ KNOWN_EXTRA_PARAMS = {
     ('is.workflow.actions.documentpicker.save', 'WFOverwriteFile'),
     # 通用参数，iOS 自己导出时也常带，无害
     ('is.workflow.actions.repeat.count', 'UUID'),
+    # 「获取URL内容」PUT 一份文件。参考文件（v1）里只有 GET/POST，
+    # 这两个键取自用户手工搭的「推送同步」导出（那条在真机上跑通过）：
+    # `WFHTTPBodyType = File` 决定请求体是文件而不是 JSON，
+    # `WFRequestVariable` 指向那份文件。缺任一个，服务端收到空 body。
+    ('is.workflow.actions.downloadurl', 'WFHTTPBodyType'),
+    ('is.workflow.actions.downloadurl', 'WFRequestVariable'),
 }
 
 

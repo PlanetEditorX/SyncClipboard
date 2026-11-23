@@ -15,7 +15,9 @@
 拉取型（获取同步）用 post_json + repeat_each；轮询驻留型（文字同步）还会用到
 get_clipboard / item_type / stored_get / stored_set / reachable / repeat_count /
 calculate / delay / run_self；事件型（短信同步）用 shortcut_input / match_text /
-match_group 从正文里抽验证码。
+match_group 从正文里抽验证码；推送型（推送同步）用 put_file 把文件直传到目标
+设备，配合 choose_from_list 选目标、alert 提示「没有客户端在线」，再用
+count(what='Characters') 数真实字数、file_extension 补回被丢掉的文件后缀。
 
 具体流程写在各子目录的 `build.py` 里（如 `获取同步/build.py`）。
 """
@@ -201,15 +203,43 @@ class SC:
         self._add('is.workflow.actions.setvariable',
                   {'WFInput': att(subject), 'WFVariableName': name})
 
-    def count(self, subject):
+    def count(self, subject, what=None):
+        """计数。what 省略 = iOS 缺省的 `Items`（项目数）。
+
+        坑在这儿：一段文字是 **1 个项目**。通知里写「（N 字）」却拿项目数来填，
+        真机上永远显示「1 字」。要字数必须显式写 `WFCountType = 'Characters'`
+        （其余可选 Words / Sentences / Lines，见官方 Count 动作定义）。
+        """
         uid = U()
-        self._add('is.workflow.actions.count', {'UUID': uid, 'Input': att(subject)})
+        p = {'UUID': uid, 'Input': att(subject)}
+        if what:
+            p['WFCountType'] = what
+        self._add('is.workflow.actions.count', p)
         return uid
+
+    def file_extension(self, subject):
+        """「获取文件的详细信息 → 文件扩展名」，输出不带点的后缀（如 `png`）。
+
+        文件被强制转文本时 iOS 取的是 Name 属性，**不含扩展名** —— 所以
+        `urlencode(文件)` 拼出来的 filename 天生缺后缀，真机上 `a.png` 会存成
+        `a`。这里显式取 File Extension，由调用方拼回 `名称.扩展名` 再整体编码。
+        动作是 `is.workflow.actions.properties.files`，属性名就是显示名字符串。
+        """
+        uid = U()
+        self._add('is.workflow.actions.properties.files', {
+            'UUID': uid,
+            'WFInput': att(subject),
+            'WFContentItemPropertyName': 'File Extension',
+        })
+        return act_out(uid, '文件的详细信息')
 
     def urlencode(self, subject):
         uid = U()
         self._add('is.workflow.actions.urlencode',
-                  {'UUID': uid, 'WFInput': tok([subject])})
+                  {'UUID': uid, 'WFInput': tok([subject]),
+                   # 显式写 Encode（动作还有 Decode 模式）。缺省虽也是 Encode，
+                   # 但中文文件名经不起「万一被当 Decode」的猜测。
+                   'WFEncodeMode': 'Encode'})
         return uid
 
     def device_name(self):
@@ -286,6 +316,28 @@ class SC:
         })
         return act_out(uid, 'URL的内容')
 
+    def put_file(self, url_subject, body_subject, headers=None):
+        """把一份文件二进制原样 PUT 上去（不带表单、不带 JSON）。
+
+        两个参数键是 iOS 自己导出的形状，缺一个都不行：
+        `WFHTTPBodyType = 'File'` 才是「请求体 = 文件」（缺省是 JSON），
+        `WFRequestVariable` 才是「这份文件」—— 写成 `WFInput` 或塞进
+        `WFJSONValues` 都会被当成普通字段，服务端收到的是空 body。
+        服务端的文件名从查询串里取，所以 url_subject 要把 `?filename=` 拼进去。
+        """
+        uid = U()
+        parts = url_subject if isinstance(url_subject, list) else [url_subject]
+        p = {'UUID': uid,
+             'ShowHeaders': True,
+             'WFHTTPMethod': 'PUT',
+             'WFHTTPBodyType': 'File',
+             'WFURL': tok(parts),
+             'WFRequestVariable': att(body_subject)}
+        if headers:
+            p['WFHTTPHeaders'] = dict_field(headers)
+        self._add('is.workflow.actions.downloadurl', p)
+        return act_out(uid, 'URL的内容')
+
     def notify(self, parts, sound=False):
         """先造一条文本（供通知标题用），再弹通知。"""
         t = self.text(parts)
@@ -299,6 +351,38 @@ class SC:
     def clipboard(self, subject):
         self._add('is.workflow.actions.setclipboard',
                   {'UUID': U(), 'WFInput': att(subject)})
+
+    def choose_from_list(self, subject, prompt='请选择'):
+        """从列表中选取：弹一个选择器，返回「所选项目」。
+
+        单选（不写 `WFChooseFromListActionSelectMultiple`）就是 iOS 的默认行为，
+        跟原版手工包一致；要改成多选得把该键置 True，那时输出变成列表，后面的
+        取值链也跟着变，别只改这一处。
+        """
+        uid = U()
+        self._add('is.workflow.actions.choosefromlist', {
+            'UUID': uid,
+            'WFInput': att(subject),
+            'WFChooseFromListActionPrompt': prompt,
+        })
+        return act_out(uid, '所选项目')
+
+    def alert(self, message, title=None):
+        """弹一个模态提示，必须点「好」才继续。
+
+        跟「显示通知」不是一回事：通知会自己消失、还可能被专注模式吞掉，
+        用户主动点了一下快捷指令却什么都没发生时，得有一个非看不可的反馈。
+
+        message 传字符串就原样用（原版手工包导出的就是这个形状），传 parts
+        列表则拼成文本 token —— 提示里要带变量（状态码、错误信息）时用后者。
+        除消息外不写别的键：原版导出后也只有 `WFAlertActionMessage` 一个。
+        """
+        p = {'UUID': U(),
+             'WFAlertActionMessage': message if isinstance(message, str)
+             else tok(message)}
+        if title is not None:
+            p['WFAlertActionTitle'] = title
+        self._add('is.workflow.actions.alert', p)
 
     def get_clipboard(self):
         """读剪贴板（不是「拷贝到剪贴板」）。"""

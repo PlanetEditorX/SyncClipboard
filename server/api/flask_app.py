@@ -44,7 +44,7 @@ from server.core.file_handler import FileHandler
 from server.core.text_tracker import TextTracker
 from server.core.file_sync import LatestFileManager
 from server.core.file_latest import FileLatestTracker
-from common.utils import BASE_DIR, get_default_server_host, isExpired
+from common.utils import BASE_DIR, get_default_server_host, isExpired, fix_mojibake_filename
 from common.notification import show_notification
 
 # ---------- 日志：不再配置 handler，交给 run.py 统一处理 ----------
@@ -1362,7 +1362,7 @@ def upload_file():
 
     # 从 URL 参数获取文件名，例如 ?filename=my%20file.txt
     encoded_filename = request.args.get('filename', 'uploaded_file')
-    filename = unquote(encoded_filename).replace('\\', '/')  # 解码 %20 为空格
+    filename = fix_mojibake_filename(unquote(encoded_filename)).replace('\\', '/')  # 解码 %20 为空格
 
     # 读取原始二进制数据
     file_data = request.get_data()
@@ -1484,7 +1484,7 @@ def upload_file_to_download():
 
     query_params = parse_qs(parsed.query)
     encoded_filename = query_params.get('filename', ['uploaded_file'])[0]
-    filename = unquote(encoded_filename).replace('\\', '/')
+    filename = fix_mojibake_filename(unquote(encoded_filename)).replace('\\', '/')
 
     # 读取文件数据并保存到本地
     file_data = request.get_data()

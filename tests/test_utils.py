@@ -2,7 +2,7 @@ import unittest
 from unittest.mock import patch, MagicMock
 from datetime import datetime, timedelta
 import requests
-from common.utils import isExpired, safe_get, parse_filename_from_cd, safe_post
+from common.utils import isExpired, safe_get, parse_filename_from_cd, safe_post, fix_mojibake_filename
 
 class TestSafeGet(unittest.TestCase):
     def test_safe_get_happy_path(self):
@@ -138,6 +138,24 @@ class TestSafePost(unittest.TestCase):
         result = safe_post("http://example.com")
         self.assertIsNone(result)
         mock_handle_error.assert_called_once_with("错误", "Some error")
+
+
+class TestFixMojibakeFilename(unittest.TestCase):
+    """iOS 把 UTF-8 字节按 GBK 解读时，落盘文件名的还原兜底。"""
+
+    def test_real_garbled_samples(self):
+        # 用户在真机上实际看到的乱码名
+        self.assertEqual(fix_mojibake_filename("SEXJ62_璇佷功鏂囦欢(瀵嗙爜1)"),
+                         "SEXJ62_证书文件(密码1)")
+        self.assertEqual(fix_mojibake_filename("椋炵墰涓嬭浇"), "飞牛下载")
+
+    def test_normal_names_are_untouched(self):
+        for name in ("SEXJ62_证书文件(密码1)", "飞牛下载", "report.pdf",
+                     "中文 空格&符号#1.txt", "a.png", "uploaded_file"):
+            self.assertEqual(fix_mojibake_filename(name), name, name)
+
+    def test_extension_survives(self):
+        self.assertEqual(fix_mojibake_filename("椋炵墰涓嬭浇.zip"), "飞牛下载.zip")
 
 
 if __name__ == '__main__':

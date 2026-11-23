@@ -972,5 +972,284 @@ class TestSmsSyncArtifact(_SmokeCase):
         self.assertFalse(offenders, f"存在性判断写成了单条件（会标红）：{offenders}")
 
 
+class TestPushSyncArtifact(_SmokeCase):
+    """「推送同步」是手动一次型：分享文件 / 推剪贴板，不轮询。
+
+    它最容易退化的地方，全在原版手工包踩过的那几个坑上：
+
+    * 分享入口 —— `WFWorkflowTypes` 少了 `ActionExtension`，这条指令就不会出现
+      在分享面板里，而「分享文件」正是它的主要用法；
+    * 上传形状 —— `WFHTTPBodyType = File` + `WFRequestVariable` 才是「请求体是
+      文件」，写成 JSON 字段的话服务端收到空 body，表现成「文件上传成功 0 字节」；
+    * 死守卫 —— 原版注释写着「没有当前 App 就停止」，可那个「获取当前App」的输出
+      一次都没被引用；
+    * 两份重复的上传代码 —— 改一处忘一处，文件名规则都不一致。
+    """
+
+    UNSIGNED = ROOT / "shortcuts" / "推送同步" / "推送同步-unsigned.plist"
+    SIGNED = ROOT / "shortcuts" / "推送同步" / "推送同步.shortcut"
+
+    def _doc(self):
+        import plistlib
+        if not self.UNSIGNED.exists():
+            self.skipTest("还没生成未签名 plist")
+        with open(self.UNSIGNED, "rb") as handle:
+            return plistlib.load(handle)
+
+    def _actions(self):
+        return self._doc()["WFWorkflowActions"]
+
+    def _params(self, action):
+        return action.get("WFWorkflowActionParameters") or {}
+
+    def _requests(self, method=None):
+        """[(下标, 参数)]：所有出网动作，可按方法过滤。"""
+        rows = []
+        for index, action in enumerate(self._actions()):
+            if action["WFWorkflowActionIdentifier"] != "is.workflow.actions.downloadurl":
+                continue
+            params = self._params(action)
+            if method is None or params.get("WFHTTPMethod", "GET") == method:
+                rows.append((index, params))
+        return rows
+
+    def test_signed_bundle_is_valid(self):
+        if not self.SIGNED.exists():
+            self.skipTest("还没生成签名产物")
+        data = self.SIGNED.read_bytes()
+        self.assertGreater(len(data), 10_000)
+        self.assertEqual(data[:4], b"AEA1", "不是 apple 归档容器")
+        self.assertGreater(data.find(b"bvx2"), 0, "缺少 LZFSE 数据段")
+
+    def test_share_sheet_entry_is_declared(self):
+        """分享面板入口 + 快捷指令输入变量，两个都得声明。"""
+        doc = self._doc()
+        self.assertIn("ActionExtension", doc.get("WFWorkflowTypes") or [],
+                      "没有 ActionExtension 就不会出现在分享面板里")
+        self.assertTrue(doc.get("WFWorkflowHasShortcutInputVariables"))
+        self.assertIn("ExtensionInput", json.dumps(doc, ensure_ascii=False),
+                      "没有引用「快捷指令输入」，分享进来的文件拿不到")
+
+    def test_put_carries_file_body_not_json(self):
+        """上传必须是 PUT + File 请求体，而不是把文件塞进 JSON 字段。"""
+        puts = self._requests("PUT")
+        self.assertEqual(len(puts), 1, f"上传动作该只有一个：{len(puts)}")
+        index, params = puts[0]
+        self.assertEqual(params.get("WFHTTPBodyType"), "File",
+                         f"[{index}] 少了 WFHTTPBodyType=File，服务端会收到空 body")
+        self.assertIn("WFRequestVariable", params,
+                      f"[{index}] 少了 WFRequestVariable，不知道该传哪个文件")
+        url = json.dumps(params.get("WFURL") or {}, ensure_ascii=False)
+        self.assertIn("?filename=", url,
+                      f"[{index}] 文件名没拼进查询串，服务端只能存成 uploaded_file")
+
+    def test_filename_is_url_encoded(self):
+        """文件名要过一遍 URL 编码：中文、空格、# 不编码会被查询串截断。
+
+        URL 里拼的是变量（先「设定变量 → 名称」再拼进去），所以要顺着
+        「名称」这个变量反查一次：它的赋值源必须是 URL 编码动作的输出。
+        """
+        uuids = {(self._params(a).get("UUID")): a["WFWorkflowActionIdentifier"]
+                 for a in self._actions() if self._params(a).get("UUID")}
+        index, params = self._requests("PUT")[0]
+        value = (params.get("WFURL") or {}).get("Value") or {}
+        string = value.get("string") or ""
+        fname_at = string.find("?filename=") + len("?filename=")
+        slot = value.get("attachmentsByRange") or {}
+        self.assertIn(f"{{{fname_at}, 1}}", slot,
+                      f"[{index}] 查询串里 filename 的位置不对：{string!r}")
+        name = slot[f"{{{fname_at}, 1}}"].get("VariableName")
+        self.assertTrue(name, f"[{index}] filename 不是变量：{slot}")
+
+        sources = []
+        for action in self._actions():
+            p = self._params(action)
+            if (action["WFWorkflowActionIdentifier"] == "is.workflow.actions.setvariable"
+                    and p.get("WFVariableName") == name):
+                ref = (p.get("WFInput") or {}).get("Value") or {}
+                sources.append(uuids.get(ref.get("OutputUUID")))
+        self.assertEqual(sources, ["is.workflow.actions.urlencode"],
+                         f"变量「{name}」的赋值源不是 URL 编码：{sources}")
+
+    def test_filename_keeps_extension_and_chinese(self):
+        """文件名要带后缀，且中文不能经过「文本」动作中转。
+
+        真机两轮反馈各锁一条：`urlencode(文件)` 会丢后缀（a.png → a）；而为了
+        补后缀把文件变量先塞进「文本」动作，中文会被按 GBK 读成乱码
+        （「证书文件」→「璇佷功鏂囦欢」）。所以正解是：名称直接编码文件变量，
+        纯 ASCII 的后缀单独拼在 URL 末尾。
+        """
+        acts = self._actions()
+        props = [self._params(a) for a in acts
+                 if a["WFWorkflowActionIdentifier"]
+                 == "is.workflow.actions.properties.files"]
+        self.assertEqual(len(props), 1, "该只有一处取扩展名的动作")
+        self.assertEqual(props[0].get("WFContentItemPropertyName"),
+                         "File Extension", "取错了文件属性")
+
+        uuids = {self._params(a).get("UUID"): a for a in acts
+                 if self._params(a).get("UUID")}
+
+        def setvar_rows(name):
+            return [a for a in acts
+                    if a["WFWorkflowActionIdentifier"]
+                    == "is.workflow.actions.setvariable"
+                    and self._params(a).get("WFVariableName") == name]
+
+        def source_dumps(row):
+            uid = (((self._params(row).get("WFInput") or {})
+                    .get("Value") or {}).get("OutputUUID"))
+            src = uuids.get(uid)
+            return json.dumps(self._params(src), ensure_ascii=False) if src else ""
+
+        dots = setvar_rows("点后缀")
+        self.assertTrue(dots and any("扩展名" in source_dumps(a) for a in dots),
+                        "「点后缀」的来源里没有引用取回来的扩展名")
+        self.assertFalse(setvar_rows("完整名"),
+                         "不该有「完整名」中转变量：文件变量经「文本」会乱码中文")
+
+        # 名称必须直接 URL 编码「文件」变量本身，且显式 Encode 模式
+        name = setvar_rows("名称")
+        self.assertEqual(len(name), 1)
+        enc = uuids.get((((self._params(name[0]).get("WFInput") or {})
+                          .get("Value") or {}).get("OutputUUID")))
+        self.assertEqual(enc and enc["WFWorkflowActionIdentifier"],
+                         "is.workflow.actions.urlencode")
+        enc_params = self._params(enc)
+        self.assertEqual(enc_params.get("WFEncodeMode"), "Encode",
+                         "URL 编码没显式指定 Encode 模式")
+        self.assertIn('"VariableName": "文件"',
+                      json.dumps(enc_params, ensure_ascii=False),
+                      "URL 编码的输入不是文件变量本身（经文本中转会把中文读成乱码）")
+
+        # URL 里 filename 后面必须同时有「名称」和「点后缀」两个占位
+        _, params = self._requests("PUT")[0]
+        value = (params.get("WFURL") or {}).get("Value") or {}
+        string = value.get("string") or ""
+        slots = value.get("attachmentsByRange") or {}
+        at = string.find("?filename=") + len("?filename=")
+        self.assertEqual(slots.get("{%d, 1}" % at, {}).get("VariableName"),
+                         "名称", "filename 第一段不是编码后的名称")
+        self.assertEqual(slots.get("{%d, 1}" % (at + 1), {}).get("VariableName"),
+                         "点后缀", "filename 后面没拼上扩展名后缀")
+
+    def test_text_notification_uses_character_count(self):
+        """文字通知里的「N 字」必须来自 Characters 计数，别再显示「1 字」。"""
+        acts = self._actions()
+        char_counts = {self._params(a).get("UUID") for a in acts
+                       if a["WFWorkflowActionIdentifier"] == "is.workflow.actions.count"
+                       and self._params(a).get("WFCountType") == "Characters"}
+        self.assertTrue(char_counts, "没有 Characters 计数，字数会退化成项目数 1")
+        srcs = []
+        for a in acts:
+            p = self._params(a)
+            if (a["WFWorkflowActionIdentifier"] == "is.workflow.actions.setvariable"
+                    and p.get("WFVariableName") == "字数"):
+                srcs.append(((p.get("WFInput") or {}).get("Value") or {})
+                            .get("OutputUUID"))
+        self.assertTrue(srcs and set(srcs) <= char_counts,
+                        f"「字数」不是取自 Characters 计数：{srcs}")
+        bodies = [json.dumps(self._params(a), ensure_ascii=False) for a in acts
+                  if a["WFWorkflowActionIdentifier"] == "is.workflow.actions.notification"]
+        self.assertTrue(any("字数" in body for body in bodies),
+                        "结果通知里没有引用「字数」")
+
+    def test_text_goes_through_ios_sync(self):
+        """文字走 POST /ios/sync，body 只有 key / content / source。"""
+        posts = []
+        for index, params in self._requests("POST"):
+            items = ((params.get("WFJSONValues") or {}).get("Value") or {})
+            keys = [((item.get("WFKey") or {}).get("Value") or {}).get("string")
+                    for item in items.get("WFDictionaryFieldValueItems") or []]
+            if "content" in keys:
+                posts.append((index, keys, json.dumps(params.get("WFURL") or {},
+                                                      ensure_ascii=False)))
+        self.assertEqual(len(posts), 1, f"文字推送该只有一处：{len(posts)}")
+        index, keys, url = posts[0]
+        self.assertEqual(sorted(keys), ["content", "key", "source"],
+                         f"[{index}] /ios/sync 的 body 字段不对：{keys}")
+        self.assertIn("文字", url, f"[{index}] 地址应取自「接口.文字」")
+
+    def test_upload_happens_once_per_item(self):
+        """只有一处循环、一处上传 —— 别再退化成两段复制的粘贴代码。"""
+        opens = [a for a in self._actions()
+                 if a["WFWorkflowActionIdentifier"] == "is.workflow.actions.repeat.each"
+                 and self._params(a).get("WFControlFlowMode") == 0]
+        self.assertEqual(len(opens), 1,
+                         "上传循环该只有一处（原版复制了两份，文件名规则还不一样）")
+        self.assertEqual(len(self._requests("PUT")), 1, "上传动作该只有一处")
+
+    def test_no_dead_app_guard(self):
+        """原版那个「获取当前App」守卫没接线，别把它当成有效逻辑抄回来。"""
+        idents = [a["WFWorkflowActionIdentifier"] for a in self._actions()]
+        self.assertNotIn("is.workflow.actions.getcurrentapp", idents,
+                         "手动一次型不需要看前台 App；要看就接到「如果」上")
+
+    def _log_posts(self):
+        """往 /ios_log 推日志的那些 POST，不算「出网推内容」。"""
+        rows = []
+        for index, params in self._requests("POST"):
+            items = ((params.get("WFJSONValues") or {}).get("Value") or {})
+            keys = [((item.get("WFKey") or {}).get("Value") or {}).get("string")
+                    for item in items.get("WFDictionaryFieldValueItems") or []]
+            if keys == ["log"]:
+                rows.append(index)
+        return rows
+
+    def test_every_request_carries_key(self):
+        """所有出网请求都得带 `key` 请求头。
+
+        服务端 `/ios_log`、`/ios/sync`、`/clients/online` 和目标设备的
+        `/upload_file` 四处都读 `request.headers['key']`（`/status` 探活不校验，
+        但它是 Actions 的 App Intent，不在 downloadurl 里）。漏在
+        `/clients/online` 上最阴：弹出来的是「服务端拒绝了这次请求 / 密钥错误」，
+        看着像配置写错了，实际是那条 GET 压根没带钥匙，文件分支整个走不通。
+        """
+        missing = []
+        for index, params in self._requests():
+            items = (((params.get("WFHTTPHeaders") or {}).get("Value") or {})
+                     .get("WFDictionaryFieldValueItems") or [])
+            keys = [((item.get("WFKey") or {}).get("Value") or {}).get("string")
+                    for item in items]
+            if "key" not in keys:
+                missing.append((index, params.get("WFHTTPMethod", "GET"), keys))
+        self.assertFalse(missing, f"这些出网请求没带 key 请求头：{missing}")
+
+    def test_probe_before_any_push(self):
+        """探活必须在出网动作之前，空内容检查又要在探活之前。"""
+        idents = [a["WFWorkflowActionIdentifier"] for a in self._actions()]
+        probe = idents.index("com.sindresorhus.Actions.IsReachableIntent")
+        noise = set(self._log_posts())
+        net = [index for index, _ in self._requests() if index not in noise]
+        self.assertLess(probe, min(net), "探活排到了出网动作后面")
+
+        empty_check = None
+        for index, action in enumerate(self._actions()):
+            if action["WFWorkflowActionIdentifier"] != "is.workflow.actions.conditional":
+                continue
+            tpls = ((self._params(action).get("WFConditions") or {}).get("Value") or {})
+            for tpl in tpls.get("WFActionParameterFilterTemplates") or []:
+                if tpl.get("WFCondition") == 101:
+                    empty_check = index
+                    break
+            if empty_check is not None:
+                break
+        self.assertIsNotNone(empty_check, "没有「内容没有任何值」的判空")
+        self.assertLess(empty_check, probe, "先探活再判空，等于白跑一次网络")
+
+    def test_existence_conditions_use_table_form(self):
+        """「有任何值 / 没有任何值」只能是表模板形态，否则导入后标红中断。"""
+        offenders = []
+        for index, action in enumerate(self._actions()):
+            if action["WFWorkflowActionIdentifier"] != "is.workflow.actions.conditional":
+                continue
+            params = self._params(action)
+            if params.get("WFControlFlowMode") != 0:
+                continue
+            if params.get("WFCondition") in (100, 101):
+                offenders.append(index)
+        self.assertFalse(offenders, f"存在性判断写成了单条件（会标红）：{offenders}")
+
+
 if __name__ == "__main__":
     unittest.main()

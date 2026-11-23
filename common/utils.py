@@ -264,3 +264,21 @@ def isExpired(timestamp):
         return False
     else:
         return True
+
+
+def fix_mojibake_filename(name):
+    """把「UTF-8 字节被按 GBK 解读」产生的乱码文件名还原回中文。
+
+    iOS 把文件变量转文本时，某些路径会把 UTF-8 字节当 GBK 字符读：
+    「证书文件」→「璇佷功鏂囦欢」，「飞牛下载」→「椋炵墰涓嬭浇」。
+    这类字符串按 GBK 编回去恰好是合法 UTF-8，解出来是更短的正常中文；
+    而正常中文 / 纯 ASCII 按 GBK 编码后不是合法 UTF-8，会直接抛错并原样
+    返回 —— 所以不会误伤本来正确的文件名。
+    """
+    try:
+        fixed = name.encode('gbk').decode('utf-8')
+    except (UnicodeEncodeError, UnicodeDecodeError):
+        return name
+    if len(fixed) >= len(name) or '\ufffd' in fixed:
+        return name
+    return fixed
