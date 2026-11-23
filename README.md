@@ -112,7 +112,7 @@ JSON body 里的 `key` 与 `?key=` 仍被同一个校验函数接受，但只是
 
 ### 电脑配置
 
-1. 从 [Releases](https://github.com/PlanetEditorX/SyncClipboard/releases) 下载 `SyncClipboard-Windows-<tag>.zip`（例如 `SyncClipboard-Windows-v1.12.14.zip`），解压到任意目录后运行 `SyncClipboard.exe`。旧版可直接解压覆盖：安装包只带 `config/example` 模板，不会覆盖已有的 `config/*.json` 个人配置与 `log/` 日志。
+1. 从 [Releases](https://github.com/PlanetEditorX/SyncClipboard/releases) 下载 `SyncClipboard-Windows-<tag>.zip`（例如 `SyncClipboard-Windows-v1.12.15.zip`），解压到任意目录后运行 `SyncClipboard.exe`。旧版可直接解压覆盖：安装包只带 `config/example` 模板，不会覆盖已有的 `config/*.json` 个人配置与 `log/` 日志。
 2. 解压后编辑 `server_config.json`：
 
    ```json
