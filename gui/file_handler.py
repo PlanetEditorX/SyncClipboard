@@ -10,6 +10,7 @@ from common.utils import (
     copy_files_to_clipboard,
     parse_filename_from_cd,
     reveal_in_explorer,
+    normalize_local_path,
 )
 from common.notification import show_notification_with_click
 from gui.qt_download_dialog import DownloadProgressDialog
@@ -80,7 +81,11 @@ class FileHandler:
             os.makedirs(folder, exist_ok=True)
         except OSError as e:
             logger.error(f"无法创建下载目录: {folder}, 错误: {e}")
-        file_path = os.path.join(folder, filename or "downloaded_file")
+        # 与手机上传走同一套分隔符规范：配置写 D:/Downloads 时，
+        # 落盘路径、日志和「打开所在文件夹」看到的都是原生反斜杠
+        file_path = normalize_local_path(
+            os.path.join(folder, filename or "downloaded_file")
+        )
         base, ext = os.path.splitext(file_path)
         counter = 1
         while os.path.exists(file_path):

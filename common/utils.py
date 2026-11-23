@@ -146,6 +146,20 @@ def copy_files_to_clipboard(file_paths: List[str]) -> bool:
         except:
             pass
 
+def normalize_local_path(path) -> str:
+    r"""把路径统一成本机原生分隔符，Windows 下把 `/` 归一成 `\`。
+
+    配置里可以手填 `D:/Downloads`，而 `os.path.join` 在 Windows 上用 `\`
+    拼接，结果就是 `D:/Downloads\文件名` 这种前半段正斜杠、后半段反斜杠
+    的混合路径：能落盘、资源管理器也能打开，但通知和日志里看着像路径坏了，
+    复制给别的程序还可能被当成转义字符。
+
+    这里只归一化分隔符并去掉冗余层级/尾部斜杠，不改相对与绝对性
+    （故意不用 abspath，免得把 `./uploads` 变成一长串绝对路径）。
+    """
+    return os.path.normpath(os.fspath(path))
+
+
 def reveal_in_explorer(path: str) -> bool:
     """
     在文件管理器中定位并选中 path（Windows 下为资源管理器）。

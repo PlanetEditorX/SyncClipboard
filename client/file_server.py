@@ -7,7 +7,12 @@ import pyperclip
 import requests
 from threading import Thread
 from urllib.parse import quote, unquote
-from common.utils import BASE_DIR, reveal_in_explorer, fix_mojibake_filename
+from common.utils import (
+    BASE_DIR,
+    reveal_in_explorer,
+    fix_mojibake_filename,
+    normalize_local_path,
+)
 from common.notification import show_notification_with_click
 from client.folder_manifest import (
     MANIFEST_MAX_ENTRIES,
@@ -75,7 +80,9 @@ class FileServer:
         self.last_text = ""
         self.KEY = str(key)
         self.local_name = local_name
-        self.save_path = save_path
+        # 配置里常手填 "D:/Downloads"，先归一成本机原生分隔符，
+        # 免得后面拼出 "D:/Downloads\文件名" 这种混合路径
+        self.save_path = normalize_local_path(save_path)
         self.tracker = TextTracker()
         # 添加运行状态和服务器引用
         self.running = False
@@ -181,8 +188,11 @@ class FileServer:
             if not file_data:
                 return jsonify({"status": "error", "message": "未收到文件"}), 400
 
-            # 保存到文件
-            save_file_path = os.path.join(self.save_path, filename)
+            # 保存到文件：整条路径（含通知里显示的那一串）统一用本机分隔符，
+            # Windows 下就是 D:\Downloads\文件名，不再出现 / 和 \ 混排
+            save_file_path = normalize_local_path(
+                os.path.join(self.save_path, filename)
+            )
             with open(save_file_path, 'wb') as f:
                 f.write(file_data)
 
