@@ -849,5 +849,128 @@ class TestTextSyncArtifact(_SmokeCase):
             self.assertIn('"key"', headers, f"[{i}] 请求没带密钥头")
 
 
+class TestSmsSyncArtifact(_SmokeCase):
+    """「短信同步」是事件型：一条短信一次，不许有循环、不许等。
+
+    它最容易退化的地方不是形状而是**判据**：正则换成一份手机上跑的、电脑上
+    没验过的（这里锁住产物里的模式就是 `lib/sms.py` 那两条），以及推送给谁 ——
+    上一版手搭的草稿把「推给电脑」写成了「运行另一条快捷指令」，产物里因此
+    一条 `/ios/sync` 都没有。两条都写成断言。
+    """
+
+    UNSIGNED = ROOT / "shortcuts" / "短信同步" / "短信同步-unsigned.plist"
+    SIGNED = ROOT / "shortcuts" / "短信同步" / "短信同步.shortcut"
+    PENDING = "验证码待发"
+
+    def _doc(self):
+        import plistlib
+        if not self.UNSIGNED.exists():
+            self.skipTest("还没生成未签名 plist")
+        with open(self.UNSIGNED, "rb") as handle:
+            return plistlib.load(handle)
+
+    def _actions(self):
+        return self._doc()["WFWorkflowActions"]
+
+    def _idents(self):
+        return [a["WFWorkflowActionIdentifier"] for a in self._actions()]
+
+    def test_signed_bundle_is_valid(self):
+        if not self.SIGNED.exists():
+            self.skipTest("还没生成签名产物")
+        data = self.SIGNED.read_bytes()
+        self.assertGreater(len(data), 10_000)
+        self.assertEqual(data[:4], b"AEA1", "不是 apple 归档容器")
+        self.assertGreater(data.find(b"bvx2"), 0, "缺少 LZFSE 数据段")
+
+    def test_patterns_are_the_verified_ones(self):
+        """产物里的正则必须就是 lib/sms.py 那两条（电脑上跑过用例的）。"""
+        import re
+        import sys
+        sys.path.insert(0, str(ROOT / "shortcuts"))
+        from lib.sms import PATTERN_A, PATTERN_B
+
+        got = [(a.get("WFWorkflowActionParameters") or {}).get("WFMatchTextPattern")
+               for a in self._actions()
+               if a["WFWorkflowActionIdentifier"] == "is.workflow.actions.text.match"]
+        self.assertEqual(got, [PATTERN_A, PATTERN_B],
+                         "产物里的正则和 lib/sms.py 不一致，先重跑 build.py")
+        for pattern in got:
+            # 两个分支都靠「获取匹配中的组」默认取组 1，多一个捕获组就取错东西
+            self.assertEqual(re.compile(pattern).groups, 1,
+                             f"模式里有多个捕获组：{pattern[:40]}…")
+
+    def test_event_driven_no_loop_no_wait(self):
+        idents = self._idents()
+        self.assertNotIn("is.workflow.actions.repeat.count", idents,
+                         "事件型不该有循环：一条短信跑一次")
+        self.assertNotIn("is.workflow.actions.delay", idents,
+                         "事件型不该等待")
+        self.assertNotIn("is.workflow.actions.runworkflow", idents,
+                         "不许再靠「运行另一条快捷指令」转发（草稿的毛病）")
+
+    def test_push_hits_ios_sync(self):
+        """推送必须是 POST /ios/sync，body 带 key / content / source。"""
+        syncs = []
+        for index, action in enumerate(self._actions()):
+            if action["WFWorkflowActionIdentifier"] != "is.workflow.actions.downloadurl":
+                continue
+            params = action.get("WFWorkflowActionParameters") or {}
+            if params.get("WFHTTPMethod") != "POST":
+                continue
+            items = ((params.get("WFJSONValues") or {}).get("Value") or {})
+            keys = [((item.get("WFKey") or {}).get("Value") or {}).get("string")
+                    for item in items.get("WFDictionaryFieldValueItems") or []]
+            if "content" in keys:
+                syncs.append((index, keys, json.dumps(
+                    params.get("WFURL") or {}, ensure_ascii=False)))
+        self.assertEqual(len(syncs), 2, "该有两条：先补推暂存的，再推这一条")
+        for index, keys, url in syncs:
+            self.assertEqual(sorted(keys), ["content", "key", "source"],
+                             f"[{index}] /ios/sync 的 body 字段不对：{keys}")
+            self.assertIn("同步", url, f"[{index}] 地址取自「接口.同步」")
+
+    def test_pending_retry_reads_before_first_push(self):
+        """暂存要在补推之前读出来，否则「不可达就下次补」只是写在文档里。"""
+        stored_get = None
+        first_push = None
+        for index, action in enumerate(self._actions()):
+            params = action.get("WFWorkflowActionParameters") or {}
+            ident = action["WFWorkflowActionIdentifier"]
+            if (ident == "is.workflow.actions.getstoredcontent"
+                    and params.get("WFStoredContentKey") == self.PENDING
+                    and stored_get is None):
+                stored_get = index
+            if (ident == "is.workflow.actions.downloadurl"
+                    and params.get("WFHTTPMethod") == "POST"
+                    and "content" in json.dumps(params.get("WFJSONValues") or {},
+                                                ensure_ascii=False)
+                    and first_push is None):
+                first_push = index
+        self.assertIsNotNone(stored_get, f"没读「{self.PENDING}」")
+        self.assertIsNotNone(first_push, "没找到推送动作")
+        self.assertLess(stored_get, first_push, "补推之前没先读暂存")
+
+    def test_input_variable_is_declared(self):
+        """正文取自「快捷指令输入」：不声明 HasShortcutInputVariables 就取不到值。"""
+        doc = self._doc()
+        self.assertTrue(doc.get("WFWorkflowHasShortcutInputVariables"))
+        self.assertIn("ExtensionInput", json.dumps(doc, ensure_ascii=False),
+                      "没有引用「快捷指令输入」")
+
+    def test_existence_conditions_use_table_form(self):
+        """「有任何值 / 没有任何值」只能是表模板形态，否则导入后标红中断。"""
+        offenders = []
+        for index, action in enumerate(self._actions()):
+            if action["WFWorkflowActionIdentifier"] != "is.workflow.actions.conditional":
+                continue
+            params = action.get("WFWorkflowActionParameters") or {}
+            if params.get("WFControlFlowMode") != 0:
+                continue
+            if params.get("WFCondition") in (100, 101):
+                offenders.append(index)
+        self.assertFalse(offenders, f"存在性判断写成了单条件（会标红）：{offenders}")
+
+
 if __name__ == "__main__":
     unittest.main()

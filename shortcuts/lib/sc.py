@@ -14,7 +14,8 @@
 
 拉取型（获取同步）用 post_json + repeat_each；轮询驻留型（文字同步）还会用到
 get_clipboard / item_type / stored_get / stored_set / reachable / repeat_count /
-calculate / delay / run_self。
+calculate / delay / run_self；事件型（短信同步）用 shortcut_input / match_text /
+match_group 从正文里抽验证码。
 
 具体流程写在各子目录的 `build.py` 里（如 `获取同步/build.py`）。
 """
@@ -215,6 +216,47 @@ class SC:
         uid = U()
         self._add('is.workflow.actions.getdevicedetails', {'UUID': uid})
         return act_out(uid, '设备名称')
+
+    def shortcut_input(self):
+        """快捷指令输入（自动化把短信正文当输入传进来的那份）。
+
+        引用形状是 `{"Type": "ExtensionInput"}`，不是 ActionOutput；用它之前
+        顶层 meta 必须把 `WFWorkflowHasShortcutInputVariables` 置 True，否则
+        导入后这个变量取不到值。想当文本用就 `b.text([b.shortcut_input()])`
+        再取输出 —— 直接参与比较也行，cond_input 会补强转。
+        """
+        return {'Type': 'ExtensionInput'}
+
+    # -- 文本匹配 ---------------------------------------------------------
+    def match_text(self, subject, pattern):
+        """匹配文本（正则）。返回「匹配」列表，若没有命中则是一个空列表。
+
+        pattern 传字符串；真机上的正则引擎是 ICU，lookbehind / lookahead /
+        定长量词都支持，但不认 PCRE 的 `\\K`、也默认不区分大小写，所以英文
+        关键词得自己写 `[Cc]ode` 这种。
+        """
+        uid = U()
+        self._add('is.workflow.actions.text.match', {
+            'UUID': uid, 'ShowWhenRun': False,
+            'WFMatchTextPattern': pattern,
+            'text': tok([subject]),
+        })
+        return act_out(uid, '匹配')
+
+    def match_group(self, matches, index=None):
+        """获取匹配中的组。
+
+        index 省略时不写 `WFMatchGroupIndex` —— iOS 导出时同样不写这个键，
+        而 App 里显示的是「组 1」，说明**默认就是组 1**。模式里只留一个捕获
+        组、并让它是验证码本身，就不必碰这个参数（它的类型在公开资料里对不上
+        账，写成字符串有可能被判成空参数，整条指令标红）。
+        """
+        uid = U()
+        p = {'UUID': uid, 'ShowWhenRun': False, 'matches': att(matches)}
+        if index is not None:
+            p['WFMatchGroupIndex'] = index
+        self._add('is.workflow.actions.text.match.getgroup', p)
+        return act_out(uid, '文本')
 
     # -- 网络 ------------------------------------------------------------
     def get(self, url_subject, headers=None):
