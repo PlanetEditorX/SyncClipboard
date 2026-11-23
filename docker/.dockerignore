@@ -1,29 +1,3 @@
-.git
-.venv
-__pycache__
-*.pyc
-*.log
-text_latest.json
-file_latest.json
-config/*.json
-release/*
-log/
-.vscode
-node_modules/
-Docker/context
-__pycache__/
-*.py[cod]
-*.pyo
-*.pyd
-*.swp
-.venv/
-.env
-.git/
-.gitignore
-release/
-log/
-latest/
-config/example/
-*.zip
-*.tar.gz
-.DS_Store
+# 历史遗留：Docker 的构建上下文是仓库根目录，.dockerignore 只有放在根目录
+# 才会被 docker build 读取。实际生效的规则见仓库根目录的 .dockerignore，
+# 本文件保留仅为兼容旧文档里的路径引用，请勿在这里追加规则。

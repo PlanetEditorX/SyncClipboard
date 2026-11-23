@@ -1,12 +1,12 @@
-# SyncClipboard Android 0.3.4（在线目标过滤版）
+# SyncClipboard Android 0.3.5（统一鉴权 + 目录共享版）
 
-一个原生 Android 客户端。0.3.4 在 0.3.3 基础上修正文件发送目标列表：隐藏当前 Android 设备自身，并排除只能主动轮询拉取的 iOS 客户端。
+一个原生 Android 客户端。0.3.5 与服务端一起切到统一契约：所有 HTTP 请求一律带 `key` 请求头，目录共享按 manifest 逐文件下载并重建子目录。
 
 ## 已实现
 
 - 前台常驻服务，监听本机 HTTP 端口，默认 `8080`
 - 开机启动、网络恢复后重新注册、每 12 小时定时注册
-- 兼容 `POST /register`、`POST /text_sync`、`POST /request_file`
+- 对接 `POST /register`、`POST /text_sync`、`POST /request_file`、`GET /clients/online`
 - 接收入站 `/ping`、`/update/current_latest`、`/upload_file`
 - 接收远程文字并写入系统剪贴板，避免同步回环
 - 接收文件发布通知并显示文件名；多文件过多时显示前 3 个名称和省略提示
@@ -17,8 +17,18 @@
 - 临时通知默认 60 秒自动清理，可在设置中改为 0–86400 秒（0 表示不自动清理）
 - 可选息屏省电模式：息屏仅保活，暂停 HTTP 接收、剪贴板同步和文件传输
 - 可选 CPU/Wi-Fi 唤醒锁、自动下载、日志查看
-- 入站更新校验密钥；直接文件中转请求可校验密钥或配置的服务器 IP
+- 目录共享：识别 `kind=folder`，取 `manifest_batch_url`（多来源时逐目录 `manifest_url`），按 `prefix` 逐文件下载并重建子目录；失败文件写回待办队列，下轮轮询自动重试
+- UA 带 `(Android)` 标识，服务端据此把 `os` 收敛成 `Android`，上传目标走服务端中转
+- 所有出站请求带 `key` 请求头；入站更新与中转回调只校验 `key`，已移除「服务器 IP 免密上传」开关
+- FileProvider 覆盖公共下载目录、应用外部目录与内部目录三个落盘位置
 
+## 0.3.5 新增（与服务端统一契约）
+
+- 所有 HTTP 请求统一带 `key` 请求头；服务端 `require_key()` 与电脑端 FileServer 共用同一校验函数。
+- 目录共享由客户端直接对接 manifest，不再依赖服务端兼容展开；服务端不再给目录条目下发必然 409 的 `download_url`。
+- 下载失败的文件写回待办队列，避免因 `/request_file` 一次性消费而永久丢失。
+- 入站中转回调只认 `key`，删除「允许服务器免密上传」设置项与 IP 白名单免密分支。
+- 服务端、电脑端、iOS 快捷指令必须**一起升级**：只升一端会让下载地址全部返回 403。
 
 ## 0.3.4 新增功能
 
@@ -42,9 +52,9 @@
 
 ## 构建
 
-要求：Android Studio Koala Feature Drop（2024.1.2）或更新版本、JDK 17、Android SDK 35。
+要求：支持 AGP 8.13 的 Android Studio（2025.1 或更新版本）、JDK 17、Android SDK 35。
 
-继续使用兼容构建组合 AGP 8.6.1 / Gradle 8.7 / API 35，以避免较旧 Android Studio 在导入新工程时出现 `An internal error has occurred`。
+当前构建组合：AGP 8.13.2 / Gradle 8.13 / Kotlin 1.9.24 / compileSdk 35（以 `android/build.gradle.kts` 与 `gradle/wrapper/gradle-wrapper.properties` 为准）。
 
 1. 用 Android Studio 打开本目录。
 2. 等待 Gradle 同步完成。

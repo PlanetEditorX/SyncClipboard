@@ -78,6 +78,8 @@ release/dist/SyncClipboard/log/ios_shortcut.log
 
 ## 服务端契约（拉取相关）
 
+**统一鉴权**：`/request_file`、合并清单、每个文件的下载地址，以及调试日志推送，**全部带 `key` 请求头**。发送端 FileServer 已无免密路由，漏带会拿到 403，快捷指令会把那段 JSON 当成文件内容存进「下载」。升级后 4 条快捷指令要一起重新签名导入。
+
 | 接口 | 用途 |
 |---|---|
 | `POST /request_file` | 一次性拉取。返回 `type`（text / file_list / folder）、`files`、`manifest_batch_url`、`folder_count`、`file_count` |
@@ -86,8 +88,8 @@ release/dist/SyncClipboard/log/ios_shortcut.log
 | `POST /ios_log` | 收 iOS 日志，覆盖写 `log/ios_shortcut.log`；空 body 回 200 + `skipped` |
 
 普通文件的条目同样带 `index` / `total`（编号只在文件这一类里算，目录不占序号），
-手机端据此弹「第 3/10 个」。电脑端没升级时缺这两个字段，手机端退回不带序号的
-写法，不会报错。
+手机端据此弹「第 3/10 个」。通知里的项数取服务端 `file_count`（只数普通文件），
+不再用 `count(files)` 把目录也算成一项；目录的文件数由清单单独给出。
 
 ## 设计约束（改之前先看这几条）
 

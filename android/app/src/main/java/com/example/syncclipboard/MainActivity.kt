@@ -361,9 +361,6 @@ private fun SyncClipboardScreen(
     }
     var screenOffPowerSave by rememberSaveable { mutableStateOf(initialConfig.screenOffPowerSave) }
     var keepAwake by rememberSaveable { mutableStateOf(initialConfig.keepAwake) }
-    var allowServerHost by rememberSaveable {
-        mutableStateOf(initialConfig.allowServerHostWithoutKey)
-    }
     var debugMode by rememberSaveable { mutableStateOf(initialConfig.debugMode) }
     var directText by rememberSaveable { mutableStateOf("") }
     var showSecret by rememberSaveable { mutableStateOf(false) }
@@ -378,7 +375,6 @@ private fun SyncClipboardScreen(
         autoClipboard = autoClipboard,
         autoDownload = autoDownload,
         keepAwake = keepAwake,
-        allowServerHostWithoutKey = allowServerHost,
         debugMode = debugMode,
         notificationTimeoutSeconds = notificationTimeout.toIntOrNull() ?: -1,
         screenOffPowerSave = screenOffPowerSave,
@@ -493,12 +489,6 @@ private fun SyncClipboardScreen(
                 description = "避免服务运行时 CPU 与 Wi‑Fi 休眠，提高后台同步稳定性，但会增加耗电",
                 checked = keepAwake,
                 onCheckedChange = { keepAwake = it },
-            )
-            SettingSwitch(
-                title = "允许服务器免密上传",
-                description = "仅适用于可信局域网中的兼容服务器",
-                checked = allowServerHost,
-                onCheckedChange = { allowServerHost = it },
             )
         }
 

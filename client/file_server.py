@@ -12,6 +12,7 @@ from common.utils import (
     reveal_in_explorer,
     fix_mojibake_filename,
     normalize_local_path,
+    request_key_matches,
 )
 from common.notification import show_notification_with_click
 from client.folder_manifest import (
@@ -90,6 +91,20 @@ class FileServer:
         self._flask_server = None
 
     def _register_routes(self):
+        @self.app.before_request
+        def guard_file_server():
+            """统一鉴权：除 /ping 探活外，所有路由都要求正确的 key。
+
+            契约与中心服务端一致（common.utils.request_key_matches）：所有端
+            一律在请求头带 key。以前 /files、/check、/manifest、/file 全是
+            免密的，局域网里任何人都能列出本机共享的绝对路径并直接下载。
+            """
+            if request.path == "/ping":
+                return None
+            if not request_key_matches(self.KEY):
+                return jsonify({"status": "error", "message": "密钥错误"}), 403
+            return None
+
         @self.app.route("/ping", methods=["GET"])
         def ping():
             return jsonify({
@@ -114,7 +129,7 @@ class FileServer:
             data = request.get_json()
             if not data:
                 return jsonify({"status": "error", "message": "无效的请求数据"}), 400
-            if data.get("key") != self.KEY:
+            if not request_key_matches(self.KEY):
                 return jsonify({"status": "error", "message": "密钥错误"}), 403
             client_ip = request.remote_addr
             if data.get("type") == "text":
@@ -164,13 +179,13 @@ class FileServer:
         @self.app.route('/upload_file', methods=['PUT'])
         def upload_file():
             """上传文件到电脑"""
-            key = get_api_key()
-            if key != self.KEY:
+            if not request_key_matches(self.KEY):
                 return jsonify({"status": "error", "message": "密钥错误"}), 403
 
-            # 从 URL 参数获取文件名，例如 ?filename=my%20file.txt
+            # request.args 已做过一次 URL 解码，不能再 unquote：文件名里字面
+            # 含 %20 会被二次解码成空格，文件被悄悄改名（服务端同处已同步修）。
             encoded_filename = request.args.get('filename', 'uploaded_file')
-            filename = fix_mojibake_filename(unquote(encoded_filename))  # 解码 %20 为空格
+            filename = fix_mojibake_filename(encoded_filename)
 
             # 安全处理文件名：去除空字符，替换反斜杠，提取最后一部分作为纯文件名
             filename = filename.replace('\x00', '')
@@ -209,8 +224,7 @@ class FileServer:
 
         @self.app.route("/clear/file_latest", methods=["GET"])
         def clear_file_latest():
-            key = get_api_key()
-            if key != self.KEY:
+            if not request_key_matches(self.KEY):
                 return jsonify({"status": "error", "message": "密钥错误"}), 403
             client_ip = request.remote_addr
             logger.info(f"清空文件列表 - 请求来自: {client_ip}")

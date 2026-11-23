@@ -3,7 +3,6 @@ package com.example.syncclipboard
 import android.content.Context
 import android.os.Build
 import android.provider.Settings
-import java.net.URI
 
 data class AppConfig(
     val serverUrl: String,
@@ -15,14 +14,11 @@ data class AppConfig(
     val autoClipboard: Boolean,
     val autoDownload: Boolean,
     val keepAwake: Boolean,
-    val allowServerHostWithoutKey: Boolean,
     val debugMode: Boolean,
     val notificationTimeoutSeconds: Int,
     val screenOffPowerSave: Boolean,
 ) {
     fun endpoint(path: String): String = serverUrl.trimEnd('/') + "/" + path.trimStart('/')
-
-    fun serverHost(): String? = runCatching { URI(serverUrl).host }.getOrNull()
 
     companion object {
         private const val PREFS = "syncclipboard_config"
@@ -46,7 +42,6 @@ data class AppConfig(
                 autoClipboard = p.getBoolean("autoClipboard", true),
                 autoDownload = p.getBoolean("autoDownload", false),
                 keepAwake = p.getBoolean("keepAwake", false),
-                allowServerHostWithoutKey = p.getBoolean("allowServerHostWithoutKey", true),
                 debugMode = p.getBoolean("debugMode", false),
                 notificationTimeoutSeconds = p.getInt("notificationTimeoutSeconds", 60).coerceIn(0, 86400),
                 screenOffPowerSave = p.getBoolean("screenOffPowerSave", false),
@@ -65,7 +60,7 @@ data class AppConfig(
                 .putBoolean("autoClipboard", config.autoClipboard)
                 .putBoolean("autoDownload", config.autoDownload)
                 .putBoolean("keepAwake", config.keepAwake)
-                .putBoolean("allowServerHostWithoutKey", config.allowServerHostWithoutKey)
+                .remove("allowServerHostWithoutKey")   // 旧版免密开关，已废弃
                 .putBoolean("debugMode", config.debugMode)
                 .putInt("notificationTimeoutSeconds", config.notificationTimeoutSeconds.coerceIn(0, 86400))
                 .putBoolean("screenOffPowerSave", config.screenOffPowerSave)

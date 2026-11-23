@@ -18,7 +18,13 @@ import java.nio.charset.StandardCharsets
 
 class ProtocolClient(private val context: Context, private val config: AppConfig) {
     data class HttpResult(val code: Int, val body: String)
-    data class RemoteFile(val filename: String, val downloadUrl: String, val clearUrl: String? = null)
+    data class RemoteFile(
+        val filename: String,
+        val downloadUrl: String,
+        val clearUrl: String? = null,
+        /** 目录共享里该文件相对根目录的子路径（来自 manifest 的 prefix）。 */
+        val relativeDir: String = "",
+    )
     data class OnlineClient(
         val name: String,
         val displayName: String,
@@ -134,8 +140,95 @@ class ProtocolClient(private val context: Context, private val config: AppConfig
         val result = postJson(config.endpoint("/request_file"), body, mapOf("key" to config.secret))
         AppState.log(context, "[调试] 列表响应: ${result.body.take(200)}", isDebug = true)
         val root = JSONObject(result.body)
-        val files = root.opt("files") ?: root
-        return parseRemoteFiles(files)
+        val files = root.optJSONArray("files")
+            ?: return parseRemoteFiles(root.opt("files") ?: root)
+
+        val list = mutableListOf<RemoteFile>()
+        var hasFolder = false
+        for (i in 0 until files.length()) {
+            val item = files.optJSONObject(i) ?: continue
+            // 目录条目只有 manifest_url，没有可下载的 download_url：
+            // 必须先取清单再逐文件下载，绝不能把 manifest 地址当文件存下来。
+            if (item.optString("kind").equals("folder", ignoreCase = true)) {
+                hasFolder = true
+                continue
+            }
+            parseRemoteFile(item, i.toString())?.let(list::add)
+        }
+        if (hasFolder) list.addAll(fetchFolderFiles(root, files))
+        return list
+    }
+
+    /** 取目录清单并摊平成 RemoteFile；每个文件带上相对目录以便重建层级。 */
+    private fun fetchFolderFiles(root: JSONObject, files: JSONArray): List<RemoteFile> {
+        val urls = mutableListOf<String>()
+        // 顶层合并清单覆盖所有目录，优先用它（一层循环就能拿全）。
+        root.optString("manifest_batch_url").takeIf { it.isNotBlank() }?.let(urls::add)
+        if (urls.isEmpty()) {
+            // 多个来源时服务端给不出合并清单，退回逐目录取各自的 manifest_url。
+            for (i in 0 until files.length()) {
+                val item = files.optJSONObject(i) ?: continue
+                if (!item.optString("kind").equals("folder", ignoreCase = true)) continue
+                item.optString("manifest_url").takeIf { it.isNotBlank() }?.let(urls::add)
+            }
+            if (urls.isEmpty()) {
+                root.optString("manifest_url").takeIf { it.isNotBlank() }?.let(urls::add)
+            }
+        }
+        if (urls.isEmpty()) {
+            AppState.log(context, "目录共享没给清单地址，无法取文件（请升级服务端）")
+            return emptyList()
+        }
+
+        val out = mutableListOf<RemoteFile>()
+        for (url in urls) {
+            try {
+                val payload = getJson(url)
+                if (!payload.optString("status").equals("ok", ignoreCase = true)) {
+                    AppState.log(context, "目录清单返回异常：$url / ${payload.optString("message")}")
+                    continue
+                }
+                val entries = payload.optJSONArray("entries") ?: continue
+                for (j in 0 until entries.length()) {
+                    val entry = entries.optJSONObject(j) ?: continue
+                    val fileUrl = entry.optString("url").takeIf { it.isNotBlank() } ?: continue
+                    val name = entry.optString("name").ifBlank { "download-$j" }
+                    val prefix = entry.optString("prefix")
+                        .ifBlank { entry.optString("dir") }
+                        .replace('\\', '/')
+                        .removePrefix("/")
+                        .removeSuffix("/")
+                    out.add(
+                        RemoteFile(
+                            filename = name,
+                            downloadUrl = fileUrl,
+                            relativeDir = prefix,
+                        )
+                    )
+                }
+                AppState.log(context, "目录清单 $url -> ${entries.length()} 个文件")
+            } catch (e: Exception) {
+                AppState.log(context, "目录清单拉取失败：$url / ${e.message}")
+            }
+        }
+        if (out.isEmpty()) {
+            root.optString("manifest_batch_error").takeIf { it.isNotBlank() }?.let {
+                AppState.log(context, "目录同步失败：$it")
+            }
+        }
+        return out
+    }
+
+    private fun getJson(url: String): JSONObject {
+        val connection = open(url, "GET", mapOf("key" to config.secret))
+        return try {
+            connection.connect()
+            val result = HttpResult(connection.responseCode, readResponse(connection))
+            ensureSuccess(result)
+            JSONObject(result.body)
+        } finally {
+            connection.disconnect()
+        }
     }
 
     fun download(remote: RemoteFile, onProgress: ((Long, Long) -> Unit)? = null): Uri {
@@ -153,6 +246,7 @@ class ProtocolClient(private val context: Context, private val config: AppConfig
                 context = context,
                 treeUriText = config.downloadTreeUri,
                 filename = remote.filename,
+                relativeDir = remote.relativeDir,
                 mimeType = connection.contentType,
                 source = BufferedInputStream(connection.inputStream),
                 totalBytes = connection.contentLengthLong,
@@ -301,7 +395,10 @@ class ProtocolClient(private val context: Context, private val config: AppConfig
         connection.connectTimeout = 15_000
         connection.readTimeout = 60_000
         connection.instanceFollowRedirects = true
-        connection.setRequestProperty("User-Agent", "SyncClipboardAndroid/${BuildConfig.VERSION_NAME}")
+        connection.setRequestProperty(
+            "User-Agent",
+            "SyncClipboardAndroid/${BuildConfig.VERSION_NAME} (Android)"
+        )
         headers.forEach { (name, value) -> connection.setRequestProperty(name, value) }
         return connection
     }

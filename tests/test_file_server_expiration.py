@@ -8,6 +8,13 @@ from client.file_server import FileServer
 from server.core.file_latest import FILE_SHARE_TTL_SECONDS
 
 
+def authed(server):
+    """统一契约：FileServer 的每个请求都要带 key 请求头。"""
+    client = server.app.test_client()
+    client.environ_base["HTTP_KEY"] = server.KEY
+    return client
+
+
 class TestFileServerExpiration(unittest.TestCase):
     def setUp(self):
         self.temp_dir = tempfile.TemporaryDirectory()
@@ -35,7 +42,7 @@ class TestFileServerExpiration(unittest.TestCase):
         self.server.register_file("id1", str(self.file_path))
         mock_time.return_value = 1000.0 + FILE_SHARE_TTL_SECONDS
 
-        response = self.server.app.test_client().get("/file/id1")
+        response = authed(self.server).get("/file/id1")
 
         self.assertEqual(response.status_code, 404)
         self.assertEqual(response.get_json()["message"], "file_id不存在")
@@ -58,7 +65,7 @@ class TestFileServerExpiration(unittest.TestCase):
         )
 
         with patch('client.file_server.FILE_LATEST_FILE', self.latest_path):
-            response = self.server.app.test_client().post(
+            response = authed(self.server).post(
                 "/update/current_latest",
                 json={
                     "key": self.server.KEY,

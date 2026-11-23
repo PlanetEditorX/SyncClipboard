@@ -71,8 +71,8 @@ class RequestFileTypeTest(unittest.TestCase):
         # 结构保持与 file_list 一致，老解析器读 files 也不会崩
         self.assertEqual(len(payload["files"]), 1)
         self.assertEqual(payload["files"][0]["kind"], "folder")
-        self.assertEqual(payload["files"][0]["download_url"],
-                         "http://192.168.1.24:8899/file/bb8d0d3c")
+        # 目录只给清单地址，不再下发必然 409 的 /file/<id> 死链
+        self.assertNotIn("download_url", payload["files"][0])
         # 目录走清单逐文件传输，顶层直接给出 manifest 地址，手机端不必自己拼
         self.assertEqual(payload["manifest_url"],
                          "http://192.168.1.24:8899/manifest/bb8d0d3c")

@@ -16,6 +16,7 @@ object PendingDownloads {
                     .put("filename", file.filename)
                     .put("download_url", file.downloadUrl)
                     .put("clear_url", file.clearUrl ?: "")
+                    .put("relative_dir", file.relativeDir)
             )
         }
         context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
@@ -26,7 +27,11 @@ object PendingDownloads {
     @Synchronized
     fun append(context: Context, file: ProtocolClient.RemoteFile) {
         val files = load(context).toMutableList()
-        files.removeAll { it.filename == file.filename && it.downloadUrl == file.downloadUrl }
+        files.removeAll {
+            it.filename == file.filename &&
+                it.downloadUrl == file.downloadUrl &&
+                it.relativeDir == file.relativeDir
+        }
         files.add(file)
         replace(context, files)
     }
@@ -45,6 +50,7 @@ object PendingDownloads {
                         filename = item.optString("filename", "download"),
                         downloadUrl = url,
                         clearUrl = item.optString("clear_url").takeIf { it.isNotBlank() },
+                        relativeDir = item.optString("relative_dir"),
                     )
                 )
             }

@@ -1,4 +1,12 @@
 <paths xmlns:android="http://schemas.android.com/apk/res/android">
+    <!-- DownloadStore 的三个落盘位置必须全部覆盖，否则 FileProvider
+         getUriForFile() 会抛 IllegalArgumentException：文件已写好却报失败。 -->
+    <!-- 策略 2：公共 Download/SyncClipboard/<子目录>/<文件> -->
+    <external-path name="public_downloads" path="Download/SyncClipboard/" />
+    <!-- 策略 3：getExternalFilesDir(null)/<子目录>/<文件> -->
+    <external-files-path name="app_files" path="." />
     <external-files-path name="downloads" path="Download/" />
+    <!-- filesDir 兜底 -->
+    <files-path name="internal_files" path="." />
     <cache-path name="cache" path="." />
 </paths>

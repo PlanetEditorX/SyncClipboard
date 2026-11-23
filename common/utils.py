@@ -280,6 +280,24 @@ def isExpired(timestamp):
         return True
 
 
+def request_key_matches(expected_key):
+    """校验 Flask 请求携带的密钥（中心服务端与电脑端 FileServer 共用）。
+
+    统一契约：所有端一律在**请求头**里带 `key`。JSON body / 查询串里的 key
+    也认，但只作为等价入口（部分内部回调是 POST JSON），不是给旧客户端留的
+    兼容分支。集中在一处，避免某个路由自己写一套、漏掉鉴权。
+    """
+    from flask import request
+    supplied = request.headers.get("key", "")
+    if not supplied:
+        data = request.get_json(silent=True)
+        if isinstance(data, dict):
+            supplied = data.get("key") or ""
+    if not supplied:
+        supplied = request.args.get("key", "")
+    return supplied == expected_key
+
+
 def fix_mojibake_filename(name):
     """把「UTF-8 字节被按 GBK 解读」产生的乱码文件名还原回中文。
 

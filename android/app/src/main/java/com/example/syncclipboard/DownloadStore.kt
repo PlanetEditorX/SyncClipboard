@@ -2,9 +2,9 @@ package com.example.syncclipboard
 
 import android.content.Context
 import android.net.Uri
-import android.provider.MediaStore
 import androidx.documentfile.provider.DocumentFile
 import java.io.File
+import java.io.IOException
 import java.io.InputStream
 import java.net.URLConnection
 
@@ -17,6 +17,8 @@ object DownloadStore {
         source: InputStream,
         totalBytes: Long,
         onProgress: ((Long, Long) -> Unit)? = null,
+        /** 目录共享里该文件相对根目录的子路径，逐段创建后重建目录层级。 */
+        relativeDir: String = "",
     ): Uri {
         val safeName = sanitize(filename)
         AppState.log(context, "准备下载文件: $safeName")
@@ -25,8 +27,14 @@ object DownloadStore {
         if (treeUriText.isNotBlank()) {
             try {
                 val treeUri = Uri.parse(treeUriText)
-                val dir = DocumentFile.fromTreeUri(context, treeUri)
-                if (dir != null && dir.canWrite()) {
+                val rootDir = DocumentFile.fromTreeUri(context, treeUri)
+                if (rootDir != null && rootDir.canWrite()) {
+                    var dir: DocumentFile = rootDir
+                    for (segment in sanitizeDir(relativeDir)) {
+                        dir = dir.findFile(segment)
+                            ?: dir.createDirectory(segment)
+                            ?: throw IOException("无法创建目录：$segment")
+                    }
                     dir.findFile(safeName)?.delete()
                     val type = mimeType?.substringBefore(';') ?: URLConnection.guessContentTypeFromName(safeName) ?: "application/octet-stream"
                     val target = dir.createFile(type, safeName)
@@ -47,9 +55,8 @@ object DownloadStore {
         // 这种方式 MT 管理器绝对能看到
         try {
             val downloadDir = File(android.os.Environment.getExternalStoragePublicDirectory(android.os.Environment.DIRECTORY_DOWNLOADS), "SyncClipboard")
-            if (!downloadDir.exists()) downloadDir.mkdirs()
-            
-            val targetFile = File(downloadDir, safeName)
+            val targetDir = resolveDir(downloadDir, relativeDir)
+            val targetFile = File(targetDir, safeName)
             targetFile.outputStream().use { output ->
                 copyWithProgress(source, output, totalBytes, onProgress)
             }
@@ -64,7 +71,7 @@ object DownloadStore {
             
             // 策略 3: 最后的挣扎，存入私有目录
             val privateDir = context.getExternalFilesDir(null) ?: context.filesDir
-            val targetFile = File(privateDir, safeName)
+            val targetFile = File(resolveDir(privateDir, relativeDir), safeName)
             targetFile.outputStream().use { output -> copyWithProgress(source, output, totalBytes, onProgress) }
             return androidx.core.content.FileProvider.getUriForFile(context, "${context.packageName}.files", targetFile)
         }
@@ -82,6 +89,20 @@ object DownloadStore {
                 callback?.invoke(copied, total)
             }
         }
+    }
+
+    /** 清单给的 prefix 可能带 "\" 或 "/"；过滤 . / .. 防止目录穿越。 */
+    private fun sanitizeDir(raw: String): List<String> =
+        raw.replace('\\', '/').split('/')
+            .filter { it.isNotBlank() && it != "." && it != ".." }
+
+    private fun resolveDir(base: File, raw: String): File {
+        var dir = base
+        for (segment in sanitizeDir(raw)) dir = File(dir, segment)
+        if (!dir.exists() && !dir.mkdirs()) {
+            throw IOException("无法创建目录：${dir.absolutePath}")
+        }
+        return dir
     }
 
     private fun sanitize(name: String): String {

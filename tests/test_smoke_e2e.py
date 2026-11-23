@@ -160,7 +160,7 @@ class _SmokeCase(unittest.TestCase):
 
     def _manifest(self, manifest_url):
         """模拟快捷指令取目录清单。"""
-        resp = requests.get(manifest_url, timeout=10)
+        resp = requests.get(manifest_url, headers={"key": KEY}, timeout=10)
         self.assertEqual(resp.status_code, 200, f"清单取不到: {manifest_url}")
         return resp.json()
 
@@ -180,7 +180,7 @@ class _SmokeCase(unittest.TestCase):
         return got
 
     def _download(self, url, chunk_size=65536, max_bytes=None):
-        resp = requests.get(url, timeout=60, stream=True)
+        resp = requests.get(url, headers={"key": KEY}, timeout=60, stream=True)
         self.addCleanup(resp.close)
         data = b""
         for chunk in resp.iter_content(chunk_size):
@@ -355,7 +355,8 @@ class TestInterruptedDownloadRetry(_SmokeCase):
         try:
             sock.sendall(
                 f"GET {parsed.path} HTTP/1.1\r\nHost: {parsed.hostname}"
-                f":{parsed.port}\r\nConnection: close\r\n\r\n".encode()
+                f":{parsed.port}\r\nkey: {KEY}\r\n"
+                f"Connection: close\r\n\r\n".encode()
             )
             sock.recv(2048)                       # 收到响应头 + 一点点正文
             sock.setsockopt(
@@ -511,6 +512,7 @@ class TestIOSPollProtocol(_SmokeCase):
         """电脑端复制了一段文字（走 /text_sync，跟真实客户端一样）。"""
         requests.post(
             f"{self.center.url}/text_sync",
+            headers={"key": KEY},
             json={"key": KEY, "content": content, "source": PC}, timeout=10,
         )
 

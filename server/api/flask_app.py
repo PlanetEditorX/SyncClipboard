@@ -4,6 +4,7 @@ import sys
 import json
 import base64
 import socket
+import time
 import logging
 import requests
 import threading
@@ -44,7 +45,8 @@ from server.core.file_handler import FileHandler
 from server.core.text_tracker import TextTracker
 from server.core.file_sync import LatestFileManager
 from server.core.file_latest import FileLatestTracker
-from common.utils import BASE_DIR, get_default_server_host, isExpired, fix_mojibake_filename
+from common.utils import (BASE_DIR, get_default_server_host, isExpired,
+                          fix_mojibake_filename, request_key_matches)
 from common.notification import show_notification
 
 # ---------- 日志：不再配置 handler，交给 run.py 统一处理 ----------
@@ -135,6 +137,12 @@ def init_services(config_manager=None):
 
 def get_api_key():
     return request.headers.get("key", "")
+
+
+def require_key():
+    """全站唯一的鉴权入口，与电脑端 FileServer 共用同一套校验。"""
+    return request_key_matches(KEY)
+
 
 def copy_text_to_clipboard(text):
     if not CLIPBOARD_ENABLED:
@@ -420,6 +428,8 @@ def push_notify(_type, latest, ip, port, os, source, latest_global):
                 "server_source": LOCAL_NAME,
                 "type": _type
             },
+            # 统一契约：key 放请求头。电脑端 / Android 的入站路由都按请求头校验。
+            headers={"key": KEY},
             timeout=5
         )
     except Exception as e:
@@ -691,11 +701,11 @@ def _take_ios_latest(source):
 # ------------------- 文字同步接口 -------------------
 @app.route('/text_sync', methods=['POST'])
 def text_sync():
-    data = request.get_json()
+    data = request.get_json(silent=True)
     if not data:
         return jsonify({"status": "error", "message": "无效的请求数据"}), 400
 
-    if data.get("key") != KEY:
+    if not require_key():
         return jsonify({"status": "error", "message": "密钥错误"}), 403
 
     source = data.get("source", "")
@@ -733,8 +743,8 @@ def text_sync():
 
 @app.route('/sync', methods=['POST'])
 def sync():
-    data = request.get_json()
-    if not data or data.get("key") != KEY:
+    data = request.get_json(silent=True) or {}
+    if not require_key():
         return jsonify({"status": "error", "message": "密钥错误"}), 403
 
     source = data.get("source", "")
@@ -787,8 +797,7 @@ def sync():
 
 @app.route('/latest', methods=['GET'])
 def get_latest():
-    key = get_api_key()
-    if key != KEY:
+    if not require_key():
         return jsonify({"status": "error", "message": "密钥错误"}), 403
 
     # 获取请求客户端的名称（用于自动标记粘贴）
@@ -838,8 +847,9 @@ def get_latest():
 # ------------------- ios接口 -------------------
 @app.route('/ios/sync', methods=['POST'])
 def iosSync():
-    data = request.get_json()
-    if not data or data.get("key") != KEY:
+    data = request.get_json(silent=True) or {}
+    # 统一走 require_key()：请求头 key 是唯一契约，body/query 由它兜底。
+    if not require_key():
         return jsonify({"status": "error", "message": "密钥错误"}), 403
 
     source = data.get("source", "")
@@ -876,8 +886,7 @@ def iosSync():
 
 @app.route('/ios/latest', methods=['GET'])
 def ios_get_latest():
-    key = get_api_key()
-    if key != KEY:
+    if not require_key():
         return jsonify({"status": "error", "message": "密钥错误"}), 403
 
     # 获取请求客户端的名称（用于自动标记粘贴）
@@ -891,8 +900,7 @@ def ios_get_latest():
 @app.route('/clients/online', methods=['GET'])
 def get_online_clients():
     """获取可直接接收文件的在线客户端。"""
-    key = get_api_key()
-    if key != KEY:
+    if not require_key():
         return jsonify({
             "status": "error",
             "message": "密钥错误"
@@ -1030,8 +1038,8 @@ def get_online_clients():
 
 @app.route('/mark_pasted', methods=['POST'])
 def mark_pasted():
-    data = request.get_json()
-    if not data or data.get("key") != KEY:
+    data = request.get_json(silent=True) or {}
+    if not require_key():
         return jsonify({"status": "error", "message": "密钥错误"}), 403
 
     source = data.get("source")          # 客户端名称，如 "PC-01"
@@ -1064,8 +1072,7 @@ def mark_pasted():
 @app.route('/file_sync', methods=['POST'])
 def file_sync():
     """电脑复制文件时调用，告诉服务端最新文件的路径"""
-    key = request.headers.get("key", "")
-    if key != KEY:
+    if not require_key():
         return jsonify({"status": "error", "message": "密钥错误"}), 403
 
     client_ip = request.remote_addr
@@ -1140,9 +1147,16 @@ def file_sync():
         "errors": errors
     })
 
-@app.route('/latest/clear', methods=['GET'])
+@app.route('/latest/clear', methods=['GET', 'POST'])
 def clear_latest():
-    """清理最新文件"""
+    """清理最新文件（需鉴权）。
+
+    旧实现没有任何校验：局域网里任何人 GET 一下就能清空共享记录并向所有
+    客户端广播 clear。调用方 gui/file_handler.py::_clear_latest_file 已在
+    请求头带 key。
+    """
+    if not require_key():
+        return jsonify({"status": "error", "message": "密钥错误"}), 403
     latest_file.clear()
     notify_clients("clear")
     return jsonify({"status": "ok"}), 200
@@ -1176,8 +1190,7 @@ def ios_log():
     每次收到的是**完整日志**（快捷指令侧累积后整份发来），所以这里用覆盖写
     而不是追加：一次运行对应一个文件，重复请求只是在刷新同一份内容。
     """
-    key = request.headers.get("key", "")
-    if key != KEY:
+    if not require_key():
         return jsonify({"status": "error", "message": "密钥错误"}), 403
     # 客户端要是把日志放 JSON 里就取 JSON；iOS 的「获取 URL 内容」在参数组合
     # 稍有出入时会改发原始正文（v8 真机：连续 POST /ios_log 全是 400），那种
@@ -1229,8 +1242,7 @@ def ios_log():
 @app.route('/request_file', methods=['POST'])
 def request_file():
     """统一拉取接口：有文件则返回所有文件列表并清空记录，无文件则返回最新文本"""
-    key = request.headers.get("key", "")
-    if key != KEY:
+    if not require_key():
         return jsonify({"status": "error", "message": "密钥错误"}), 403
 
     data = request.get_json(silent=True)
@@ -1272,14 +1284,15 @@ def request_file():
                     "size": size,
                     "source": src,
                     "kind": kind,
-                    "download_url": f"http://{ip}:{port}/file/{file_id}",
                 }
                 if kind == "folder":
-                    # 目录走逐文件传输：接收端先取清单，再按相对路径一项项
-                    # 下载。整包（无论 zip 还是别的归档）在 iOS 上解压会丢掉
-                    # 目录层级，所以这里不再给打包地址。
+                    # 目录没有整包下载地址：以前这里给的 /file/<id> 是必然
+                    # 返回 409 的死链，不认 kind 的客户端会把它当文件下载。
+                    # 统一契约：目录只给 manifests，逐文件下载。
                     entry["manifest_url"] = f"http://{ip}:{port}/manifest/{file_id}"
                     folder_origins.append((file_id, ip, port))
+                else:
+                    entry["download_url"] = f"http://{ip}:{port}/file/{file_id}"
                 file_list.append(entry)
             else:
                 logging.warning(f"跳过无效文件记录: {info}")
@@ -1356,13 +1369,14 @@ def request_file():
 @app.route('/upload_file', methods=['PUT'])
 def upload_file():
     """手机主动上传文件到电脑（服务端保存到 save_path）"""
-    key = get_api_key()
-    if key != KEY:
+    if not require_key():
         return jsonify({"status": "error", "message": "密钥错误"}), 403
 
-    # 从 URL 参数获取文件名，例如 ?filename=my%20file.txt
+    # request.args / parse_qs 已经做过一次 URL 解码，这里不能再 unquote：
+    # 文件名里字面含 %20（如 "report%20final.txt"）会被二次解码成
+    # "report final.txt"，用户拿到的文件被悄悄改名。
     encoded_filename = request.args.get('filename', 'uploaded_file')
-    filename = fix_mojibake_filename(unquote(encoded_filename)).replace('\\', '/')  # 解码 %20 为空格
+    filename = fix_mojibake_filename(encoded_filename).replace('\\', '/')
 
     # 读取原始二进制数据
     file_data = request.get_data()
@@ -1389,8 +1403,7 @@ clear_files = []
 
 @app.route('/clear/<path:filename>')
 def clear_file(filename):
-    key = get_api_key()
-    if key != KEY:
+    if not require_key():
         return jsonify({"status": "error"}), 403
     deleted = []
     failed = []
@@ -1429,8 +1442,7 @@ def clear_file(filename):
 @app.route('/download/<path:filename>')
 def download_file(filename):
     """提供文件下载"""
-    key = get_api_key()
-    if key != KEY:
+    if not require_key():
         return jsonify({"status": "error", "message": "密钥错误"}), 403
 
     filepath = secure_save_path(SAVE_PATH, filename)
@@ -1450,8 +1462,7 @@ def download_file(filename):
 @app.route('/upload_file_to_download', methods=['PUT'])
 def upload_file_to_download():
     """手机主动上传文件到电脑，并通知客户端下载"""
-    key = get_api_key()
-    if key != KEY:
+    if not require_key():
         return jsonify({"status": "error", "message": "密钥错误"}), 403
 
     # 从 URL 参数获取客户端的回调地址和文件名
@@ -1484,7 +1495,8 @@ def upload_file_to_download():
 
     query_params = parse_qs(parsed.query)
     encoded_filename = query_params.get('filename', ['uploaded_file'])[0]
-    filename = fix_mojibake_filename(unquote(encoded_filename)).replace('\\', '/')
+    # parse_qs 已解码一次，不能再 unquote（见 /upload_file 的说明）
+    filename = fix_mojibake_filename(encoded_filename).replace('\\', '/')
 
     # 读取文件数据并保存到本地
     file_data = request.get_data()
@@ -1506,7 +1518,14 @@ def upload_file_to_download():
 
     # 通知客户端调用download_url下载
     try:
-        resp = requests.post(redirect_url, json={"download_url": download_url,"clear_url": clear_url}, timeout=5)
+        resp = requests.post(
+            redirect_url,
+            json={"download_url": download_url, "clear_url": clear_url},
+            # 回调过去也要带密钥：对方（Android MiniHttpServer / 电脑端）
+            # 现在可以据此校验来源，而不是只靠 IP 白名单免密收通知。
+            headers={"key": KEY},
+            timeout=5,
+        )
         if resp.status_code >= 400:
             logging.warning(f"通知客户端{target}失败，HTTP {resp.status_code}: {resp.text}")
         else:
@@ -1535,10 +1554,17 @@ def status():
     }), 200
 
 def get_os_type(ua):
-    ua_lower = ua.lower()
-    if re.search(r'macrodroid', ua_lower):
-        # 旧版 MacroDroid 宏（已停用）遗留的 UA 兜底：万一还有设备在用旧宏，
-        # 至少能正确归为 Android，而不是被当成未知系统影响推送分支。
+    """把 User-Agent 收敛成注册表里稳定的 os 标签。
+
+    绝不能把整串 UA 原样落库：Android 客户端发的是
+    `SyncClipboardAndroid/0.3.4`，而 /clients/online 靠 `os == 'android'`
+    决定要不要走 upload_file_to_download 中转。存成 UA 字符串后该分支永远
+    命不中，上传地址退化成 Android 根本不接受的直连 PUT，文件静默丢失。
+    """
+    ua_lower = (ua or "").lower()
+    # MacroDroid 是旧版宏的遗留 UA；okhttp / dalvik / SyncClipboardAndroid
+    # 是 Android 客户端常见的几种写法，统一归成 Android。
+    if re.search(r'macrodroid|android|okhttp|dalvik|syncclipboardandroid', ua_lower):
         return 'Android'
     if re.search(r'darwin', ua_lower):
         # macOS 的 UA 也包含 Darwin，但通常还包含 'Mac OS X'
@@ -1546,10 +1572,15 @@ def get_os_type(ua):
             return 'macOS'
         # 移动端 ShortcutRunner 这种往往是 iOS 上的 App 扩展
         return 'iOS'
-    # 默认的'python-requests'识别为Windows客户端
-    if re.search(r'python', ua_lower):
+    if re.search(r'iphone|ipad|ios|shortcutrunner', ua_lower):
+        return 'iOS'
+    if re.search(r'linux', ua_lower):
+        return 'Linux'
+    # python-requests 是 Windows 客户端的默认 UA；其余未识别的一律给
+    # 稳定标签，避免把任意 UA 字符串写进 os 字段污染分支判断。
+    if re.search(r'python|windows|win32', ua_lower) or not ua_lower:
         return 'Windows'
-    return ua_lower
+    return 'Unknown'
 # 客户端注册
 @app.route('/register', methods=['POST'])
 def register():
@@ -1559,10 +1590,7 @@ def register():
     port = data.get('file_server_port', 0)
     local_name = data.get('local_name', 'unknown')
     os = data.get('os', get_os_type(request.headers.get('User-Agent')))
-    key = data.get('key')
-
-    # 可在此验证密钥，与 server_config 中的 key 比对
-    if key != app.config.get('key'):
+    if not require_key():
         return jsonify({"status": "error", "msg": "invalid key"}), 403
     # 加载客户端列表
     load_clients_ip()
@@ -1581,11 +1609,16 @@ def register():
 # 内部通知接口
 @app.route('/internal/notify_clients', methods=['POST'])
 def internal_notify():
-    # 验证请求来源是本地
-    if request.remote_addr == '127.0.0.1':
-        data = request.get_json()
-        notify_clients(data['changed_type'])
-        return jsonify({"status": "ok"})
+    # 只允许本机调用；非本机必须明确返回 403，否则函数落到 None，
+    # Flask 会抛 "View function did not return a valid response" → 500。
+    if request.remote_addr not in ('127.0.0.1', '::1'):
+        return jsonify({"status": "error", "message": "仅允许本机调用"}), 403
+    data = request.get_json(silent=True) or {}
+    changed_type = data.get('changed_type')
+    if not changed_type:
+        return jsonify({"status": "error", "message": "缺少 changed_type"}), 400
+    notify_clients(changed_type)
+    return jsonify({"status": "ok"})
 
 # ------------------- 启动函数 -------------------
 def start_flask():

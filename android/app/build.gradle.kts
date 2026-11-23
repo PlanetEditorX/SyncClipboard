@@ -35,8 +35,8 @@ if (releaseTaskRequested) {
     }
 }
 
-val appVersionName = providers.gradleProperty("appVersionName").getOrElse("0.3.4")
-val appVersionCode = providers.gradleProperty("appVersionCode").map { it.toIntOrNull() ?: 7 }.getOrElse(7)
+val appVersionName = providers.gradleProperty("appVersionName").getOrElse("0.3.5")
+val appVersionCode = providers.gradleProperty("appVersionCode").map { it.toIntOrNull() ?: 8 }.getOrElse(8)
 
 android {
     namespace = "com.example.syncclipboard"

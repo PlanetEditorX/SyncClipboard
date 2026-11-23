@@ -9,5 +9,5 @@
 	"file_sync_mode": "both",
 	"folder_sync_enabled": true,
 	"folder_zip_confirm_gb": 10,
-	"file_share_ttl_minutes": 10
+	"file_share_ttl_minutes": 30
 }

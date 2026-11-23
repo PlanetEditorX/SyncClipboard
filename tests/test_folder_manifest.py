@@ -17,6 +17,13 @@ from client.file_server import FileServer
 from client.folder_manifest import build_manifest
 
 
+def authed(server):
+    """统一契约：FileServer 的每个请求都要带 key 请求头。"""
+    client = server.app.test_client()
+    client.environ_base["HTTP_KEY"] = server.KEY
+    return client
+
+
 class _FolderCase(unittest.TestCase):
     def setUp(self):
         self.temp_dir = tempfile.TemporaryDirectory()
@@ -76,7 +83,7 @@ class ManifestShapeTest(_FolderCase):
 
 class ManifestHttpTest(_FolderCase):
     def test_manifest_lists_absolute_urls(self):
-        client = self._server().app.test_client()
+        client = authed(self._server())
         resp = client.get("/manifest/d1")
         self.assertEqual(resp.status_code, 200)
         body = resp.get_json()
@@ -94,18 +101,18 @@ class ManifestHttpTest(_FolderCase):
         note = self.root / "note.txt"
         note.write_text("hi", encoding="utf-8")
         server.register_file("f1", str(note))
-        client = server.app.test_client()
+        client = authed(server)
         self.assertEqual(client.get("/manifest/f1").status_code, 404)
         self.assertEqual(client.get("/manifest/nope").status_code, 404)
 
     def test_download_member_returns_content(self):
-        client = self._server().app.test_client()
+        client = authed(self._server())
         resp = client.get("/file/d1/子目录/a.txt")
         self.assertEqual(resp.status_code, 200)
         self.assertEqual(resp.data, b"A")
 
     def test_download_member_blocks_traversal(self):
-        client = self._server().app.test_client()
+        client = authed(self._server())
         for path in ("/file/d1/../secret.txt",
                      "/file/d1/..%2Fsecret.txt",
                      "/file/d1/子目录/../../secret.txt"):
@@ -115,7 +122,7 @@ class ManifestHttpTest(_FolderCase):
                 self.assertNotIn(b"SECRET", resp.data, path)
 
     def test_download_member_missing_file_is_404(self):
-        client = self._server().app.test_client()
+        client = authed(self._server())
         self.assertEqual(client.get("/file/d1/没有这个文件.txt").status_code, 404)
 
 
@@ -124,7 +131,7 @@ class ManifestShareKeptTest(_FolderCase):
 
     def test_share_survives_member_downloads(self):
         server = self._server()
-        client = server.app.test_client()
+        client = authed(server)
         client.get("/file/d1/readme.txt")
         client.get("/file/d1/子目录/a.txt")
         with server._shared_files_lock:
@@ -159,7 +166,7 @@ class BatchManifestTest(_FolderCase):
         return server
 
     def test_dirs_are_prefixed_with_root(self):
-        body = self._two_servers().app.test_client().get(
+        body = authed(self._two_servers()).get(
             "/manifest/batch?ids=d1,d2").get_json()
         self.assertEqual(body["status"], "ok")
         self.assertEqual(body["roots"], ["课程", "文档"])
@@ -181,7 +188,7 @@ class BatchManifestTest(_FolderCase):
         v6 真机就是因此把 `目录名/` 当成文件名，所有文件互相覆盖，最后只剩
         一个叫目录名的文件。所以斜杠必须由快捷指令里的字面文本提供。
         """
-        body = self._two_servers().app.test_client().get(
+        body = authed(self._two_servers()).get(
             "/manifest/batch?ids=d1,d2").get_json()
         for entry in body["entries"]:
             prefix = entry["prefix"]
@@ -200,7 +207,7 @@ class BatchManifestTest(_FolderCase):
         维护变量，多一个动作就多一个真机上可能出错的地方，而这里的编号是确定
         的、可以测试的。两个目录合并后序号必须连续，不能各自从 1 开始。
         """
-        body = self._two_servers().app.test_client().get(
+        body = authed(self._two_servers()).get(
             "/manifest/batch?ids=d1,d2").get_json()
         total = body["count"]
         indexes = [e["index"] for e in body["entries"]]
@@ -209,41 +216,41 @@ class BatchManifestTest(_FolderCase):
             self.assertEqual(entry["total"], total, entry)
 
     def test_empty_dirs_keep_prefix(self):
-        body = self._two_servers().app.test_client().get(
+        body = authed(self._two_servers()).get(
             "/manifest/batch?ids=d1").get_json()
         self.assertEqual(body["empty_dirs"], ["课程/空目录/"])
 
     def test_urls_downloadable_and_point_at_own_folder(self):
         server = self._two_servers()
-        body = server.app.test_client().get(
+        body = authed(server).get(
             "/manifest/batch?ids=d1,d2").get_json()
         by_name = {e["name"]: e for e in body["entries"]}
         # url 里的 file_id 必须是它自己那个目录，串了就会拿到别的目录的文件
         self.assertIn("/file/d2/", by_name["讲义.txt"]["url"])
         self.assertIn("/file/d1/", by_name["readme.txt"]["url"])
-        resp = server.app.test_client().get(
+        resp = authed(server).get(
             "/file/d2/第一章/作业.txt")
         self.assertEqual(resp.get_data(), b"H")
         resp.close()
 
     def test_unknown_id_is_ignored(self):
-        body = self._two_servers().app.test_client().get(
+        body = authed(self._two_servers()).get(
             "/manifest/batch?ids=d1,nope").get_json()
         self.assertEqual(body["status"], "ok")
         self.assertEqual(body["roots"], ["课程"])
         self.assertEqual(body["count"], 3)
 
     def test_all_ids_unknown_is_404(self):
-        resp = self._two_servers().app.test_client().get(
+        resp = authed(self._two_servers()).get(
             "/manifest/batch?ids=nope,nada")
         self.assertEqual(resp.status_code, 404)
 
     def test_missing_ids_is_400(self):
-        resp = self._two_servers().app.test_client().get("/manifest/batch")
+        resp = authed(self._two_servers()).get("/manifest/batch")
         self.assertEqual(resp.status_code, 400)
 
     def test_duplicate_ids_not_double_counted(self):
-        body = self._two_servers().app.test_client().get(
+        body = authed(self._two_servers()).get(
             "/manifest/batch?ids=d1,d1").get_json()
         self.assertEqual(body["count"], 3)
         self.assertEqual(body["roots"], ["课程"])
@@ -253,7 +260,7 @@ class BatchManifestTest(_FolderCase):
         server = self._two_servers()
         # file_server 是值导入，得补丁它自己那份绑定
         with patch.object(fs, "MANIFEST_MAX_ENTRIES", 2):
-            body = server.app.test_client().get(
+            body = authed(server).get(
                 "/manifest/batch?ids=d1,d2").get_json()
         self.assertEqual(body["count"], 2)
         self.assertTrue(body["truncated"])

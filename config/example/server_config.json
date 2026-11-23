@@ -3,5 +3,5 @@
 	"host": "",
 	"port": 8000,
 	"local_name": "Server",
-	"file_share_ttl_minutes": 10
+	"file_share_ttl_minutes": 30
 }

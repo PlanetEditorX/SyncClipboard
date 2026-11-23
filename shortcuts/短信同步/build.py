@@ -214,7 +214,7 @@ dbg(['=== 短信同步开始 ===\n'
 b.exit()
 b.endif(g_body)
 
-b.setvar('字数', act_out(b.count(var('正文')), '计数'))
+b.setvar('字数', act_out(b.count(var('正文'), 'Characters'), '计数'))
 dbg(['=== 短信同步开始 ===\n'
      '地址 ', var('服务器'), ' ｜ 复制 ', c(COPY), ' ｜ 通知 ', c(NOTIFY_ON),
      '\n设备 ', var('来源'), ' ｜ 正文 ', var('字数'), ' 字'])
@@ -242,7 +242,7 @@ dbg(['=== 短信同步结束 ===\n'
 b.exit()
 b.endif(g_miss)
 
-b.setvar('位数', act_out(b.count(var('验证码')), '计数'))
+b.setvar('位数', act_out(b.count(var('验证码'), 'Characters'), '计数'))
 log(['④ 抽到验证码（', var('位数'), ' 位，内容不记日志）'])
 
 # ---- 5 探活 + 补推 --------------------------------------------------------

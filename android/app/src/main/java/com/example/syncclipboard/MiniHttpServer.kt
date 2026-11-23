@@ -169,13 +169,14 @@ class MiniHttpServer(
         headers: Map<String, String>,
         remoteAddress: InetAddress,
     ): Boolean {
-        val config = configProvider()
+        // 服务端回调 /upload_file_to_download 现在一律带 key 请求头，
+        // 不再靠「来源 IP 等于服务器」免密放行（内网 IP 可伪造）。
         val suppliedKey = root.optString("key").ifBlank { query["key"] ?: headers["key"].orEmpty() }
-        if (suppliedKey == config.secret) return true
-        if (!config.allowServerHostWithoutKey) return false
-        val serverHost = config.serverHost() ?: return false
-        val addresses = runCatching { InetAddress.getAllByName(serverHost).toSet() }.getOrDefault(emptySet())
-        return addresses.any { it.hostAddress == remoteAddress.hostAddress }
+        val ok = suppliedKey == configProvider().secret
+        if (!ok) {
+            listener.onServerLog("拒绝无密钥的入站上传（来自 ${remoteAddress.hostAddress}）")
+        }
+        return ok
     }
 
     private fun isHttpUrl(value: String): Boolean = runCatching {

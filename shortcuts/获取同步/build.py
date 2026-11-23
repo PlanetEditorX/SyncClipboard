@@ -133,6 +133,15 @@ def _debug_on():
     return b.if_(act_out(cfg, '配置', dkey(DEBUG)), IS, '开')
 
 
+def key_header():
+    """统一的请求头：所有「获取 URL 内容」都带 key。
+
+    发送端 FileServer 已全面鉴权，清单地址与每个文件地址都必须带密钥，
+    否则 403 —— 快捷指令会把 403 的 JSON 当成文件内容存下来。
+    """
+    return [('key', act_out(cfg, '配置', dkey(KEY)))]
+
+
 def log_push():
     """把当前完整日志推给电脑端（POST /ios_log），仅调试=开 时执行。
 
@@ -142,7 +151,7 @@ def log_push():
     g = _debug_on()
     b.post_json(
         var('日志地址'),
-        headers=[('key', act_out(cfg, '配置', dkey(KEY)))],
+        headers=key_header(),
         body=[('log', var('日志'))],
     )
     b.endif(g)
@@ -186,7 +195,7 @@ b.comment('3. 拉取（/request_file 一次消费：电脑端返回前已清空�
           '所以只请求一次，之后全部读「响应」变量）')
 resp = b.post_json(
     var('请求地址'),
-    headers=[('key', act_out(cfg, '配置', dkey(KEY)))],
+    headers=key_header(),
     body=[('type', 'file'), ('source', var('来源'))],
 )
 b.setvar('响应', resp)
@@ -217,9 +226,11 @@ b.comment('5. 文件分支：先逐项下载普通文件（一层循环），再
 g_kind = b.if_any(var('类型'), ['file_list', 'folder'])
 
 b.setvar('文件列表', pick(resp, 'files'))
-b.setvar('文件数量', act_out(b.count(var('文件列表')), '计数'))
-dbg(['③ 待下载 ', var('文件数量'), ' 项'])
-notice(['开始同步：共 ', var('文件数量'), ' 项'])
+# 服务端给的 file_count 只数普通文件（不含目录）。用 count(files) 会把目录
+# 也算成一项，复制一个目录时弹「共 1 项」，用户以为只传了一个文件。
+b.setvar('文件数量', pick(resp, 'file_count'))
+dbg(['③ 待下载普通文件 ', var('文件数量'), ' 项'])
+notice(['开始同步：普通文件 ', var('文件数量'), ' 项'])
 
 # --- 普通文件：一层循环，只挑 kind == file ---
 #
@@ -248,7 +259,7 @@ notice(['正在下载：', f_name])
 b.endif(g_f_idx)
 # 普通文件没有子目录，dest = 根子路径 + 文件名；根子路径留空时只剩文件名，
 # 所以这里不额外加字面 "/"，免得拼出前导斜杠。
-save_confirmed(b.get(f_url), [f_name],
+save_confirmed(b.get(f_url, headers=key_header()), [f_name],
                dest=[act_out(cfg, '配置', dkey(ROOT_SUB)), f_name])
 b.endif(g_is_file)
 b.end_repeat(g_each, each=True)
@@ -265,7 +276,7 @@ b.setvar('清单地址', pick(resp, 'manifest_batch_url'))
 
 g_has_list = b.if_(var('清单地址'), 100)        # 有任何值 = 这次带了目录
 
-listing = b.get(var('清单地址'))
+listing = b.get(var('清单地址'), headers=key_header())
 b.setvar('清单', listing)
 
 g_listing_ok = b.if_(pick(listing, 'status'), IS, 'ok')
@@ -309,7 +320,7 @@ g_has_url = b.if_(entry_url, 100)
 # 只剩下一个以目录名命名的文件。
 g_has_prefix = b.if_(entry_prefix, 100)
 save_confirmed(
-    b.get(entry_url), [entry_prefix, '/', entry_name],
+    b.get(entry_url, headers=key_header()), [entry_prefix, '/', entry_name],
     dest=[act_out(cfg, '配置', dkey(ROOT_SUB)),
           entry_prefix, '/', entry_name])
 
@@ -317,7 +328,7 @@ b.else_(g_has_prefix)
 # 清单里没有 prefix 时退回用 dir 拼：dir 末尾自带 "/"，多出来那一个 iOS 会
 # 合并，层级仍然正确。
 save_confirmed(
-    b.get(entry_url), [entry_dir, entry_name],
+    b.get(entry_url, headers=key_header()), [entry_dir, entry_name],
     dest=[act_out(cfg, '配置', dkey(ROOT_SUB)),
           entry_dir, '/', entry_name])
 b.endif(g_has_prefix)

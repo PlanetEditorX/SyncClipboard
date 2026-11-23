@@ -117,7 +117,7 @@
 | `PUT <upload_url>` | 上传文件。`?filename=`，请求头 `key` / `source` / `target` / `Content-Type`，body 是文件二进制 |
 | `POST /ios_log` | 收日志（调试 = 开） |
 
-除 `/status` 探活外，**每个请求都必须带 `key` 请求头**（服务端读的是 `request.headers["key"]`，不是 body 里的 `key`）。`/clients/online` 尤其容易漏：漏了它拿到的是 403 `{status: error, message: 密钥错误}`，弹出来像「密钥配错了」，实际是那条 GET 没带钥匙，文件分支整个走不通。
+除 `/status` 探活外，**每个请求都必须带 `key` 请求头**。服务端与电脑端 FileServer 共用同一个 `require_key()`：请求头是唯一契约，JSON body 里的 `key` 与 `?key=` 只是等价入口。漏带 `key` 拿到的是 403 `{status: error, message: 密钥错误}`，弹出来像「密钥配错了」，实际是那条请求没带钥匙，文件分支整个走不通。
 
 `upload_url` 由服务端按目标类型给，手机这边照用不辨类型：
 

@@ -11,6 +11,13 @@ from client.main_menu import SyncClient
 from server.core.file_latest import FILE_SHARE_TTL_SECONDS
 
 
+def authed(server):
+    """统一契约：FileServer 的每个请求都要带 key 请求头。"""
+    client = server.app.test_client()
+    client.environ_base["HTTP_KEY"] = server.KEY
+    return client
+
+
 class _TempDirMixin(unittest.TestCase):
     """每个用例一个临时目录，被共享的目录建在里面。"""
 
@@ -140,7 +147,7 @@ class TestFolderShareManifest(_TempDirMixin):
         mock_post = self._mock_post()
         item = self._push_folder(mock_post)
 
-        body = self.file_server.app.test_client().get(
+        body = authed(self.file_server).get(
             f"/manifest/{item['file_id']}").get_json()
         self.assertEqual(body["status"], "ok")
         self.assertEqual(body["root"], "magisk")
@@ -156,7 +163,7 @@ class TestFolderShareManifest(_TempDirMixin):
         mock_post = self._mock_post()
         item = self._push_folder(mock_post)
 
-        resp = self.file_server.app.test_client().get(f"/file/{item['file_id']}")
+        resp = authed(self.file_server).get(f"/file/{item['file_id']}")
         self.assertEqual(resp.status_code, 409)
         body = resp.get_json()
         self.assertIn("manifest", body["message"])
@@ -165,7 +172,7 @@ class TestFolderShareManifest(_TempDirMixin):
     def test_member_download_keeps_share(self):
         mock_post = self._mock_post()
         item = self._push_folder(mock_post)
-        client = self.file_server.app.test_client()
+        client = authed(self.file_server)
 
         resp = client.get(f"/file/{item['file_id']}/模块/a.txt")
         self.assertEqual(resp.status_code, 200)
@@ -186,7 +193,7 @@ class TestFolderShareManifest(_TempDirMixin):
             return real_getsize(path, *args, **kwargs)
 
         with patch.object(folder_manifest_mod.os.path, "getsize", fake_getsize):
-            body = self.file_server.app.test_client().get(
+            body = authed(self.file_server).get(
                 f"/manifest/{item['file_id']}").get_json()
 
         self.assertEqual(body["count"], 1)

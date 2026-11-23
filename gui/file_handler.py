@@ -158,7 +158,9 @@ class FileHandler:
             return None
         try:
             resp = requests.get(
-                manifest_url, timeout=(CONNECT_TIMEOUT, READ_TIMEOUT))
+                manifest_url,
+                headers={"key": self.config.key},
+                timeout=(CONNECT_TIMEOUT, READ_TIMEOUT))
             data = resp.json() if resp.content else {}
         except Exception as e:
             logger.error(f"获取目录清单失败: {e}")
@@ -253,7 +255,9 @@ class FileHandler:
         last_error = None
 
         for attempt in range(1, MAX_DOWNLOAD_ATTEMPTS + 1):
-            headers = {}
+            # 发送端 FileServer 已全面鉴权，下载地址也必须带 key；
+            # Range 只是附加头，不能把 key 挤掉。
+            headers = {"key": self.config.key}
             if downloaded:
                 headers["Range"] = f"bytes={downloaded}-"
             try:
@@ -392,7 +396,13 @@ class FileHandler:
         """
         try:
             clear_url = f"http://{host}:{port}/latest/clear"
-            resp = requests.get(clear_url, timeout=3)
+            # 服务端 /latest/clear 已加鉴权：不带 key 会被 403，且共享记录
+            # 不会被清掉（下次拉取重复投递）。
+            resp = requests.get(
+                clear_url,
+                headers={"key": self.config.key},
+                timeout=3,
+            )
             if resp.status_code == 200:
                 logger.info(f"成功通知中心服务器清理 latest_file")
             else:
@@ -453,10 +463,12 @@ class FileHandler:
         if data.get("status") == "download" and data.get("type") == "file":
             download_url = data.get("download_url")
             name = data.get("name", suggested_filename)
-            if download_url and data.get("kind") == "folder":
+            # 目录项现在只给 manifest_url（不再有必然 409 的 download_url）
+            if data.get("kind") == "folder" and data.get("manifest_url"):
                 self._download_folder(data, self.config.save_path, None)
-            elif download_url:
-                self._download_from_url(download_url, name, announce=True)
+            elif data.get("download_url"):
+                self._download_from_url(
+                    data["download_url"], name, announce=True)
             return
 
         # 多文件列表：直接存到配置的下载目录，不再先问「保存到哪」

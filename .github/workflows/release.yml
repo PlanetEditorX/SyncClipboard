@@ -97,11 +97,41 @@ jobs:
       contents: write
 
     steps:
+      # 必须放在 download-artifact 之前：checkout 默认会 git clean -ffdx，
+      # 放后面会把刚下载的 Windows 包一起清掉。
+      - name: Checkout shortcuts
+        uses: actions/checkout@v4
+
       - name: Download Windows package
         uses: actions/download-artifact@v4
         with:
           name: windows-package
           path: release-assets
+
+      # iOS 快捷指令是协议的一部分：所有请求统一带 key 请求头后，旧版
+      # .shortcut 下载会 403。必须随每个 tag 一起发布可导入的签名产物，
+      # 否则 iOS 端无从升级。单独打成一个 zip，不放进 Windows 包里 ——
+      # Windows 用户用不到，iOS 用户也不该为了 4 个文件去解压 38MB 的包。
+      - name: Package iOS shortcuts
+        shell: bash
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          python3 - <<'PY'
+          import os, zipfile
+          from pathlib import Path
+          tag = os.environ["TAG"]
+          out = Path("release-assets") / f"SyncClipboard-iOS-Shortcuts-{tag}.zip"
+          out.parent.mkdir(parents=True, exist_ok=True)
+          with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as z:
+              for name in ("文字同步", "推送同步", "获取同步", "短信同步"):
+                  src = Path("shortcuts") / name / f"{name}.shortcut"
+                  if not src.is_file():
+                      raise SystemExit(f"缺少签名产物: {src}")
+                  z.write(src, arcname=f"{name}.shortcut")
+                  print("  +", src, src.stat().st_size, "B")
+          print("saved", out, out.stat().st_size, "B")
+          PY
 
       - name: Show release assets
         run: ls -la release-assets
@@ -113,7 +143,8 @@ jobs:
           generate_release_notes: true
           append_body: true
           body: |
-            > 安卓端如有改动，请在 Actions 页手动运行 **Build Android** 工作流，
-            > 它会用本版本号构建 APK 并挂到这条 Release 上。
+            > **破坏性协议变更**：所有 HTTP 请求统一带 `key` 请求头。服务端、电脑端、iOS 快捷指令、Android 客户端必须**同时升级**，只升一端会让下载地址返回 403。
+            > iOS 用户请下载 `SyncClipboard-iOS-Shortcuts-${{ github.ref_name }}.zip`，把 4 条快捷指令全部重新导入（旧的会 403）。
+            > 安卓端如有改动，请在 Actions 页手动运行 **Build Android** 工作流，它会用本版本号构建 APK 并挂到这条 Release 上。
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

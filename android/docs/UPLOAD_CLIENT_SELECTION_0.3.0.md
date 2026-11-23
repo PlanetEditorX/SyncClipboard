@@ -1,5 +1,10 @@
 # 0.3.0 文件目标选择修复
 
+> **历史记录**：本文描述 0.3.0 的实现（multipart POST、`online_clients` 顶层字段、
+> `X-API-Key` 三处冗余携带）。当前 0.3.5 统一契约是「所有请求只带 `key` 请求头」，
+> 上传用 PUT 原样二进制、`clients` 结构化数组；以根 `README.md` 与
+> `android/README.md` 的 0.3.5 章节为准。
+
 ## 原问题
 
 旧版分享文件时固定向应用配置的 `/upload_file` 发送 multipart POST。该路径在主服务器上可能只承担其他用途，因而返回 HTTP 405。

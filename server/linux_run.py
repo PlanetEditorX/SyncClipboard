@@ -24,7 +24,9 @@ class CleanFormatter(logging.Formatter):
         return super().format(record)
 
 def default_save_path():
-    return str(Path.home() / 'Downloads')
+    # 容器里 ~/Downloads 不在挂载卷上，重启即丢；允许用 SAVE_PATH 指向
+    # 已挂载的目录（Dockerfile 里设为 /app/downloads）。
+    return os.environ.get('SAVE_PATH') or str(Path.home() / 'Downloads')
 
 class LinuxConfigManager:
     SERVER_CONFIG = BASE_DIR / 'config' / 'server_config.json'
@@ -73,7 +75,9 @@ class LinuxConfigManager:
             'save_path': self.save_path,
             'port': self.server_port,
             'local_name': self.local_name,
-            'file_share_ttl_minutes': 10
+            # 与 server/core/file_latest.py 的 30 分钟默认值、GUI 面板默认值
+            # 保持一致；旧版配置里写 10 的会被保留（用户显式设置优先）。
+            'file_share_ttl_minutes': 30
         }
         for field, default_value in default_fields.items():
             if field not in config:
@@ -94,9 +98,9 @@ class LinuxConfigManager:
         self.save_path = config.get('save_path', config.get('save_path', self.save_path))
         self.local_name = config.get('local_name', self.local_name)
         try:
-            self.file_share_ttl_minutes = int(config.get('file_share_ttl_minutes', 10))
+            self.file_share_ttl_minutes = int(config.get('file_share_ttl_minutes', 30))
         except (TypeError, ValueError):
-            self.file_share_ttl_minutes = 10
+            self.file_share_ttl_minutes = 30
         logging.info(
             f"读取服务器配置 | 端口={self.server_port} | 服务器名称={self.local_name} | "
             f"共享存活={self.file_share_ttl_minutes}分钟"
@@ -175,14 +179,17 @@ def main():
 
     # 共享文件存活时间（分钟 → 秒）
     set_file_share_ttl(
-        getattr(config_manager, 'file_share_ttl_minutes', 10) * 60
+        getattr(config_manager, 'file_share_ttl_minutes', 30) * 60
     )
 
     init_services(config_manager)
 
-    # 支持通过环境变量覆盖运行端口
+    # 支持通过环境变量覆盖运行端口。必须同步写回 app.config：
+    # /clients/online 下发的中转 URL 用的是 app.config['port']，只改
+    # app.run 的端口会让下发的地址仍指向 8000，手机端上传到不存在的端口。
     port_env = os.environ.get('PORT') or os.environ.get('SERVER_PORT')
     run_port = int(port_env) if port_env else int(config_manager.server_port)
+    app.config['port'] = run_port
     logging.info(f"配置加载完成 | 端口: {run_port} | 保存路径: {config_manager.save_path}")
     app.run(
         host='0.0.0.0',

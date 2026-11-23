@@ -1,0 +1,35 @@
+# 构建上下文是仓库根目录（docker build -f docker/Dockerfile .），
+# 因此 .dockerignore 必须放在根目录才会生效；docker/ 下那份只是历史遗留。
+.git
+.git/
+.gitignore
+.venv
+.venv/
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.swp
+*.log
+log/
+latest/
+.vscode
+.vscode/
+node_modules/
+.env
+.DS_Store
+
+# 运行期生成的状态文件不要打进镜像（会被挂载卷覆盖，打进去反而带脏数据）
+text_latest.json
+file_latest.json
+client_ip.json
+config/*.json
+config/example/
+release/
+*.zip
+*.tar.gz
+
+# CI 用 rsync -a 把整个仓库复制进 docker-context/，隐目录也会一起过去。
+# 项目工作日志属于本地信息，不能打进公开镜像。
+.workbuddy/
+docker-context/

@@ -42,7 +42,9 @@ class _HandlerFixture(unittest.TestCase):
         self.addCleanup(self.temp_dir.cleanup)
         self.root = Path(self.temp_dir.name)
         self.handler = FileHandler.__new__(FileHandler)
-        self.handler.config = type("C", (), {"save_path": str(self.root)})()
+        self.handler.config = type(
+            "C", (), {"save_path": str(self.root), "key": "secret"}
+        )()
 
     def _dialog(self):
         dialog = MagicMock()
@@ -74,8 +76,11 @@ class TestDownloadResume(_HandlerFixture):
         self.assertEqual(downloaded, 12)
         self.assertEqual(target.read_bytes(), b"aaaabbbbcccc")
         self.assertEqual(get.call_count, 2)
-        # 第二次必须带 Range，从已收到的 8 字节续传
-        self.assertEqual(get.call_args_list[1].kwargs["headers"], {"Range": "bytes=8-"})
+        # 第二次必须带 Range 续传，且始终带 key（发送端已全面鉴权）
+        self.assertEqual(
+            get.call_args_list[1].kwargs["headers"],
+            {"key": "secret", "Range": "bytes=8-"},
+        )
 
     def test_gives_up_after_max_attempts(self):
         target = self.root / "demo.bin"

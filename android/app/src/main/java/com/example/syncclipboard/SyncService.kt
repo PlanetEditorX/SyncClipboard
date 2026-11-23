@@ -457,17 +457,26 @@ class SyncService : Service(), MiniHttpServer.Listener {
             AppState.log(this, "服务器没有待下载文件")
             return
         }
-        var successCount = 0
+        val failed = mutableListOf<ProtocolClient.RemoteFile>()
         files.forEach { file ->
             runCatching { client.download(file) }
                 .onSuccess { uri ->
-                    successCount += 1
                     AppState.log(this, "已下载：${file.filename}")
                     NotificationHelper.showDownloadComplete(this, file.filename, uri)
                 }
-                .onFailure { AppState.log(this, "下载 ${file.filename} 失败：${it.message}") }
+                .onFailure {
+                    // /request_file 是一次性消费：服务端在返回前已清空记录，
+                    // 失败不回写就永久丢失。写回待办表，下次轮询再取。
+                    failed.add(file)
+                    AppState.log(this, "下载 ${file.filename} 失败：${it.message}，已留待重试")
+                }
         }
-        if (successCount == files.size) PendingDownloads.clear(this)
+        if (failed.isEmpty()) {
+            PendingDownloads.clear(this)
+        } else {
+            PendingDownloads.replace(this, failed)
+            AppState.log(this, "${failed.size} 个文件下载失败，已保留重试队列")
+        }
     }
 
     override fun onTextUpdate(payload: JSONObject) {

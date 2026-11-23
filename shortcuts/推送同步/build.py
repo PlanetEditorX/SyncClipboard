@@ -223,8 +223,9 @@ b.exit()
 b.endif(g_none)
 
 b.setvar('类型', b.item_type(var('内容')))
-# 文本时是字数、文件时是项数 —— 同一个「计数」，不在两个分支里各算一遍。
-b.setvar('数量', act_out(b.count(var('内容')), '计数'))
+# 文本按字符数算：count 缺省是 Items，一段文字永远只算 1 项，日志里会
+# 一直显示「数量 1」。文件分支另有自己的项数统计，不依赖这个变量。
+b.setvar('数量', act_out(b.count(var('内容'), 'Characters'), '计数'))
 dbg(['=== 推送同步开始 ===\n'
      '地址 ', var('服务器'), ' ｜ 来源 ', var('模式'), ' ｜ 类型 ', var('类型'),
      '\n设备 ', var('来源'), ' ｜ 数量 ', var('数量')])
@@ -278,7 +279,8 @@ b.endif(g_ok)
 # （Android 要中转、iOS 不参与、电脑要 ping 得通），手机这边照抄容易过期。
 b.comment('6. 文件：先问服务端有哪些设备在线，再逐个上传')
 b.else_(g_text)
-# /clients/online 和 /ios/sync 一样要校验 key（服务端读的是请求头，不是 body）。
+# /clients/online 和 /ios/sync 一样要带 key 请求头（统一契约，服务端与
+# 电脑端 FileServer 共用 require_key()）。
 # 少了这一行，文件分支会稳稳拿到 403 {status: error, message: 密钥错误}，
 # 然后弹「服务端拒绝了这次请求」—— 看起来像密钥配错，其实是请求没带钥匙。
 # source 头原版也带：服务端这版只从查询串取，带着是为了跟它对齐、也防以后改读头。

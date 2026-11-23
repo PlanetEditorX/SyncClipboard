@@ -335,7 +335,7 @@ class TrayManager(QObject):
 
         # GUI 也要用同一套共享存活时间判断「文件记录是否已过期」
         set_file_share_ttl(
-            getattr(self.config, "file_share_ttl_minutes", 10) * 60
+            getattr(self.config, "file_share_ttl_minutes", 30) * 60
         )
 
         self.window = MainWindow(self)
