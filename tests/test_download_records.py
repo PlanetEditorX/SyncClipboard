@@ -65,6 +65,7 @@ class TestDownloadRecordsDialog(unittest.TestCase):
             ],
             "sessions": [
                 {
+                    "file_id": "d1",
                     "client": "Mi 10",
                     "name": "ROM",
                     "sent": 512,
@@ -141,6 +142,117 @@ class TestDownloadRecordsDialog(unittest.TestCase):
         dialog.set_endpoint(port=9999, key="new")
         self.assertEqual(dialog._port, 9999)
         self.assertEqual(dialog._key, "new")
+
+
+class TestCancelFromStatusColumn(unittest.TestCase):
+    """状态下方的「操作」列：传输中可取消，已完成可撤销共享。"""
+
+    @classmethod
+    def setUpClass(cls):
+        os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+        from PySide6.QtWidgets import QApplication
+
+        cls.app = QApplication.instance()
+        if cls.app is None:
+            try:
+                cls.app = QApplication([])
+            except Exception as exc:  # noqa: BLE001
+                raise unittest.SkipTest(f"无法创建 QApplication: {exc}")
+
+    def setUp(self):
+        from gui.qt_download_records import DownloadRecordsDialog
+
+        self.dialog = DownloadRecordsDialog(None, port=8899, key="k")
+        self.dialog._timer.stop()
+        self.addCleanup(self.dialog.deleteLater)
+
+    @staticmethod
+    def _payload(state="running"):
+        from tests.test_download_records import TestDownloadRecordsDialog
+
+        payload = TestDownloadRecordsDialog._payload()
+        payload["sessions"][0]["state"] = state
+        return payload
+
+    def _fill(self, payload):
+        from tests.test_download_records import TestDownloadRecordsDialog
+
+        with patch(
+            "gui.qt_download_records.requests.get",
+            return_value=TestDownloadRecordsDialog._response(payload),
+        ):
+            self.dialog.refresh_now()
+
+    def _button(self, row=0):
+        return self.dialog.action_button(row)
+
+    def test_running_row_offers_stop(self):
+        self._fill(self._payload("running"))
+        button = self._button()
+        self.assertIsNotNone(button)
+        self.assertEqual(button.text(), "取消传输")
+        self.assertTrue(button.isEnabled())
+
+    def test_completed_row_offers_share_cancel(self):
+        self._fill(self._payload("completed"))
+        self.assertEqual(self._button().text(), "取消共享")
+
+    def test_rows_are_kept_alive_across_refresh(self):
+        """每秒刷新不能重建行：否则正在点的按钮会被销毁，点击丢失。"""
+        payload = self._payload()
+        self._fill(payload)
+        first = self._button()
+        self._fill(payload)
+        self.assertIs(self._button(), first)
+
+    def test_confirm_posts_file_id_and_client(self):
+        from PySide6.QtWidgets import QMessageBox
+
+        self._fill(self._payload("running"))
+        with patch(
+            "gui.qt_download_records.QMessageBox.question",
+            return_value=QMessageBox.Yes,
+        ), patch("gui.qt_download_records.requests.post") as post, patch(
+            "gui.qt_download_records.requests.get",
+            side_effect=RuntimeError("client gone"),
+        ):
+            self.dialog._on_cancel_row(0)
+
+        post.assert_called_once()
+        kwargs = post.call_args.kwargs
+        self.assertTrue(post.call_args.args[0].endswith("/downloads/cancel"))
+        self.assertEqual(kwargs["json"], {"file_id": "d1", "client": "Mi 10"})
+        self.assertEqual(kwargs["headers"]["key"], "k")
+
+    def test_declining_confirmation_does_not_post(self):
+        from PySide6.QtWidgets import QMessageBox
+
+        self._fill(self._payload("running"))
+        with patch(
+            "gui.qt_download_records.QMessageBox.question",
+            return_value=QMessageBox.No,
+        ), patch("gui.qt_download_records.requests.post") as post:
+            self.dialog._on_cancel_row(0)
+
+        post.assert_not_called()
+
+    def test_failure_is_reported(self):
+        from PySide6.QtWidgets import QMessageBox
+
+        self._fill(self._payload("running"))
+        with patch(
+            "gui.qt_download_records.QMessageBox.question",
+            return_value=QMessageBox.Yes,
+        ), patch(
+            "gui.qt_download_records.requests.post",
+            side_effect=RuntimeError("connection refused"),
+        ), patch(
+            "gui.qt_download_records.QMessageBox.warning"
+        ) as warning:
+            self.dialog._on_cancel_row(0)
+
+        warning.assert_called_once()
+        self.assertIn("connection refused", warning.call_args.args[2])
 
 
 if __name__ == "__main__":

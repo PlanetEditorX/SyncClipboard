@@ -8,6 +8,9 @@
 刷新时保留滚动位置和当前行 —— 每秒重建表格却不跳回顶部，才谈得上"实时"。
 数据只在客户端内存里，这里不做任何缓存：每次都是现场问客户端要，客户端
 没起来就如实显示读取失败，不展示过期数据。
+
+进度表最后一列是「操作」：传输中的行可以就地取消（停发 + 撤销该设备的
+访问），已完成的行可以撤销共享。取消请求发给本机文件服务，由发送端执行。
 """
 
 import time
@@ -19,10 +22,12 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QHeaderView,
     QLabel,
+    QMessageBox,
     QPushButton,
     QTableWidget,
     QTableWidgetItem,
     QVBoxLayout,
+    QWidget,
 )
 
 # 轮询间隔：本机请求，1 秒足够跟手，又不会把客户端日志刷爆
@@ -38,7 +43,15 @@ EVENT_LABELS = {
     "blocked": "被拒绝",
     "exhausted": "次数用尽",
     "cancelled": "取消共享",
+    "manual_cancel": "手动取消",
 }
+
+# 进度表列序：前 6 列是数据，最后一列放「取消」按钮
+PROGRESS_HEADERS = ("客户端", "共享", "已发出 / 总量", "进度", "文件数", "状态", "操作")
+# 共享名最长，让它吃掉多余宽度；「状态」「操作」挨在一起收在最右侧
+SHARE_COLUMN = PROGRESS_HEADERS.index("共享")
+STATUS_COLUMN = PROGRESS_HEADERS.index("状态")
+ACTION_COLUMN = PROGRESS_HEADERS.index("操作")
 
 
 def human_bytes(value):
@@ -64,6 +77,11 @@ class DownloadRecordsDialog(QDialog):
         self._port = port
         self._key = key
         self._paused = False
+        # 进度表按「共享 + 设备」维护行身份：身份不变就原地改文字，不重建行，
+        # 否则每秒重建会把正在点的「取消」按钮销毁掉，点击就丢了
+        self._progress_keys = []
+        self._progress_rows = []
+        self._progress_buttons = []
 
         palette = getattr(parent, "_palette", None) or {}
         self._muted_color = palette.get("muted", "#6b7280")
@@ -87,9 +105,7 @@ class DownloadRecordsDialog(QDialog):
         self._status.setObjectName("Hint")
         lay.addWidget(self._status)
 
-        self.progress_table = self._make_table(
-            ("客户端", "共享", "已发出 / 总量", "进度", "文件数", "状态")
-        )
+        self.progress_table = self._make_table(PROGRESS_HEADERS, SHARE_COLUMN)
         self.event_table = self._make_table(
             ("时间", "共享", "类型", "客户端", "事件", "已完成次数", "本次字节", "说明")
         )
@@ -130,7 +146,7 @@ class DownloadRecordsDialog(QDialog):
         return label
 
     @staticmethod
-    def _make_table(headers):
+    def _make_table(headers, stretch_column=None):
         table = QTableWidget(0, len(headers))
         table.setHorizontalHeaderLabels(list(headers))
         table.setEditTriggers(QTableWidget.NoEditTriggers)
@@ -139,8 +155,10 @@ class DownloadRecordsDialog(QDialog):
         table.verticalHeader().setVisible(False)
         header = table.horizontalHeader()
         header.setSectionResizeMode(QHeaderView.ResizeToContents)
-        # 最后一列（说明 / 状态）吃掉剩余宽度，避免长文本被截成省略号
-        header.setSectionResizeMode(len(headers) - 1, QHeaderView.Stretch)
+        # 默认让最后一列（说明 / 状态）吃掉剩余宽度，避免长文本被截成省略号；
+        # 进度表最后一列是按钮，撑宽了按钮会变成一条，所以改由「状态」列吃掉
+        target = len(headers) - 1 if stretch_column is None else stretch_column
+        header.setSectionResizeMode(target, QHeaderView.Stretch)
         return table
 
     # ---------------------------------------------------------------- 交互
@@ -215,22 +233,83 @@ class DownloadRecordsDialog(QDialog):
     def _fill_progress(self, sessions):
         table = self.progress_table
         scroll = self._scroll_state(table)
+        keys = [
+            (str(session.get("file_id", "")), str(session.get("client", "")))
+            for session in sessions
+        ]
+        # 行身份没变就只改文字：按钮是 QWidget，重建会把正在进行的点击吞掉
+        if keys == self._progress_keys:
+            self._update_progress(sessions)
+        else:
+            self._rebuild_progress(sessions, keys)
+        self._restore_scroll(table, scroll)
 
+    def _rebuild_progress(self, sessions, keys):
+        table = self.progress_table
         table.setRowCount(len(sessions))
+        self._progress_keys = list(keys)
+        self._progress_rows = []
+        self._progress_buttons = []
         for row, session in enumerate(sessions):
-            state = "已完成" if session.get("state") == "completed" else "进行中"
+            for column in range(ACTION_COLUMN):
+                table.setItem(row, column, QTableWidgetItem(""))
+            button = QPushButton()
+            button.setCursor(Qt.PointingHandCursor)
+            button.setMinimumHeight(26)
+            button.setMinimumWidth(88)
+            button.clicked.connect(
+                lambda _checked=False, index=row: self._on_cancel_row(index)
+            )
+            # 套一层留白：直接塞进单元格的按钮会贴着格线，看起来像又一个格子
+            holder = QWidget()
+            holder_layout = QHBoxLayout(holder)
+            holder_layout.setContentsMargins(6, 3, 6, 3)
+            holder_layout.addWidget(button)
+            table.setCellWidget(row, ACTION_COLUMN, holder)
+            self._progress_buttons.append(button)
+            self._progress_rows.append({})
+        self._update_progress(sessions)
+
+    def action_button(self, row):
+        """第 row 行的「取消」按钮；没有该行时返回 None（测试与调试用）。"""
+        if 0 <= row < len(self._progress_buttons):
+            return self._progress_buttons[row]
+        return None
+
+    def _update_progress(self, sessions):
+        """按行刷新文字与按钮文案；行数/顺序不变时走这里，不碰控件本身。"""
+        table = self.progress_table
+        for row, session in enumerate(sessions):
+            if row >= len(self._progress_rows):
+                break
+            completed = session.get("state") == "completed"
             values = (
                 str(session.get("client", "")),
                 str(session.get("name", "")),
                 f"{human_bytes(session.get('sent'))} / {human_bytes(session.get('total'))}",
                 f"{session.get('percent', 0)}%",
                 f"{session.get('parts', 0)}/{session.get('files', 0)}",
-                state,
+                "已完成" if completed else "进行中",
             )
             for column, text in enumerate(values):
-                table.setItem(row, column, QTableWidgetItem(text))
-
-        self._restore_scroll(table, scroll)
+                item = table.item(row, column)
+                if item is None:
+                    table.setItem(row, column, QTableWidgetItem(text))
+                elif item.text() != text:
+                    item.setText(text)
+            self._progress_rows[row] = {
+                "file_id": str(session.get("file_id", "")),
+                "client": str(session.get("client", "")),
+                "name": str(session.get("name", "")),
+                "completed": completed,
+            }
+            button = self.action_button(row)
+            if button is not None:
+                label = "取消共享" if completed else "取消传输"
+                if button.text() != label:
+                    button.setText(label)
+                # 没有 file_id 的旧客户端记录点不了，别给个假按钮
+                button.setEnabled(bool(session.get("file_id")))
 
     def _fill_events(self, records):
         table = self.event_table
@@ -252,6 +331,60 @@ class DownloadRecordsDialog(QDialog):
                 table.setItem(row, column, QTableWidgetItem(text))
 
         self._restore_scroll(table, scroll)
+
+    # ---------------------------------------------------------------- 取消操作
+
+    def _on_cancel_row(self, row):
+        """「操作」列按钮：先确认，再让发送端停发并撤销访问。"""
+        if not 0 <= row < len(self._progress_rows):
+            return
+        info = self._progress_rows[row]
+        file_id = info.get("file_id") or ""
+        client_id = info.get("client") or ""
+        name = info.get("name") or file_id or "该共享"
+        if not file_id:
+            return
+
+        if info.get("completed"):
+            question = (
+                f"取消「{name}」的共享？\n\n"
+                "已完成的下载记录会保留；之后设备再拿旧链接会 404，"
+                "需要重新复制一次。"
+            )
+        else:
+            question = (
+                f"中断「{name}」向 {client_id or '该设备'} 的传输？\n\n"
+                "发送端会立刻停止继续发送并撤销该设备的访问，"
+                "对方拿到的文件会不完整。"
+            )
+        answer = QMessageBox.question(
+            self, "取消共享", question,
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.No,
+        )
+        if answer != QMessageBox.Yes:
+            return
+
+        ok, error = self._post_cancel(file_id, client_id)
+        if not ok:
+            QMessageBox.warning(
+                self, "取消失败", f"无法通知客户端执行取消：{error}"
+            )
+            return
+        self.refresh_now()
+
+    def _post_cancel(self, file_id, client_id):
+        url = f"http://{self._host}:{self._port}/downloads/cancel"
+        try:
+            response = requests.post(
+                url,
+                json={"file_id": file_id, "client": client_id},
+                headers={"key": str(self._key)},
+                timeout=REQUEST_TIMEOUT,
+            )
+            response.raise_for_status()
+            return True, ""
+        except Exception as exc:  # noqa: BLE001 - 原因要原样告诉用户
+            return False, str(exc)
 
     @staticmethod
     def _scroll_state(table):

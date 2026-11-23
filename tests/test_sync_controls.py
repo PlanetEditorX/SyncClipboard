@@ -362,6 +362,37 @@ class TestFolderSyncGates(_ClientFixture):
         self.assertEqual(notice.call_args.kwargs["timeout"], 15)
         self.assertEqual(notice.call_args.kwargs["allow_label"], "允许共享")
 
+    def test_notification_body_fits_in_banner(self):
+        """横幅只显示三四行：正文必须短到「几秒内点允许」那句不被截断。"""
+        long_name = "【政治理论】2027超哥国省考政治理论刷题课"
+        with patch(
+            "client.main_menu.show_confirm_notification", return_value=True
+        ) as notice:
+            main_menu_mod.confirm_large_folder(
+                long_name, "22.4 GB", 10, 103, 3000, timeout_seconds=5)
+
+        title = notice.call_args.args[0]
+        body = notice.call_args.args[1]
+        lines = body.splitlines()
+        self.assertLessEqual(len(lines), 3)
+        for line in lines:
+            self.assertLessEqual(len(line), 26, f"这一行太长会被截断: {line}")
+        self.assertIn("5 秒内点「允许共享」，超时取消", body)
+        # 长目录名进标题并被截断，不再占正文的行数
+        self.assertIn("…", title)
+        self.assertNotIn(long_name, title)
+
+    def test_manifest_overflow_is_flagged_in_banner(self):
+        with patch(
+            "client.main_menu.show_confirm_notification", return_value=True
+        ) as notice:
+            main_menu_mod.confirm_large_folder(
+                "ROM", "2 KB", 10, 25000, 3000, timeout_seconds=5)
+
+        body = notice.call_args.args[1]
+        self.assertIn("清单上限 20000", body)
+        self.assertLessEqual(len(body.splitlines()), 3)
+
     def test_timeout_means_not_shared(self):
         with patch(
             "client.main_menu.show_confirm_notification", return_value=False

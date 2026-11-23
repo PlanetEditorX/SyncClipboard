@@ -93,6 +93,9 @@ class FileServer:
         self._share_exhausted_at = {}
         # file_id -> 最后一次相关请求时刻（目录成员下载期间持续刷新）
         self._share_last_activity = {}
+        # (file_id, 客户端标识) -> 取消时刻：面板点「取消」后，正在跑的那个
+        # 流式响应会在下一个 chunk 处停下，而不是非要把几十 GB 发完
+        self._cancelled_transfers = {}
         self._exhausted_stop = threading.Event()
         self._exhausted_thread = None
         self._remote_text_handler = None
@@ -170,6 +173,18 @@ class FileServer:
             elif path.startswith("/file/") and "/" not in path[len("/file/"):]:
                 claims = [("file", unquote(path[len("/file/"):]).strip())]
             client = self._client_identity()
+            # 面板上「取消」过的设备：后续成员 / 文件请求一律挡掉，否则对方
+            # 重试一次就能接着把剩下的拉完，取消等于没做。
+            if path.startswith("/file/"):
+                revoked_id = member_id or unquote(
+                    path[len("/file/"):].strip()
+                ).split("/", 1)[0]
+                if revoked_id and self._is_transfer_cancelled(revoked_id, client):
+                    return jsonify({
+                        "status": "error",
+                        "message": "该设备的共享已被电脑端取消",
+                        "file_id": revoked_id,
+                    }), 403
             # 次数限制开启时，目录成员也只发给「已准入会话」的设备。
             # 否则别的设备拿到 URL 就能跳过准入检查，把目录逐个文件拉走。
             if member_id and self.download_limit > 0:
@@ -243,6 +258,28 @@ class FileServer:
                 "completed_downloads": sum(
                     1 for item in records if item["event"] == "completed"
                 ),
+            })
+
+        @self.app.route("/downloads/cancel", methods=["POST"])
+        def cancel_download():
+            """在下载记录窗口里手动取消一次传输 / 一条共享。
+
+            面板只拿得到 file_id 与客户端标识（`/downloads` 的 sessions），
+            取消动作发生在发送端这一侧：立刻停止继续发送 + 撤销共享登记，
+            后续成员请求一律 404，接收端自然停下来。
+            """
+            data = request.get_json(silent=True) or {}
+            file_id = str(data.get("file_id") or "").strip()
+            if not file_id:
+                return jsonify({
+                    "status": "error", "message": "缺少 file_id",
+                }), 400
+            client_id = str(data.get("client") or "").strip()
+            stopped = self.cancel_share_download(file_id, client_id)
+            return jsonify({
+                "status": "ok",
+                "stopped": stopped,
+                "message": "已停止传输并取消共享" if stopped else "已取消共享",
             })
 
         @self.app.route("/update/current_latest", methods=["POST"])
@@ -425,9 +462,13 @@ class FileServer:
                 nonlocal sent_all, sent_bytes
                 try:
                     for chunk in inner:
+                        # 面板点了「取消」：立刻停在下一个 chunk，不再往下发
+                        if self._is_transfer_cancelled(file_id, client):
+                            break
                         sent_bytes += len(chunk)
                         yield chunk
-                    sent_all = True
+                    else:
+                        sent_all = True
                 finally:
                     # 先关文件句柄再删文件（Windows 下句柄未关会导致删除失败）
                     close_inner = getattr(inner, "close", None)
@@ -439,6 +480,15 @@ class FileServer:
                     others = self._end_download(file_id)
                     self._add_bytes_sent(sent_bytes)
                     if not sent_all:
+                        if self._is_transfer_cancelled(file_id, client):
+                            # 主动取消不是「断网」：既不重登记共享，也别记成
+                            # 传输中断，否则记录里会多出一条误导性事件
+                            self._record_download(
+                                file_id, client, "interrupted",
+                                f"已手动取消（已发 {format_size(sent_bytes)}）",
+                                bytes_sent=sent_bytes,
+                            )
+                            return
                         self._finish_download(file_id, client, False, sent_bytes)
                         self._keep_for_retry(file_id, path)
                         return
@@ -683,9 +733,13 @@ class FileServer:
                 nonlocal sent_all, sent_bytes
                 try:
                     for chunk in inner:
+                        # 面板点了「取消」：立刻停在下一个 chunk，不再往下发
+                        if self._is_transfer_cancelled(file_id, client):
+                            break
                         sent_bytes += len(chunk)
                         yield chunk
-                    sent_all = True
+                    else:
+                        sent_all = True
                 finally:
                     close_inner = getattr(inner, "close", None)
                     if callable(close_inner):
@@ -697,9 +751,13 @@ class FileServer:
                     self._add_bytes_sent(sent_bytes)
                     self._touch_share(file_id)
                     if not sent_all:
+                        detail = (
+                            f"已手动取消（已发 {format_size(sent_bytes)}）"
+                            if self._is_transfer_cancelled(file_id, client)
+                            else f"成员文件传输中断（已发 {format_size(sent_bytes)}）"
+                        )
                         self._record_download(
-                            file_id, client, "interrupted",
-                            f"成员文件传输中断（已发 {format_size(sent_bytes)}）",
+                            file_id, client, "interrupted", detail,
                             "folder", bytes_sent=sent_bytes,
                         )
                     else:
@@ -954,6 +1012,54 @@ class FileServer:
         with self._shared_files_lock:
             return file_id in self._share_exhausted_at
 
+    def cancel_share_download(self, file_id, client=""):
+        """手动取消：停发 + 撤销访问。返回是否真的打断了一次传输。
+
+        两种结局都走这里：
+        - 行还在「进行中」：把该设备记进撤销表（正在跑的流式响应下一个
+          chunk 就收尾，后续成员请求直接 403），并把它占的名额还回去；
+        - 行已「完成」：只是撤销共享，已完成次数不受影响。
+
+        撤销登记放在事件记账之后：`_record_download` 要靠共享信息取显示名，
+        先撤销的话事件里就只剩一串 file_id。
+        """
+        client = (client or "").strip()
+        stopped = False
+        with self._shared_files_lock:
+            # 顺手清掉已经释放的共享留下的撤销记录：撤销表要能一直留到
+            # 那次流式响应真正收尾，所以不能跟着 _release_file 一起清
+            for key in [
+                k for k in self._cancelled_transfers
+                if k[0] not in self.shared_files
+                and k[0] not in self.shared_folders
+            ]:
+                self._cancelled_transfers.pop(key, None)
+            sessions = self._share_claims.get(file_id, {})
+            session = sessions.get(client) if client else None
+            if session is not None and not session["completed"]:
+                stopped = True
+                sessions.pop(client, None)
+                self._cancelled_transfers[(file_id, client)] = time.time()
+                if self.download_limit > 0 and len(sessions) < self.download_limit:
+                    self._share_exhausted_at.pop(file_id, None)
+            # 别的设备还在取同一份内容时只掐这一台，共享留给它继续用
+            keep_share = bool(client) and any(
+                not s.get("completed") for s in sessions.values()
+            )
+        detail = (
+            "在下载记录里手动取消：已停止发送并撤销该设备的访问"
+            if stopped else "在下载记录里手动取消共享"
+        )
+        self._record_download(file_id, client or "-", "manual_cancel", detail)
+        if not keep_share:
+            self._release_file(file_id, "在下载记录里手动取消共享")
+        return stopped
+
+    def _is_transfer_cancelled(self, file_id, client):
+        """该设备对该共享的访问是否已被手动撤销。"""
+        with self._shared_files_lock:
+            return (file_id, client) in self._cancelled_transfers
+
     def _purge_exhausted_shares(self, now=None):
         """配额用尽的兜底清理：正常情况下完成时已由 `_cancel_if_idle` 撤销。
 
@@ -1152,6 +1258,7 @@ class FileServer:
             self._share_expected.clear()
             self._share_exhausted_at.clear()
             self._share_last_activity.clear()
+            self._cancelled_transfers.clear()
         logger.info("共享文件列表已清空")
 
     def _touch_share(self, file_id):

@@ -98,6 +98,18 @@ def _confirm_with_native_dialog(message, title, timeout_seconds):
         return False
 
 
+def _shorten_name(name, limit=8):
+    """横幅里一行放不下长目录名，先截断，别让名字把后面的说明挤掉。
+
+    v1.12.15 的真机现象：目录名占了整整三行，末尾那句「到期只取消登记」
+    被截成半句。现在名字进标题（系统会自己收尾），正文只留三行短句。
+    """
+    text = str(name or "").strip()
+    if len(text) <= limit:
+        return text
+    return text[:limit].rstrip() + "…"
+
+
 def confirm_large_folder(folder_name, size_text, limit_gb, file_count, limit_count,
                          manifest_max_entries=MANIFEST_MAX_ENTRIES,
                          timeout_seconds=15):
@@ -110,15 +122,19 @@ def confirm_large_folder(folder_name, size_text, limit_gb, file_count, limit_cou
 
     ``timeout_seconds`` 来自面板设置，复制目录的线程会一直等到出结果或超时。
     """
-    title = "SyncClipboard · 目录超出阈值"
+    # 通知顶部已经写着应用名，标题不再重复；名字放标题里，正文只留三行短句
+    title = f"「{_shorten_name(folder_name)}」超出阈值"
     timeout = max(1, int(timeout_seconds or 0))
 
-    # 通知横幅放不下长文本，这里给短版；原生框用完整说明
-    short_message = (
-        f"「{folder_name}」共 {file_count} 个文件、{size_text}，"
-        f"超过阈值（{limit_count} 个 / {limit_gb:g} GB）。\n"
-        f"{timeout} 秒内点「允许共享」才会发布，到期只取消登记，不动原文件。"
-    )
+    # 横幅正文只显示三四行：数字单独占一行，指令单独一行，谁都不会被截掉
+    threshold_line = f"超过阈值 {limit_count} 个 / {limit_gb:g} GB"
+    if file_count > manifest_max_entries:
+        threshold_line += f"（清单上限 {manifest_max_entries}）"
+    short_message = "\n".join((
+        f"{file_count} 个文件、{size_text}",
+        threshold_line,
+        f"{timeout} 秒内点「允许共享」，超时取消",
+    ))
     long_message = (
         f"目录「{folder_name}」共有 {file_count} 个文件、总计 {size_text}，"
         f"超过设定的阈值（{limit_count} 个文件 / {limit_gb:g} GB）。\n\n"
@@ -131,7 +147,6 @@ def confirm_large_folder(folder_name, size_text, limit_gb, file_count, limit_cou
             f"\n\n注意：清单最多 {manifest_max_entries} 条，超出的文件不会被传输，"
             "建议把目录拆小后再同步。"
         )
-        short_message += note
         long_message += note
 
     logger.info(

@@ -381,5 +381,123 @@ class TestLimitedShare(_ShareFixture):
         self.assertEqual((completed["sent"], completed["total"]), (2, 2))
 
 
+class TestManualCancel(_ShareFixture):
+    """面板上按「取消」：停发 + 撤销访问，且不能把这次算成一次完整下载。"""
+
+    def _session_client(self, server, client):
+        payload = get(client, "/downloads", "gui").get_json()
+        return payload["sessions"][0]["client"]
+
+    def test_cancel_releases_share_and_records_event(self):
+        server = FileServer(key="k", download_limit=0)
+        server.register_folder("d1", str(self.folder), name="shared_dir")
+        client = authed(server)
+        get(client, "/manifest/d1", "phone-a")
+        fetch(client, "/file/d1/one.txt", "phone-a")
+        identity = self._session_client(server, client)
+
+        response = client.post("/downloads/cancel", json={
+            "file_id": "d1", "client": identity,
+        })
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.get_json()["stopped"])
+
+        # 共享撤销、名额释放
+        self.assertNotIn("d1", server.shared_files)
+        self.assertEqual(server._share_claims.get("d1", {}), {})
+        # 后续成员请求被挡住，不能靠重试把剩下的拉完
+        self.assertEqual(
+            get(client, "/file/d1/sub/two.txt", "phone-a").status_code, 403
+        )
+        events = [r["event"] for r in server._download_records]
+        self.assertIn("manual_cancel", events)
+        self.assertNotIn("completed", events)
+        self.assertEqual(
+            get(client, "/downloads", "gui").get_json()["sessions"], []
+        )
+
+    def test_cancel_requires_file_id(self):
+        server = FileServer(key="k", download_limit=0)
+        client = authed(server)
+        self.assertEqual(
+            client.post("/downloads/cancel", json={}).status_code, 400
+        )
+
+    def test_cancel_requires_key(self):
+        server = FileServer(key="k", download_limit=0)
+        response = server.app.test_client().post(
+            "/downloads/cancel", json={"file_id": "d1"}
+        )
+        self.assertEqual(response.status_code, 403)
+
+    def test_cancel_one_device_keeps_share_for_the_other(self):
+        """不限制次数时多台设备同时在取：掐掉一台不该把另一台也中断。"""
+        server = FileServer(key="k", download_limit=0)
+        server.register_folder("d1", str(self.folder), name="shared_dir")
+        client = authed(server)
+        get(client, "/manifest/d1", "phone-a")
+        get(client, "/manifest/d1", "phone-b")
+        first = [
+            s["client"] for s in get(client, "/downloads", "gui").get_json()["sessions"]
+            if s["client"].startswith("phone-a")
+        ][0]
+
+        self.assertTrue(
+            client.post("/downloads/cancel", json={
+                "file_id": "d1", "client": first,
+            }).get_json()["stopped"]
+        )
+        # 共享还在，另一台设备照常拿
+        self.assertIn("d1", server.shared_files)
+        self.assertEqual(
+            get(client, "/file/d1/one.txt", "phone-b").status_code, 200
+        )
+        # 被取消的那台进不去了
+        self.assertEqual(
+            get(client, "/file/d1/one.txt", "phone-a").status_code, 403
+        )
+
+    def test_inflight_stream_stops_after_cancel(self):
+        """正在跑的响应不会把整份文件发完：下一个 chunk 就收尾。"""
+        big = self.root / "big.bin"
+        big.write_bytes(b"x" * (1024 * 1024))
+        server = FileServer(key="k", download_limit=0)
+        server.register_file("f1", str(big))
+        client = authed(server)
+
+        response = client.get(
+            "/file/f1", headers={"source": "phone-a"}, buffered=False
+        )
+        identity = get(client, "/downloads", "gui").get_json()["sessions"][0]["client"]
+        chunks = iter(response.response)
+        first = next(chunks)
+        server.cancel_share_download("f1", identity)
+        rest = sum(len(chunk) for chunk in chunks)
+        response.close()
+
+        self.assertLess(len(first) + rest, 1024 * 1024)
+        self.assertNotIn("f1", server.shared_files)
+
+    def test_cancel_of_completed_session_only_drops_share(self):
+        server = FileServer(key="k", download_limit=0)
+        server.register_folder("d1", str(self.folder), name="shared_dir")
+        client = authed(server)
+        get(client, "/manifest/d1", "phone-a")
+        self.download_all(client)
+        identity = self._session_client(server, client)
+
+        payload = client.post("/downloads/cancel", json={
+            "file_id": "d1", "client": identity,
+        }).get_json()
+        self.assertEqual(payload["status"], "ok")
+        self.assertFalse(payload["stopped"])
+        self.assertNotIn("d1", server.shared_files)
+        # 已完成的那次不被抹掉
+        completed = [
+            r for r in server._download_records if r["event"] == "completed"
+        ]
+        self.assertEqual(len(completed), 1)
+
+
 if __name__ == '__main__':
     unittest.main()
