@@ -578,8 +578,18 @@ class MainWindow(QMainWindow):
         )
         records_hint.setObjectName("Hint")
         records_hint.setWordWrap(True)
+
+        # 托盘菜单在 Windows 11 的溢出区里偶尔会「点不动」，界面里留一个
+        # 一定可用的退出入口
+        self.quit_button = QPushButton("退出程序")
+        self.quit_button.setMinimumHeight(38)
+        self.quit_button.setCursor(Qt.PointingHandCursor)
+        self.quit_button.setToolTip("停止本机服务器与同步客户端后退出，下次启动按原开关恢复")
+        self.quit_button.clicked.connect(self._quit_app)
+
         row2.addWidget(self.records_button, 1)
         row2.addWidget(self.clients_button, 1)
+        row2.addWidget(self.quit_button, 1)
         row2.addWidget(records_hint, 2)
         lay.addLayout(row2)
         self.body.addWidget(card)
@@ -1313,6 +1323,16 @@ class MainWindow(QMainWindow):
     def _restart_services(self):
         if not self.manager.restart_services_async():
             self._set_settings_message("服务正忙，请稍后再试", self._palette["warning"])
+
+    def _quit_app(self):
+        """界面里的退出入口：确认后走与托盘完全相同的退出流程。"""
+        if not qt_dialogs.ask_yes_no(
+            "退出 SyncClipboard",
+            "将停止本机服务器与同步客户端并退出程序。\n"
+            "下次启动会按当前开关状态恢复服务，是否继续？",
+        ):
+            return
+        self.manager.quit_app()
 
     def _fetch_file(self):
         threading.Thread(

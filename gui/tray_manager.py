@@ -11,8 +11,10 @@
 """
 
 import logging
+import os
 import sys
 import threading
+import time
 
 from PySide6.QtCore import QObject, QTimer
 from PySide6.QtGui import QIcon
@@ -36,11 +38,15 @@ from server.core.file_latest import set_file_share_ttl
 
 logger = logging.getLogger("gui")
 
+# 点「退出」到「进程必须消失」的宽限时间，是看门狗的兜底期限
+QUIT_GRACE_SECONDS = 15.0
+
 
 def build_shutdown_handler(services, config, root):
     """退出时停止子进程、保留「启用意图」、最后请求 UI 退出。
 
     独立成函数是为了能脱离 QObject 单独测试：这里只有纯 Python 逻辑。
+    「请求 UI 退出」放在最后一步，保证界面消失时子进程已经停干净。
     """
 
     def shutdown():
@@ -57,9 +63,82 @@ def build_shutdown_handler(services, config, root):
         except Exception:
             logger.exception("退出时停止服务失败")
         finally:
-            request_ui_shutdown(root)
+            if not request_ui_shutdown(root):
+                logger.warning("界面已不在运行，退出请求无需投递")
 
     return shutdown
+
+
+def stop_leftover_processes(services):
+    """把仍存活的子进程立即结束，用于退出收尾。"""
+    if services is None:
+        return
+    for name in ("server_process", "client_process"):
+        process = getattr(services, name, None)
+        if process is None:
+            continue
+        try:
+            if process.is_alive():
+                logger.warning("退出前仍有 %s 在运行，强制结束", name)
+                process.kill()
+                process.join(1)
+        except (AssertionError, ValueError, OSError):
+            logger.debug("强制结束 %s 失败", name, exc_info=True)
+
+
+def force_exit(services=None, reason=""):
+    """最后手段：收掉残留子进程后直接结束进程。
+
+    正常路径不走这里——``run()`` 收好界面后交给解释器自然退出。只有真的卡住
+    时才用到：退出动作排在服务队列后面被挡住、停子进程不返回、或者界面退了
+    但进程留在任务管理器里。
+
+    结束方式用 TerminateProcess 而不是 ``os._exit``：后者仍会跑一遍 DLL 卸载，
+    PySide 的托盘/插件对象在那个阶段会 access violation（实测稳定复现），
+    虽然进程确实死了，但会平白留下一条崩溃记录。
+    """
+    if reason:
+        logger.warning("强制结束进程：%s", reason)
+    stop_leftover_processes(services)
+    try:
+        logging.shutdown()
+    except Exception:  # noqa: BLE001 - 关日志失败也要保证进程退出
+        pass
+    _terminate_current_process()
+
+
+def _terminate_current_process(code=0):
+    """内核级结束当前进程；拿不到 Win32 入口时退回 os._exit。"""
+    if _terminate_via_win32(code):
+        return
+    logger.error("TerminateProcess 未生效，退回 os._exit")
+    os._exit(code)
+
+
+def _terminate_via_win32(code=0):
+    """TerminateProcess(GetCurrentProcess(), code)：不跑 DLL 卸载，直接消失。"""
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32.GetCurrentProcess.restype = wintypes.HANDLE
+        kernel32.TerminateProcess.restype = wintypes.BOOL
+        kernel32.TerminateProcess.argtypes = (wintypes.HANDLE, wintypes.UINT)
+        return bool(kernel32.TerminateProcess(kernel32.GetCurrentProcess(), code))
+    except Exception:  # noqa: BLE001 - 非 Windows / 调用受限都退回 os._exit
+        logger.debug("TerminateProcess 调用失败", exc_info=True)
+        return False
+
+
+def force_exit_after(delay, services=None, reason=""):
+    """延时后强制结束进程，作为退出流程的看门狗。
+
+    进程正常退出时这个守护线程会随进程一起消失，不会真的动手；只有到了期限
+    还活着，才说明某一段卡住了。
+    """
+    time.sleep(delay)
+    force_exit(services, reason or f"{delay:.0f} 秒内没有退出")
 
 
 class TrayManager(QObject):
@@ -97,6 +176,9 @@ class TrayManager(QObject):
         self.tray = None
         self.menu = None
         self._actions = ServiceActionQueue(on_change=self._on_service_change)
+
+        # 退出相关状态：只发起一次，随后由看门狗保证进程不会残留
+        self._quit_requested = False
 
     def _on_service_change(self):
         """队列状态变化时刷新界面；后台线程调用会被转发到主线程。"""
@@ -254,6 +336,9 @@ class TrayManager(QObject):
 
         self.action_quit = menu.addAction("退出")
         self.action_quit.triggered.connect(self.quit_app)
+        # 诊断用：Windows 11 的托盘溢出区偶尔会把点击吞掉，菜单展开了却没触发
+        # 动作。记一笔「展开」与「点了退出」，事后能分清是哪一段没走通。
+        menu.aboutToShow.connect(lambda: logger.info("托盘菜单已展开"))
         return menu
 
     def _create_tray(self):
@@ -347,12 +432,38 @@ class TrayManager(QObject):
     # ---------------------------------------------------------------- 退出
 
     def quit_app(self, *_args):
-        """在后台线程停止子进程，保留启用意图。"""
+        """发起退出：停子进程 → 请求界面退出 → 看门狗兜底强制结束。
+
+        这里只「发起」，真正停服务仍排在服务队列后面执行，避免和正在跑的
+        启停操作抢同一批子进程；但因为退出是唯一必须成功的操作，另外挂一个
+        看门狗：无论队列、子进程回收还是事件循环哪一环卡住，进程最后都会
+        被强制结束——不允许出现「托盘没了、任务管理器里还有进程」。
+        """
+        if self._quit_requested:
+            logger.info("退出流程已在执行，忽略重复的退出请求")
+            return
+
+        self._quit_requested = True
+        logger.info("收到退出请求，开始停止服务")
         if not self._actions.shutdown(
             build_shutdown_handler(self.services, self.config, self.root)
         ):
-            return
+            # 队列已进入退出状态却仍有界面在跑：至少把界面退出推进下去
+            logger.warning("退出动作未能进入服务队列，直接请求界面退出")
+            request_ui_shutdown(self.root)
+
+        threading.Thread(
+            target=self._quit_watchdog, name="quit-watchdog", daemon=True
+        ).start()
         self.refresh_ui()
+
+    def _quit_watchdog(self):
+        """退出宽限期到了还活着，就强制结束进程。
+
+        看门狗不看界面是否已经退出：界面退了但解释器卡在收尾阶段（多进程
+        子进程回收、非守护线程）同样是「任务管理器里还有进程」，一样要收掉。
+        """
+        force_exit_after(QUIT_GRACE_SECONDS, self.services)
 
     # ---------------------------------------------------------------- 启动
 
@@ -394,8 +505,12 @@ class TrayManager(QObject):
         try:
             self.root.exec()
         finally:
+            # 走到这里说明退出请求已经发过（它排在停服务之后）。收好界面后返回，
+            # 让解释器正常退出；万一收尾阶段卡住，quit-watchdog 会兜底结束进程。
             self.watcher.stop()
             self._pump.stop()
             if self.tray is not None:
                 self.tray.hide()
             ui_bridge.clear_ui_root(self.root)
+            if self._quit_requested:
+                logger.info("界面主循环已退出")
