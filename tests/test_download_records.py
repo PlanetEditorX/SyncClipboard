@@ -193,6 +193,21 @@ class TestCancelFromStatusColumn(unittest.TestCase):
         self.assertEqual(button.text(), "取消传输")
         self.assertTrue(button.isEnabled())
 
+    def test_action_column_wide_enough_for_its_buttons(self):
+        """列宽/按钮宽不能被文字裁掉：真机上是「取消传输」只显示一半。"""
+        from gui.qt_download_records import ACTION_COLUMN, ACTION_COLUMN_WIDTH
+
+        self._fill(self._payload("running"))
+        table = self.dialog.progress_table
+        self.assertGreaterEqual(table.columnWidth(ACTION_COLUMN), ACTION_COLUMN_WIDTH)
+        button = self._button()
+        # 左右各 6px 内边距 + 一点余量
+        needed = button.fontMetrics().horizontalAdvance(button.text()) + 24
+        self.assertLessEqual(needed, button.width())
+        self.assertGreaterEqual(
+            table.columnWidth(ACTION_COLUMN), button.width() + 12
+        )
+
     def test_completed_row_offers_share_cancel(self):
         self._fill(self._payload("completed"))
         self.assertEqual(self._button().text(), "取消共享")

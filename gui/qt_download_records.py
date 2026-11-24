@@ -52,6 +52,10 @@ PROGRESS_HEADERS = ("客户端", "共享", "已发出 / 总量", "进度", "文�
 SHARE_COLUMN = PROGRESS_HEADERS.index("共享")
 STATUS_COLUMN = PROGRESS_HEADERS.index("状态")
 ACTION_COLUMN = PROGRESS_HEADERS.index("操作")
+# 「操作」列给固定宽度：靠 ResizeToContents 会踩到「按钮先建、文字后填」的
+# 时序 —— 列宽按空按钮量出来，等填上「取消传输」就被裁掉半个字
+ACTION_COLUMN_WIDTH = 112
+ACTION_BUTTON_WIDTH = 92
 
 
 def human_bytes(value):
@@ -106,6 +110,11 @@ class DownloadRecordsDialog(QDialog):
         lay.addWidget(self._status)
 
         self.progress_table = self._make_table(PROGRESS_HEADERS, SHARE_COLUMN)
+        # 按钮列固定宽度，避免列宽跟着按钮文字量出来又被裁
+        self.progress_table.horizontalHeader().setSectionResizeMode(
+            ACTION_COLUMN, QHeaderView.Fixed
+        )
+        self.progress_table.setColumnWidth(ACTION_COLUMN, ACTION_COLUMN_WIDTH)
         self.event_table = self._make_table(
             ("时间", "共享", "类型", "客户端", "事件", "已完成次数", "本次字节", "说明")
         )
@@ -253,10 +262,13 @@ class DownloadRecordsDialog(QDialog):
         for row, session in enumerate(sessions):
             for column in range(ACTION_COLUMN):
                 table.setItem(row, column, QTableWidgetItem(""))
-            button = QPushButton()
+            # 文字一开始就填好：先建空按钮再补文字，列宽会按空按钮量
+            button = QPushButton(
+                "取消共享" if session.get("state") == "completed" else "取消传输"
+            )
             button.setCursor(Qt.PointingHandCursor)
             button.setMinimumHeight(26)
-            button.setMinimumWidth(88)
+            button.setFixedWidth(ACTION_BUTTON_WIDTH)
             button.clicked.connect(
                 lambda _checked=False, index=row: self._on_cancel_row(index)
             )
