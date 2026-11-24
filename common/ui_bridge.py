@@ -46,6 +46,10 @@ _main_window = None
 _ui_accepting = False
 _lock = threading.Lock()
 _queue = queue.Queue()
+# 任务里可能出现 QMessageBox.exec() 这样的嵌套事件循环，QTimer 会在任务
+# 尚未结束时再次触发 process_ui_queue。没有这把闸就会重入取任务，导致
+# 同一任务被并发执行 / 顺序错乱。
+_draining = False
 
 # 抽干队列的间隔。33ms ≈ 30fps，足够让下载进度条看起来连续。
 DRAIN_INTERVAL_MS = 33
@@ -124,23 +128,37 @@ def is_ui_ready():
 
 
 def process_ui_queue():
-    """抽干待执行的界面任务。由 QTimer 周期调用。"""
-    while True:
-        try:
-            func, args, kwargs, result_event = _queue.get_nowait()
-        except queue.Empty:
-            break
+    """抽干待执行的界面任务。由 QTimer 周期调用。
 
-        try:
-            ret = func(*args, **kwargs)
-            if result_event is not None:
-                result_event.set_result(ret)
-        except Exception as exc:  # noqa: BLE001 - 单条任务失败不应拖垮主循环
-            if result_event is not None:
-                result_event.set_exception(exc)
-            else:
-                logger.error("UI 队列任务执行失败: %s", exc, exc_info=True)
-        _queue.task_done()
+    先一次性快照取空队列再逐个执行：模态框 exec() 期间 QTimer 会重入，
+    重入直接返回，新投递的任务留给下一次 tick。否则同一个任务可能在
+    嵌套事件循环里被重复取出，正在 show() 的窗口也可能被打断。
+    """
+    global _draining
+    if _draining:
+        return
+    _draining = True
+    try:
+        tasks = []
+        while True:
+            try:
+                tasks.append(_queue.get_nowait())
+            except queue.Empty:
+                break
+        for func, args, kwargs, result_event in tasks:
+            try:
+                ret = func(*args, **kwargs)
+                if result_event is not None:
+                    result_event.set_result(ret)
+            except Exception as exc:  # noqa: BLE001 - 单条任务别拖垮主循环
+                if result_event is not None:
+                    result_event.set_exception(exc)
+                else:
+                    logger.error("UI 队列任务执行失败: %s", exc, exc_info=True)
+            finally:
+                _queue.task_done()
+    finally:
+        _draining = False
 
 
 def post_to_main_thread(func, *args, **kwargs):
@@ -174,7 +192,10 @@ def show_message(title, message):
     if handler is None or not is_ui_ready():
         logger.info("[消息] %s: %s", title, message)
         return
+    # 提示框不返回值，用非阻塞投递。原先同步等待时，下载线程会卡在这里
+    # 等模态框关闭（最长 300 秒），期间既走不到 progress.close()，窗口也
+    # 一直停在空白的「下载进度」上，看起来就像整个应用死了。
     try:
-        post_to_main_thread(handler, title, message)
+        post_to_main_thread_no_wait(handler, title, message)
     except (RuntimeError, TimeoutError) as exc:
         logger.info("[消息未显示] %s: %s (%s)", title, message, exc)

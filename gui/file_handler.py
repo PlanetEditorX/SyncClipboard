@@ -129,7 +129,6 @@ class FileHandler:
                                 last_percentage = percentage
 
             progress.update_progress(100, downloaded/(1024*1024), downloaded/(1024*1024))
-            progress.close()
 
             logger.info(f"文件已保存: {file_path} ({downloaded} 字节)")
 
@@ -140,7 +139,6 @@ class FileHandler:
             self._announce_saved(file_path)
 
         except Exception as e:
-            progress.close()
             logger.error(f"保存文件失败: {e}")
             show_message("保存失败", f"无法保存文件: {e}")
             try:
@@ -149,6 +147,8 @@ class FileHandler:
             except OSError as e:
                 logger.warning(f"清理下载文件失败: {e}", exc_info=True)
         finally:
+            # 成功 / 失败 / 用户取消都要关掉进度窗，否则它会一直挂在屏幕上
+            progress.close()
             response.close()
 
     def _fetch_manifest(self, manifest_url):

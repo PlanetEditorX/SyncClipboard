@@ -16,7 +16,10 @@ logger = logging.getLogger("gui")
 
 
 def _parent():
-    return ui_bridge.get_main_window()
+    window = ui_bridge.get_main_window()
+    # 点 Windows 通知时主窗口往往收在托盘里。拿一个不可见的窗口当模态框
+    # parent，弹窗可能跟着隐藏或落到别的屏幕后面，用户关不掉、任务也卡住。
+    return window if window is not None and window.isVisible() else None
 
 
 def info_message(title, message):
