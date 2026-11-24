@@ -164,6 +164,7 @@ def main():
                 config_manager, "folder_file_count_confirm", 3000),
             "folder_confirm_timeout_seconds": getattr(
                 config_manager, "folder_confirm_timeout_seconds", 15),
+            "notify_remote_push": getattr(config_manager, "notify_remote_push", True),
         },
         file_server    # 传入文件服务器对象，供客户端内部使用
     )

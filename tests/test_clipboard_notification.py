@@ -22,12 +22,13 @@ MACHINE_NAME = "PC-01"
 
 
 class _FakeConfig:
-    def __init__(self, base_dir, local_name="PC-01"):
+    def __init__(self, base_dir, local_name="PC-01", notify_remote_push=True):
         self.TEXT_LATEST_FILE = Path(base_dir) / "text_latest.json"
         self.FILE_LATEST_FILE = Path(base_dir) / "file_latest.json"
         self.local_name = local_name
         self.server_running = False
         self.server_port = 8000
+        self.notify_remote_push = notify_remote_push
 
 
 class ClipboardNotificationTest(unittest.TestCase):
@@ -40,6 +41,14 @@ class ClipboardNotificationTest(unittest.TestCase):
         self.notify_patcher = patch("gui.clipboard_handler.show_notification")
         self.notify = self.notify_patcher.start()
         self.addCleanup(self.notify_patcher.stop)
+
+        # 通知账本是跨进程共享的真实文件，测试里指到临时目录，免得
+        # 上一次运行留下的 id 把这一次的弹窗吞掉。
+        self.ledger_patcher = patch(
+            "common.notify_ledger.LEDGER_FILE", Path(self._tmp.name) / "ledger.json"
+        )
+        self.ledger_patcher.start()
+        self.addCleanup(self.ledger_patcher.stop)
 
     def _write(self, item):
         payload = {"latest_global": item}

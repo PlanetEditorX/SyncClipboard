@@ -35,10 +35,10 @@ DEFAULT_FILE_SHARE_TTL_MINUTES = 30
 MIN_FILE_SHARE_TTL_MINUTES = 1
 MAX_FILE_SHARE_TTL_MINUTES = 24 * 60
 
-# 共享可被完整下载的次数。0 = 不限制（存活期内所有已配对设备都能取，默认），
-# 1 = 第一个设备下完就停止共享，N = 允许 N 个设备各自完整下载一次。
+# 共享可被完整下载的次数。0 = 不限制（存活期内所有已配对设备都能取），
+# 1 = 第一个设备下完就停止共享（默认），N = 允许 N 个设备各自完整下载一次。
 # 「完整」由发送端实际发出的字节数判定，按设备计次，重试 / 断点续传不重复占名额。
-DEFAULT_SHARE_DOWNLOAD_LIMIT = 0
+DEFAULT_SHARE_DOWNLOAD_LIMIT = 1
 MIN_SHARE_DOWNLOAD_LIMIT = 0
 MAX_SHARE_DOWNLOAD_LIMIT = 99
 
@@ -47,6 +47,11 @@ MAX_SHARE_DOWNLOAD_LIMIT = 99
 DEFAULT_FOLDER_CONFIRM_TIMEOUT_SECONDS = 15
 MIN_FOLDER_CONFIRM_TIMEOUT_SECONDS = 3
 MAX_FOLDER_CONFIRM_TIMEOUT_SECONDS = 300
+
+# 服务器派发的同步是否也弹通知（默认开）。
+# 手机直接推给「本机服务器」时本来就会弹；但服务器再把内容派发到另一台
+# 电脑的客户端时，那条链路原来只在后台写剪贴板，用户看不到任何提示。
+DEFAULT_NOTIFY_REMOTE_PUSH = True
 
 
 def validate_client_settings(
@@ -64,6 +69,7 @@ def validate_client_settings(
     file_share_ttl_minutes=DEFAULT_FILE_SHARE_TTL_MINUTES,
     share_download_limit=DEFAULT_SHARE_DOWNLOAD_LIMIT,
     folder_confirm_timeout_seconds=DEFAULT_FOLDER_CONFIRM_TIMEOUT_SECONDS,
+    notify_remote_push=DEFAULT_NOTIFY_REMOTE_PUSH,
     update_source=DEFAULT_UPDATE_SOURCE,
     update_mirror_prefix=DEFAULT_UPDATE_MIRROR_PREFIX,
     update_proxy=DEFAULT_UPDATE_PROXY,
@@ -115,6 +121,7 @@ def validate_client_settings(
         "folder_confirm_timeout_seconds": _normalize_folder_confirm_timeout(
             folder_confirm_timeout_seconds
         ),
+        "notify_remote_push": _normalize_bool(notify_remote_push),
         "update_source": source_mode,
         "update_mirror_prefix": mirror_prefix,
         "update_proxy": proxy,

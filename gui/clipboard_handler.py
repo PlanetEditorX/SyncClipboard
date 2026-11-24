@@ -6,6 +6,7 @@ import time
 from datetime import datetime, timedelta
 from common.utils import SAFE_POST
 from common.notification import show_notification, show_notification_with_click
+from common.notify_ledger import claim as claim_notification
 from common.sync_modes import is_receive_allowed
 from server.core.file_latest import is_file_record_expired
 
@@ -54,6 +55,10 @@ class ClipboardHandler:
         self._last_seen_at = now
         return True
 
+    def _notify_enabled(self):
+        """面板开关：服务器派发的同步是否弹通知（默认开）。"""
+        return bool(getattr(self.config, "notify_remote_push", True))
+
     def handle_client_latest(self):
         """处理文本剪贴板更新"""
         try:
@@ -100,6 +105,16 @@ class ClipboardHandler:
                         "同一份内容刚刚提醒过，跳过弹窗: %s",
                         str(content)[:30],
                     )
+                    return
+
+                if not self._notify_enabled():
+                    logger.info("「服务器派发时也弹通知」已关闭，仅同步不提醒")
+                    return
+
+                # 客户端进程收到服务器派发时也会弹；两个进程共用这个账本，
+                # 谁先弹谁占位，另一个就跳过，避免同一份内容响两次。
+                if not claim_notification(f"text:{current_id}"):
+                    logger.info("另一进程已提醒过这条，跳过弹窗: %s", current_id)
                     return
 
                 if ctype == 'text':
@@ -153,7 +168,7 @@ class ClipboardHandler:
                             msg += f"来源：{source}\n文件：{name}"
                         else:
                             msg += f"\n文件：{name}"
-            if name_list and msg:
+            if name_list and msg and self._notify_enabled():
                 def download_callback():
                     threading.Thread(
                         target=self.tray_manager.file_handler.fetch_file_with_progress,

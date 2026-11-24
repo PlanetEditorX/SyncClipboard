@@ -14,6 +14,7 @@ from gui.main_window import (
     DEFAULT_FOLDER_CONFIRM_TIMEOUT_SECONDS,
     DEFAULT_FOLDER_FILE_COUNT_CONFIRM,
     DEFAULT_FOLDER_ZIP_CONFIRM_GB,
+    DEFAULT_NOTIFY_REMOTE_PUSH,
     DEFAULT_SHARE_DOWNLOAD_LIMIT,
     DEFAULT_UPDATE_MIRROR_PREFIX,
     DEFAULT_UPDATE_PROXY,
@@ -62,6 +63,8 @@ class ConfigManager:
         self.share_download_limit = DEFAULT_SHARE_DOWNLOAD_LIMIT
         # 目录超限确认通知的存活秒数：到点没点「允许共享」就按不共享处理
         self.folder_confirm_timeout_seconds = DEFAULT_FOLDER_CONFIRM_TIMEOUT_SECONDS
+        # 服务器派发到本机客户端的同步是否也弹通知
+        self.notify_remote_push = DEFAULT_NOTIFY_REMOTE_PUSH
         # ---- 检查更新的网络路径（direct / mirror / manual）----
         self.update_source = DEFAULT_UPDATE_SOURCE
         self.update_mirror_prefix = DEFAULT_UPDATE_MIRROR_PREFIX
@@ -172,6 +175,7 @@ class ConfigManager:
                 "file_share_ttl_minutes": DEFAULT_FILE_SHARE_TTL_MINUTES,
                 "share_download_limit": DEFAULT_SHARE_DOWNLOAD_LIMIT,
                 "folder_confirm_timeout_seconds": DEFAULT_FOLDER_CONFIRM_TIMEOUT_SECONDS,
+                "notify_remote_push": DEFAULT_NOTIFY_REMOTE_PUSH,
                 "update_source": DEFAULT_UPDATE_SOURCE,
                 "update_mirror_prefix": DEFAULT_UPDATE_MIRROR_PREFIX,
                 "update_proxy": DEFAULT_UPDATE_PROXY,
@@ -221,6 +225,7 @@ class ConfigManager:
             "file_share_ttl_minutes": DEFAULT_FILE_SHARE_TTL_MINUTES,
             "share_download_limit": DEFAULT_SHARE_DOWNLOAD_LIMIT,
             "folder_confirm_timeout_seconds": DEFAULT_FOLDER_CONFIRM_TIMEOUT_SECONDS,
+            "notify_remote_push": DEFAULT_NOTIFY_REMOTE_PUSH,
             "update_source": DEFAULT_UPDATE_SOURCE,
             "update_mirror_prefix": DEFAULT_UPDATE_MIRROR_PREFIX,
             "update_proxy": DEFAULT_UPDATE_PROXY,
@@ -300,6 +305,9 @@ class ConfigManager:
             <= MAX_FOLDER_CONFIRM_TIMEOUT_SECONDS
             else DEFAULT_FOLDER_CONFIRM_TIMEOUT_SECONDS
         )
+        self.notify_remote_push = self._coerce_bool(
+            config.get("notify_remote_push"), DEFAULT_NOTIFY_REMOTE_PUSH
+        )
         source_mode = str(
             config.get("update_source") or DEFAULT_UPDATE_SOURCE
         ).strip().lower()
@@ -324,6 +332,7 @@ class ConfigManager:
             f"共享存活={self.file_share_ttl_minutes}分钟 | "
             f"下载次数={'不限制' if self.share_download_limit == 0 else self.share_download_limit} | "
             f"确认超时={self.folder_confirm_timeout_seconds}秒 | "
+            f"派发也弹窗={self.notify_remote_push} | "
             f"更新源={self.update_source}"
         )
         return True
@@ -379,6 +388,7 @@ class ConfigManager:
                 "folder_confirm_timeout_seconds": int(
                     self.folder_confirm_timeout_seconds
                 ),
+                "notify_remote_push": bool(self.notify_remote_push),
                 "update_source": self.update_source,
                 "update_mirror_prefix": self.update_mirror_prefix,
                 "update_proxy": self.update_proxy,
@@ -408,6 +418,7 @@ class ConfigManager:
             "file_share_ttl_minutes",
             "share_download_limit",
             "folder_confirm_timeout_seconds",
+            "notify_remote_push",
             "update_source",
             "update_mirror_prefix",
             "update_proxy",

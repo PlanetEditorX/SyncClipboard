@@ -13,7 +13,8 @@ import win32api
 import win32clipboard
 from pathlib import Path
 from datetime import datetime
-from common.notification import show_confirm_notification
+from common.notification import show_confirm_notification, show_notification
+from common.notify_ledger import claim as claim_notification
 from common.utils import SAFE_POST
 from client.folder_manifest import (
     MANIFEST_MAX_ENTRIES,
@@ -33,6 +34,7 @@ from gui.main_window import (
     DEFAULT_FOLDER_CONFIRM_TIMEOUT_SECONDS,
     DEFAULT_FOLDER_FILE_COUNT_CONFIRM,
     DEFAULT_FOLDER_ZIP_CONFIRM_GB,
+    DEFAULT_NOTIFY_REMOTE_PUSH,
 )
 from server.core.text_tracker import TextTracker
 
@@ -216,6 +218,11 @@ class SyncClient:
             _as_float(config.get("folder_confirm_timeout_seconds"),
                       DEFAULT_FOLDER_CONFIRM_TIMEOUT_SECONDS)
         )
+        # 服务器把内容派发到本机时是否弹通知（面板开关，默认开）
+        self.notify_remote_push = _as_bool(
+            config.get("notify_remote_push"),
+            DEFAULT_NOTIFY_REMOTE_PUSH,
+        )
         # 最近一次“已处理过”的剪贴板序列号，用于精确识别手动复制
         self._last_clipboard_seq = None
         self.push_thread = None
@@ -397,7 +404,32 @@ class SyncClient:
 
         self.tracker.update(latest)
         logger.info(f"更新剪贴板: {content[:50]} (来自 {source})")
+        self._notify_remote_dispatch(item_id, source, content)
         return True
+
+    def _notify_remote_dispatch(self, item_id, source, content):
+        """服务器派发到本机时弹一条通知。
+
+        这条链路原来是「静默写剪贴板」，只有本机同时跑着服务器、由 GUI 的
+        文件监控弹出「✂️ 剪贴板更新」时才看得见；另一台只跑客户端的电脑
+        同步完没有任何提示。默认开启，面板里可关。
+
+        和 GUI 那条路径共用通知账本：同一条记录谁先弹谁占位，另一边跳过。
+        """
+        if not self.notify_remote_push:
+            return
+        if not claim_notification(f"text:{item_id}"):
+            logger.info("GUI 已提醒过这条，跳过弹窗: %s", item_id)
+            return
+        preview = str(content)
+        preview = preview[:60] + ("…" if len(preview) > 60 else "")
+        try:
+            show_notification(
+                "✂️ 剪贴板更新",
+                f"来源：{source or '未知来源'}\n内容：{preview}",
+            )
+        except Exception:
+            logger.exception("派发通知弹出失败")
 
     def push_text(self, text):
         try:

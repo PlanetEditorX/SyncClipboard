@@ -66,8 +66,10 @@ class TestValidateSyncSettings(unittest.TestCase):
         self.assertEqual(values["folder_file_count_confirm"], 3000)
         # 默认值：首次获取前的等待窗口；下载开始后会滑动续期
         self.assertEqual(values["file_share_ttl_minutes"], DEFAULT_FILE_SHARE_TTL_MINUTES)
-        # 默认不限制下载次数：存活期内所有已配对设备都能取
-        self.assertEqual(values["share_download_limit"], 0)
+        # 默认下载完成后就取消共享（1 次）；关掉开关才是存活期内不限次数
+        self.assertEqual(values["share_download_limit"], 1)
+        # 服务器派发到本机时默认也弹通知
+        self.assertTrue(values["notify_remote_push"])
 
     def test_custom_values_are_normalized(self):
         values = self._validate(
@@ -474,7 +476,8 @@ class TestConfigManagerSyncFields(unittest.TestCase):
         self.assertEqual(manager.folder_zip_confirm_gb, 10)
         self.assertEqual(manager.folder_file_count_confirm, 3000)
         self.assertEqual(manager.file_share_ttl_minutes, DEFAULT_FILE_SHARE_TTL_MINUTES)
-        self.assertEqual(manager.share_download_limit, 0)
+        self.assertEqual(manager.share_download_limit, 1)
+        self.assertTrue(manager.notify_remote_push)
 
         saved = json.loads(self.config_path.read_text(encoding="utf-8"))
         for key in (
@@ -485,6 +488,7 @@ class TestConfigManagerSyncFields(unittest.TestCase):
             "folder_file_count_confirm",
             "file_share_ttl_minutes",
             "share_download_limit",
+            "notify_remote_push",
         ):
             self.assertIn(key, saved)
 
@@ -514,7 +518,8 @@ class TestConfigManagerSyncFields(unittest.TestCase):
         self.assertEqual(manager.folder_zip_confirm_gb, 10)
         self.assertEqual(manager.folder_file_count_confirm, 3000)
         self.assertEqual(manager.file_share_ttl_minutes, DEFAULT_FILE_SHARE_TTL_MINUTES)
-        self.assertEqual(manager.share_download_limit, 0)
+        # -5 越界 → 退回默认的「下完就取消共享」
+        self.assertEqual(manager.share_download_limit, 1)
 
     def test_update_client_config_persists_sync_fields(self):
         manager = self.manager_class()

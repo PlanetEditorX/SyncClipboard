@@ -81,8 +81,9 @@ class TestConfigManager(unittest.TestCase):
                 "folder_zip_confirm_gb": 10,
                 "folder_file_count_confirm": 3000,
                 "file_share_ttl_minutes": self.default_ttl,
-                "share_download_limit": 0,
+                "share_download_limit": 1,
                 "folder_confirm_timeout_seconds": 15,
+                "notify_remote_push": True,
                 "update_source": "direct",
                 "update_mirror_prefix": "https://gh-proxy.com",
                 "update_proxy": ""

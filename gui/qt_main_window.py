@@ -434,6 +434,27 @@ class MainWindow(QMainWindow):
         cancel_lay.addWidget(self.share_auto_cancel_switch, 0, Qt.AlignVCenter)
         lay.addWidget(cancel_card)
 
+        notify_card = QFrame()
+        notify_card.setObjectName("Preference")
+        notify_lay = QHBoxLayout(notify_card)
+        notify_lay.setContentsMargins(16, 9, 16, 9)
+        notify_box = QVBoxLayout()
+        notify_box.setSpacing(2)
+        notify_label = QLabel("服务器派发时也弹通知")
+        notify_label.setStyleSheet("font-weight: 600;")
+        notify_hint = QLabel(
+            "手机推给本机服务器时会弹窗；开启后，服务器再把内容派发到这台电脑的"
+            "客户端时同样提醒。关闭后仍然同步，只是不弹窗"
+        )
+        notify_hint.setObjectName("Hint")
+        notify_hint.setWordWrap(True)
+        notify_box.addWidget(notify_label)
+        notify_box.addWidget(notify_hint)
+        self.notify_remote_push_switch = ToggleSwitch(palette=self._palette)
+        notify_lay.addLayout(notify_box, 1)
+        notify_lay.addWidget(self.notify_remote_push_switch, 0, Qt.AlignVCenter)
+        lay.addWidget(notify_card)
+
         tip = QLabel(
             "超过阈值时在右下角弹出通知，点「允许共享」才登记共享；"
             "到「确认弹窗持续时间」还没点就按不共享处理。开始下载后每次成功请求自动续期。"
@@ -936,6 +957,12 @@ class MainWindow(QMainWindow):
             limit_edit.setText(str(saved_limit if saved_limit > 0 else 1))
             limit_edit.setEnabled(saved_limit > 0)
 
+        notify_switch = getattr(self, "notify_remote_push_switch", None)
+        if notify_switch is not None:
+            notify_switch.setChecked(
+                bool(getattr(self.config, "notify_remote_push", True)), animate=False
+            )
+
         # 更新源：三档分段 + 镜像下拉 + 代理输入框
         source_mode = getattr(self.config, "update_source", UPDATE_SOURCE_DIRECT)
         buttons = getattr(self, "update_source_buttons", None) or {}
@@ -1020,6 +1047,12 @@ class MainWindow(QMainWindow):
                              DEFAULT_SHARE_DOWNLOAD_LIMIT)
             )
 
+        notify_switch = getattr(self, "notify_remote_push_switch", None)
+        notify_remote_push = (
+            bool(notify_switch.isChecked()) if notify_switch is not None
+            else bool(getattr(self.config, "notify_remote_push", True))
+        )
+
         # 更新源控件可能不存在（裸窗口的测试只关心同步项），缺了就用配置值
         source_values = {}
         if hasattr(self, "_collect_update_source"):
@@ -1040,6 +1073,7 @@ class MainWindow(QMainWindow):
             "folder_confirm_timeout_seconds": confirm_timeout,
             "file_share_ttl_minutes": ttl_minutes,
             "share_download_limit": download_limit,
+            "notify_remote_push": notify_remote_push,
             **source_values,
         }
 
