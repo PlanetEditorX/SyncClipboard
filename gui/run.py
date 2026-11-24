@@ -1,5 +1,6 @@
 import logging
 import multiprocessing
+import sys
 from pathlib import Path
 from common.single_instance import (
     DELEGATED,
@@ -37,8 +38,10 @@ if __name__ == "__main__":
         logger = logging.getLogger(__name__)
         logger.info("托盘管理程序启动")
 
-        # 单实例：重复启动时唤出已有实例的窗口，本次启动随即退出
-        outcome = ensure_single_instance()
+        # 单实例：重复启动时唤出已有实例的窗口，本次启动随即退出。
+        # 「重启程序」会带上 --takeover：旧实例正在退出，等它释放后再接管，
+        # 否则这次启动会被当成重复启动直接丢掉，用户看到的就是「重启后没了」。
+        outcome = ensure_single_instance(takeover="--takeover" in sys.argv)
         if outcome == DELEGATED:
             logger.info("已请求现有实例唤出窗口，本次启动退出")
         elif outcome == UNREACHABLE:

@@ -115,7 +115,7 @@ class TestForceExitAfter(unittest.TestCase):
 class FakeManager:
     """只覆盖 quit_app 需要的接口，避免为测试拉起 QApplication。"""
 
-    def __init__(self, queue_accepts=True):
+    def __init__(self, queue_accepts=True, window_hidden=True):
         self._quit_requested = False
         self.services = SimpleNamespace(
             server_process=None,
@@ -127,10 +127,12 @@ class FakeManager:
             server_running=False, client_running=False, save_state=lambda: None
         )
         self.root = object()
+        self.window = SimpleNamespace(isHidden=lambda: window_hidden)
         self.queue_accepts = queue_accepts
         self.shutdown_calls = []
         self.refresh_calls = 0
         self.watchdogs = []
+        self.quit_calls = 0
         self._actions = SimpleNamespace(shutdown=self._shutdown)
 
     def _shutdown(self, action):
@@ -139,6 +141,10 @@ class FakeManager:
 
     def _quit_watchdog(self):
         self.watchdogs.append(1)
+
+    def quit_app(self):
+        self.quit_calls += 1
+        self._quit_requested = True
 
     def refresh_ui(self):
         self.refresh_calls += 1
@@ -204,6 +210,125 @@ class TestQuitApp(unittest.TestCase):
 
         request_shutdown.assert_called_once_with(manager.root)
         self.assertTrue(manager._quit_requested)
+
+
+class TestRestartCommand(unittest.TestCase):
+    """「重启程序」的命令行必须带接管意图，否则新实例会被单实例逻辑丢掉。"""
+
+    def test_frozen_build_restarts_the_exe(self):
+        command = tray_manager.build_restart_command(
+            frozen=True, executable="C:/app/SyncClipboard.exe"
+        )
+
+        self.assertEqual(
+            command, ["C:/app/SyncClipboard.exe", tray_manager.RESTART_TAKEOVER_FLAG]
+        )
+
+    def test_source_run_uses_the_same_module_as_autostart(self):
+        command = tray_manager.build_restart_command(
+            frozen=False, executable="C:/py/python.exe"
+        )
+
+        self.assertEqual(
+            command,
+            ["C:/py/python.exe", "-m", "gui.run", tray_manager.RESTART_TAKEOVER_FLAG],
+        )
+
+    def test_minimized_is_passed_before_takeover(self):
+        command = tray_manager.build_restart_command(
+            minimized=True, frozen=True, executable="app.exe"
+        )
+
+        self.assertEqual(command, ["app.exe", "--minimized", "--takeover"])
+
+    def test_spawn_uses_detached_safe_flags(self):
+        with patch.object(tray_manager.subprocess, "Popen") as popen:
+            popen.return_value = SimpleNamespace(pid=4242)
+
+            process = tray_manager.spawn_restarted_instance(
+                ["app.exe", "--takeover"], cwd="D:/proj"
+            )
+
+        self.assertEqual(process.pid, 4242)
+        kwargs = popen.call_args.kwargs
+        self.assertEqual(kwargs["cwd"], "D:/proj")
+        # DETACHED_PROCESS 会让子进程丢标准句柄而卡住，这里只允许 NO_WINDOW
+        if hasattr(tray_manager.subprocess, "DETACHED_PROCESS"):
+            self.assertFalse(
+                kwargs["creationflags"] & tray_manager.subprocess.DETACHED_PROCESS
+            )
+        self.assertIs(kwargs["stdout"], tray_manager.subprocess.DEVNULL)
+
+    def test_spawn_failure_returns_none(self):
+        with patch.object(
+            tray_manager.subprocess, "Popen", side_effect=OSError("拒绝访问")
+        ):
+            self.assertIsNone(
+                tray_manager.spawn_restarted_instance(["app.exe"], cwd="D:/proj")
+            )
+
+
+class TestRestartApp(unittest.TestCase):
+    def test_spawns_new_instance_before_quitting(self):
+        manager = FakeManager()
+        order = []
+
+        with patch.object(
+            tray_manager,
+            "spawn_restarted_instance",
+            side_effect=lambda *args, **kwargs: order.append(("spawn", args))
+            or SimpleNamespace(pid=1),
+        ):
+            manager.quit_app = lambda: order.append(("quit", None))
+            TrayManager.restart_app(manager)
+
+        self.assertEqual([step[0] for step in order], ["spawn", "quit"])
+
+    def test_hidden_window_stays_minimized_after_restart(self):
+        manager = FakeManager(window_hidden=True)
+
+        with patch.object(
+            tray_manager, "spawn_restarted_instance", return_value=SimpleNamespace(pid=1)
+        ) as spawn:
+            TrayManager.restart_app(manager)
+
+        command = spawn.call_args.args[0]
+        self.assertIn("--minimized", command)
+
+    def test_visible_window_reopens_after_restart(self):
+        manager = FakeManager(window_hidden=False)
+
+        with patch.object(
+            tray_manager, "spawn_restarted_instance", return_value=SimpleNamespace(pid=1)
+        ) as spawn:
+            TrayManager.restart_app(manager)
+
+        command = spawn.call_args.args[0]
+        self.assertNotIn("--minimized", command)
+        self.assertIn("--takeover", command)
+
+    def test_keeps_running_when_new_instance_cannot_start(self):
+        manager = FakeManager()
+
+        with patch.object(
+            tray_manager, "spawn_restarted_instance", return_value=None
+        ), patch.object(tray_manager.ui_bridge, "show_message") as message:
+            TrayManager.restart_app(manager)
+
+        # 新实例没起来就退出等于程序彻底没了：必须保持运行并提示
+        self.assertEqual(manager.quit_calls, 0)
+        message.assert_called_once()
+
+    def test_duplicate_restart_is_ignored(self):
+        manager = FakeManager()
+        manager._quit_requested = True
+
+        with patch.object(
+            tray_manager, "spawn_restarted_instance"
+        ) as spawn:
+            TrayManager.restart_app(manager)
+
+        spawn.assert_not_called()
 
 
 if __name__ == "__main__":

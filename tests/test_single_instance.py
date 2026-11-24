@@ -109,5 +109,91 @@ class TestShowRequest(unittest.TestCase):
         self.assertFalse(si._request_show(999999, timeout=0.5))
 
 
+class TestTakeover(unittest.TestCase):
+    """「重启程序」时新实例要能接管即将退出的旧实例。
+
+    旧实例还没退干净时互斥量仍被占着，常规逻辑会把新实例当成「重复启动」
+    直接丢掉 —— 用户看到的就是点了重启、程序却再也没回来。
+    """
+
+    def setUp(self):
+        if not si._IS_WINDOWS:
+            self.skipTest("仅 Windows 有效")
+        self._temp_dir = tempfile.TemporaryDirectory()
+        self._original_pid_file = si.PID_FILE
+        self._original_name = si.MUTEX_NAME
+        si.PID_FILE = Path(self._temp_dir.name) / "syncclipboard.pid"
+        si.MUTEX_NAME = f"Local\\SCUnitTakeover.{__import__('os').getpid()}.{id(self)}"
+        self._held = []
+        self.addCleanup(self._cleanup)
+
+    def _cleanup(self):
+        for handle in self._held:
+            if handle:
+                si._kernel32.CloseHandle(handle)
+        for key in ("mutex", "show", "shown"):
+            handle = si._handles.get(key)
+            if handle:
+                si._kernel32.CloseHandle(handle)
+            si._handles[key] = None
+        si.MUTEX_NAME = self._original_name
+        si.PID_FILE = self._original_pid_file
+        self._temp_dir.cleanup()
+
+    def _hold_mutex(self):
+        """模拟旧实例：先占住同名互斥量。"""
+        handle, already_running = si._create_mutex()
+        self.assertFalse(already_running)
+        self._held.append(handle)
+        return handle
+
+    def test_takeover_waits_until_old_instance_releases(self):
+        import threading
+        import time
+
+        old_handle = self._hold_mutex()
+
+        def release():
+            time.sleep(0.3)
+            si._kernel32.CloseHandle(old_handle)
+            self._held.remove(old_handle)
+
+        threading.Thread(target=release, daemon=True).start()
+
+        started = time.monotonic()
+        outcome = si.ensure_single_instance(takeover=True)
+        elapsed = time.monotonic() - started
+
+        self.assertEqual(outcome, si.PRIMARY)
+        self.assertGreaterEqual(elapsed, 0.2)
+        # 接管成功后 pid 文件要换成新实例
+        self.assertEqual(si.read_pid(), __import__("os").getpid())
+
+    def test_takeover_gives_up_after_timeout(self):
+        self._hold_mutex()
+        si.write_pid(999999)  # 指向一个没有唤出事件的 pid，好落到 UNREACHABLE
+
+        with patch.object(si, "TAKEOVER_TIMEOUT", 0.2):
+            outcome = si.ensure_single_instance(takeover=True, timeout=0.2)
+
+        self.assertEqual(outcome, si.UNREACHABLE)
+
+    def test_no_takeover_still_delegates(self):
+        self._hold_mutex()
+        si.write_pid(999999)
+
+        with patch.object(si, "_request_show", return_value=False):
+            outcome = si.ensure_single_instance(takeover=False, timeout=0.1)
+
+        self.assertEqual(outcome, si.UNREACHABLE)
+
+    def test_acquire_returns_immediately_when_mutex_is_free(self):
+        handle, already_running = si._acquire_mutex_with_takeover(5)
+
+        self.assertFalse(already_running)
+        self.assertTrue(handle)
+        self._held.append(handle)
+
+
 if __name__ == "__main__":
     unittest.main()

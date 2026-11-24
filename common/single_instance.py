@@ -29,6 +29,10 @@ PID_FILE = BASE_DIR / "syncclipboard.pid"
 DEFAULT_SHOW_TIMEOUT = 5.0
 # 等待主实例写入 pid 的上限
 PID_WAIT_TIMEOUT = 3.0
+# 重启时等待旧实例释放互斥量的上限（旧实例退出的看门狗是 15s）
+TAKEOVER_TIMEOUT = 30.0
+# 重启接管期间轮询互斥量的间隔
+TAKEOVER_POLL_SECONDS = 0.1
 
 # ensure_single_instance 的三种结果
 PRIMARY = "primary"
@@ -135,23 +139,63 @@ def _request_show(pid, timeout):
         _kernel32.CloseHandle(ack)
 
 
-def ensure_single_instance(timeout=DEFAULT_SHOW_TIMEOUT):
+def _create_mutex():
+    """创建（或打开）单实例互斥量，返回 (句柄, 是否已存在)。
+
+    ``CreateMutexW`` 只在「同名对象已存在」时把 ``GetLastError`` 设成
+    ``ERROR_ALREADY_EXISTS``，所以每次调用前要先清零，避免读上一次的旧值。
+    """
+    ctypes.set_last_error(0)
+    mutex = _kernel32.CreateMutexW(None, False, MUTEX_NAME)
+    if not mutex:
+        logger.warning("创建单实例互斥量失败，错误码=%s", ctypes.get_last_error())
+        return None, False
+    return mutex, ctypes.get_last_error() == ERROR_ALREADY_EXISTS
+
+
+def _acquire_mutex_with_takeover(timeout):
+    """重启场景：等旧实例退出、互斥量释放后再接管。
+
+    「重启程序」是新进程先起来、旧进程随后退出。此时互斥量仍被旧实例占着，
+    若按常规逻辑处理会被当成「重复启动」而直接退出，结果是重启后什么都没有。
+    这里只在明确带了接管意图时使用：轮询到互斥量可用为止。
+
+    用「能不能创建出新的互斥量」作为判据，而不是等某个 pid 退出：pid 可能被
+    系统复用，等错了对象会白等到超时。
+    """
+    deadline = time.monotonic() + timeout
+    while True:
+        mutex, already_running = _create_mutex()
+        if not already_running:
+            return mutex, False
+        if mutex:
+            _kernel32.CloseHandle(mutex)
+        if time.monotonic() >= deadline:
+            logger.warning("等待旧实例退出超过 %.0f 秒，放弃接管", timeout)
+            return None, True
+        time.sleep(TAKEOVER_POLL_SECONDS)
+
+
+def ensure_single_instance(timeout=DEFAULT_SHOW_TIMEOUT, takeover=False):
     """判断本次启动是主实例、还是应唤出已有实例。
 
     返回 PRIMARY 时调用方继续启动；返回 DELEGATED 时应静默退出；
     返回 UNREACHABLE 时已有实例存在但无法唤出，调用方应提示用户。
+
+    ``takeover=True`` 用于「重启程序」：旧实例正在退出，先等它释放互斥量再
+    成为主实例，而不是把这次启动当成重复启动丢掉。
     """
     if not _IS_WINDOWS:
         return PRIMARY
 
     previous_pid = read_pid()
-    # CreateMutexW 只在“已存在”时设置错误码，需先清零避免读到旧值
-    ctypes.set_last_error(0)
-    mutex = _kernel32.CreateMutexW(None, False, MUTEX_NAME)
-    if not mutex:
-        logger.warning("创建单实例互斥量失败，错误码=%s", ctypes.get_last_error())
+    if takeover:
+        mutex, already_running = _acquire_mutex_with_takeover(TAKEOVER_TIMEOUT)
+        if mutex is None:
+            mutex, already_running = _create_mutex()
+    else:
+        mutex, already_running = _create_mutex()
     _handles["mutex"] = mutex
-    already_running = bool(mutex) and ctypes.get_last_error() == ERROR_ALREADY_EXISTS
 
     if already_running:
         if not previous_pid:

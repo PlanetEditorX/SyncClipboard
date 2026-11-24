@@ -12,6 +12,7 @@
 
 import logging
 import os
+import subprocess
 import sys
 import threading
 import time
@@ -40,6 +41,58 @@ logger = logging.getLogger("gui")
 
 # 点「退出」到「进程必须消失」的宽限时间，是看门狗的兜底期限
 QUIT_GRACE_SECONDS = 15.0
+
+# 重启时传给新实例的参数：让它等旧实例释放单实例互斥量后再接管
+RESTART_TAKEOVER_FLAG = "--takeover"
+
+
+def build_restart_command(minimized=False, frozen=None, executable=None):
+    """构造「重启程序」要执行的命令行。
+
+    新实例带 ``--takeover``，否则它启动时看到旧实例还占着单实例互斥量，会被
+    当成「重复启动」直接退出——用户看到的就是托盘没了、程序也没回来。
+
+    源码运行用 ``-m gui.run``（与开机启动项一致），不依赖相对路径或当前目录；
+    打包版直接重启 exe。
+    """
+    frozen = getattr(sys, "frozen", False) if frozen is None else frozen
+    executable = sys.executable if executable is None else executable
+    args = ["--minimized"] if minimized else []
+    args.append(RESTART_TAKEOVER_FLAG)
+    if frozen:
+        return [executable, *args]
+    return [executable, "-m", "gui.run", *args]
+
+
+def spawn_restarted_instance(command=None, cwd=None):
+    """后台拉起新实例，返回 Popen；失败返回 None。
+
+    不能用 DETACHED_PROCESS（见 common/update_apply 的教训：子进程会拿不到
+    标准句柄而卡住）；``CREATE_NO_WINDOW`` + 标准流接 DEVNULL 就够了，父进程
+    退出后子进程照旧存活。
+    """
+    command = build_restart_command() if command is None else list(command)
+    cwd = BASE_DIR if cwd is None else cwd
+    creationflags = 0
+    if hasattr(subprocess, "CREATE_NO_WINDOW"):
+        creationflags |= subprocess.CREATE_NO_WINDOW
+    if hasattr(subprocess, "CREATE_NEW_PROCESS_GROUP"):
+        creationflags |= subprocess.CREATE_NEW_PROCESS_GROUP
+    try:
+        process = subprocess.Popen(
+            command,
+            cwd=str(cwd),
+            creationflags=creationflags,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            close_fds=True,
+        )
+    except OSError:
+        logger.exception("拉起重启实例失败")
+        return None
+    logger.info("已拉起重启实例 pid=%s：%s", process.pid, " ".join(command))
+    return process
 
 
 def build_shutdown_handler(services, config, root):
@@ -290,7 +343,8 @@ class TrayManager(QObject):
         busy = state["busy"]
         self.action_client.setChecked(state["client_enabled"])
         self.action_server.setChecked(state["server_enabled"])
-        for action in (self.action_client, self.action_server, self.action_restart):
+        # 「重启程序」不受服务队列忙闲影响：队列卡住时正是需要重开的时候
+        for action in (self.action_client, self.action_server):
             action.setEnabled(not busy)
         self.action_autostart.setChecked(self.config.is_autostart_enabled())
 
@@ -313,8 +367,8 @@ class TrayManager(QObject):
         self.action_server.setCheckable(True)
         self.action_server.triggered.connect(self._toggle_server)
 
-        self.action_restart = menu.addAction("重启已启用服务")
-        self.action_restart.triggered.connect(lambda: self.restart_services_async())
+        self.action_restart = menu.addAction("重启程序")
+        self.action_restart.triggered.connect(self.restart_app)
         menu.addSeparator()
 
         self.action_autostart = menu.addAction("开机启动")
@@ -428,6 +482,36 @@ class TrayManager(QObject):
             name="fetch-shared-file",
             daemon=True,
         ).start()
+
+    # ---------------------------------------------------------------- 重启
+
+    def restart_app(self, *_args):
+        """重启程序：先拉起新实例，再走与「退出」完全相同的收尾流程。
+
+        顺序不能反：先退出的话进程一没就没人再拉起了。新实例带着 ``--takeover``
+        等本进程释放单实例互斥量，接管之后按上次的开关状态重新拉起服务。
+
+        窗口状态跟着走：现在是收在托盘里的，重启后也留在托盘，不会突然弹出来。
+        """
+        if self._quit_requested:
+            logger.info("退出/重启流程已在执行，忽略重复的重启请求")
+            return
+
+        minimized = self.window is None or self.window.isHidden()
+        process = spawn_restarted_instance(
+            build_restart_command(minimized=minimized)
+        )
+        if process is None:
+            # 新实例没起来就退出，等于「点了重启、程序却彻底没了」，宁可不动
+            ui_bridge.show_message(
+                "重启失败",
+                "无法启动新的程序实例，本次保持运行。\n"
+                "请从开始菜单或快捷方式重新打开 SyncClipboard。",
+            )
+            return
+
+        logger.info("收到重启请求，先拉起新实例再退出")
+        self.quit_app()
 
     # ---------------------------------------------------------------- 退出
 
