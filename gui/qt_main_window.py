@@ -567,14 +567,14 @@ class MainWindow(QMainWindow):
         self.records_button.setCursor(Qt.PointingHandCursor)
         self.records_button.clicked.connect(self._show_download_records)
 
-        self.clients_button = QPushButton("客户端名单")
+        self.clients_button = QPushButton("客户端管理")
         self.clients_button.setMinimumHeight(38)
         self.clients_button.setCursor(Qt.PointingHandCursor)
-        self.clients_button.setToolTip("查看已登记的设备、各自的推送次数与成功率，可移除")
+        self.clients_button.setToolTip("查看已登记的设备、各自的推送次数与送达情况，可移除")
         self.clients_button.clicked.connect(self._show_clients)
 
         records_hint = QLabel(
-            "下载记录：谁在取、已经取走多少字节；客户端名单：推过几次、成功率多少"
+            "下载记录：谁在取、已经取走多少字节；客户端管理：推过几次、送达多少"
         )
         records_hint.setObjectName("Hint")
         records_hint.setWordWrap(True)
@@ -1347,21 +1347,29 @@ class MainWindow(QMainWindow):
         self._download_records_dialog.activateWindow()
 
     def _show_clients(self):
-        """客户端名单窗口：看设备、推送次数与成功率，可逐条移除。
+        """客户端管理窗口：看设备、推送次数与送达情况，可逐条移除。
 
         名单存在**服务端**进程里，所以问的是当前连的那台服务器：连本机就是
         127.0.0.1，连别人家就用配置里的地址。客户端自己存不了一份「谁来过」，
         也没有意义 —— 换台机器看到的就是另一批设备。
+
+        `local_name` 传的是**看窗口的这台电脑**，用来标「本机」；服务端下发
+        的 `is_server` 另算，只标「服务器」，不能混。
         """
         host = str(getattr(self.config, "server_host", "") or "").strip()
         if points_to_local_server(host) or not host:
             host = "127.0.0.1"
         port = getattr(self.config, "server_port", 8000)
         key = getattr(self.config, "key", "")
+        local_name = str(getattr(self.config, "local_name", "") or "").strip()
         if self._clients_dialog is None:
-            self._clients_dialog = ClientsDialog(self, host=host, port=port, key=key)
+            self._clients_dialog = ClientsDialog(
+                self, host=host, port=port, key=key, local_name=local_name
+            )
         else:
-            self._clients_dialog.set_endpoint(host=host, port=port, key=key)
+            self._clients_dialog.set_endpoint(
+                host=host, port=port, key=key, local_name=local_name
+            )
         self._clients_dialog.show()
         self._clients_dialog.raise_()
         self._clients_dialog.activateWindow()

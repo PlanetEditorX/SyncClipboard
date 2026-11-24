@@ -53,13 +53,14 @@ class TestRateAndStatus(unittest.TestCase):
         self.assertEqual(rate_text({"push_rate": 83.3}), "83.3%")
         self.assertEqual(rate_text({"push_rate": 100.0}), "100%")
 
-    def test_status_distinguishes_polling_from_unknown(self):
+    def test_status_calls_unprobeable_devices_polling(self):
         from gui.qt_clients import status_text
 
         self.assertEqual(status_text({"online": True}), "在线")
         self.assertEqual(status_text({"online": False}), "离线")
+        # 探不出来就是只能等它自己来请求，iOS 和还没上报端口的电脑都一样
         self.assertEqual(status_text({"online": None, "os": "iOS"}), "轮询")
-        self.assertEqual(status_text({"online": None, "os": "Windows"}), "未知")
+        self.assertEqual(status_text({"online": None, "os": "Windows"}), "轮询")
 
 
 class TestClientsDialog(unittest.TestCase):
@@ -186,6 +187,107 @@ class TestClientsDialog(unittest.TestCase):
 
         dialog._render(self._payload())
         self.assertIs(dialog.action_button(0), button)
+
+    def test_local_and_server_roles_are_marked_separately(self):
+        """在另一台电脑上看服务器名单：21 是该机的本机，23 是服务器。"""
+        from gui.qt_clients import HEADERS, ClientsDialog
+
+        payload = self._payload()
+        payload["clients"][1]["local_name"] = "SERVER-PC"
+        payload["clients"][1]["os"] = "Windows"
+        payload["clients"][1]["is_server"] = True
+        dialog = ClientsDialog(
+            None, host="192.168.1.23", port=8000, key="k", local_name="DESKTOP-A"
+        )
+        dialog._timer.stop()
+        self.addCleanup(dialog.deleteLater)
+        dialog._render(payload)
+
+        name_col = HEADERS.index("客户端")
+        os_col = HEADERS.index("系统")
+        self.assertEqual(dialog.table.item(0, name_col).text(), "DESKTOP-A（本机）")
+        self.assertEqual(dialog.table.item(1, name_col).text(), "SERVER-PC（服务器）")
+        # 「本机」不再挂在系统列上，也不会把服务器冒认成查看者本机
+        self.assertEqual(dialog.table.item(0, os_col).text(), "Windows")
+        self.assertEqual(dialog.table.item(1, os_col).text(), "Windows")
+
+    def test_server_itself_shows_both_roles(self):
+        from gui.qt_clients import HEADERS, ClientsDialog
+
+        payload = self._payload()
+        payload["clients"][0]["is_server"] = True
+        dialog = ClientsDialog(None, key="k", local_name="DESKTOP-A")
+        dialog._timer.stop()
+        self.addCleanup(dialog.deleteLater)
+        dialog._render(payload)
+
+        text = dialog.table.item(0, HEADERS.index("客户端")).text()
+        self.assertIn("本机", text)
+        self.assertIn("服务器", text)
+
+    def test_push_rate_is_never_colored_as_failure(self):
+        """推送率低是使用节奏，不是故障：不能满屏红。"""
+        from gui.qt_clients import HEADERS
+
+        dialog = self._dialog()
+        payload = self._payload()
+        payload["clients"][1]["push_rate"] = 3.1
+        dialog._render(payload)
+
+        rate_col = HEADERS.index("推送率")
+        for row in range(dialog.table.rowCount()):
+            color = dialog.table.item(row, rate_col).foreground().color().name().lower()
+            self.assertNotIn(color, (dialog._danger.lower(), dialog._warning.lower()))
+
+    def test_blacklist_row_disables_remove_and_shows_unblock(self):
+        from gui.qt_clients import HEADERS
+
+        dialog = self._dialog()
+        payload = self._payload()
+        payload["clients"][1]["blacklisted"] = True
+        payload["summary"]["blacklisted"] = 1
+        dialog._render(payload)
+
+        self.assertEqual(dialog.blacklist_button(0).text(), "黑名单")
+        self.assertEqual(dialog.blacklist_button(1).text(), "解除")
+        self.assertTrue(dialog.action_button(0).isEnabled())
+        self.assertFalse(dialog.action_button(1).isEnabled())
+        self.assertIn("已拉黑", dialog.table.item(1, HEADERS.index("状态")).text())
+        self.assertIn("黑名单 1", dialog._status.text())
+
+    def test_add_to_blacklist_posts_block_true(self):
+        from PySide6.QtWidgets import QMessageBox
+
+        dialog = self._dialog()
+        dialog._render(self._payload())
+        with patch.object(dialog, "_post_blacklist", return_value=(True, "")) as post, \
+                patch.object(dialog, "_fetch", return_value=(self._payload(), None)), \
+                patch("gui.qt_clients.QMessageBox.question", return_value=QMessageBox.Yes):
+            dialog._on_blacklist_row(0)
+        post.assert_called_once_with({"local_name": "DESKTOP-A", "block": True})
+
+    def test_unblock_posts_block_false(self):
+        from PySide6.QtWidgets import QMessageBox
+
+        dialog = self._dialog()
+        payload = self._payload()
+        payload["clients"][1]["blacklisted"] = True
+        dialog._render(payload)
+        with patch.object(dialog, "_post_blacklist", return_value=(True, "")) as post, \
+                patch.object(dialog, "_fetch", return_value=(payload, None)), \
+                patch("gui.qt_clients.QMessageBox.question", return_value=QMessageBox.Yes):
+            dialog._on_blacklist_row(1)
+        post.assert_called_once_with({"local_name": "熊熊的iPhone", "block": False})
+
+    def test_blacklist_action_cancelled_does_nothing(self):
+        from PySide6.QtWidgets import QMessageBox
+
+        dialog = self._dialog()
+        dialog._render(self._payload())
+        with patch.object(dialog, "_post_blacklist") as post, \
+                patch("gui.qt_clients.QMessageBox.question", return_value=QMessageBox.No):
+            dialog._on_blacklist_row(0)
+        post.assert_not_called()
 
     def test_action_button_is_not_clipped_by_row_height(self):
         """「移除」按钮曾被默认行高裁掉下边框：行高必须容得下按钮 + 上下留白。"""

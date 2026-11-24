@@ -163,6 +163,64 @@ def copy_text_to_clipboard(text):
 clients = []  # 内存中的客户端列表
 _lock = threading.Lock()
 CLIENT_IP_FILE = BASE_DIR / "config" / "client_ip.json"
+# 黑名单：跟「移除」是两回事。移除只是把设备踢出当前派发列表，它下次请求
+# 还会自动回来；黑名单是持久的，命中后连自动登记 / 注册都不收，也不推送。
+BLACKLIST_FILE = BASE_DIR / "config" / "blacklist.json"
+blacklist = {}          # local_name -> 客户端记录快照 + blacklisted_at
+BLACKLIST_LOADED = False
+
+
+def load_blacklist():
+    """读黑名单；文件坏了按空表处理，别让服务起不来。"""
+    global blacklist, BLACKLIST_LOADED
+    try:
+        if BLACKLIST_FILE.exists():
+            loaded = json.loads(BLACKLIST_FILE.read_text(encoding="utf-8"))
+            blacklist = loaded if isinstance(loaded, dict) else {}
+        else:
+            blacklist = {}
+    except (OSError, json.JSONDecodeError) as exc:
+        logging.warning("读取黑名单失败，按空表处理: %s", exc)
+        blacklist = {}
+    BLACKLIST_LOADED = True
+
+
+def save_blacklist():
+    with _lock:
+        BLACKLIST_FILE.parent.mkdir(parents=True, exist_ok=True)
+        with open(BLACKLIST_FILE, "w", encoding="utf-8") as f:
+            json.dump(blacklist, f, indent=2, ensure_ascii=False)
+
+
+def is_blacklisted(name):
+    if not BLACKLIST_LOADED:
+        load_blacklist()
+    return str(name or "").strip() in blacklist
+
+
+@app.before_request
+def reject_blacklisted_source():
+    """黑名单设备连同步请求本身都不收，不只是不登记、不推送。
+
+    面板自己的三个接口必须放行：否则一旦加黑，连「解除」都调不动了。
+    """
+    if request.path in ("/clients", "/clients/delete", "/clients/blacklist"):
+        return None
+    name = ""
+    if request.method in ("GET", "HEAD"):
+        name = request.args.get("source", "")
+    elif request.is_json:
+        data = request.get_json(silent=True) or {}
+        name = data.get("source") or data.get("local_name") or ""
+    if not name:
+        # 文件上传走 header 传来源
+        name = request.headers.get("source", "")
+    name = str(name or "").strip()
+    if name and is_blacklisted(name):
+        return jsonify({"status": "error", "message": "设备已在黑名单"}), 403
+    return None
+
+
 def load_clients_ip():
     global clients
     # 如果文件不存在，先创建一个空的 JSON 文件
@@ -285,6 +343,10 @@ def touch_client(ip, source, os_name=None, *, delivery=False):
     source = (source or "").strip()
     ip = (ip or "").strip()
     if not source or not ip:
+        return False
+
+    # 黑名单设备不能自动登记，也就永远不会再进入派发列表
+    if is_blacklisted(source):
         return False
 
     now = datetime.now()
@@ -462,6 +524,7 @@ def _client_view(client, online=None, now=None):
         "last_pull": client.get("last_pull") or "",
         "online": online,
         "is_server": client.get("local_name") == LOCAL_NAME,
+        "blacklisted": is_blacklisted(client.get("local_name")),
     }
 
 
@@ -710,6 +773,10 @@ def notify_clients(_type):
         # 推送的客户端是服务器跳过
         if source == LOCAL_NAME:
             continue
+        # 黑名单即使还残留在旧记录里也绝不投递（加黑时会顺手清记录，
+        # 这里是双保险：服务端重启带旧注册表也不会误发）
+        if is_blacklisted(source):
+            continue
         # 同步清理最新文件信息
         if _type == "clear":
             t = threading.Thread(target=_clear_client_task, args=(client, KEY), daemon=True)
@@ -871,6 +938,10 @@ def _take_ios_latest(source, ip=None):
     这里才算数（notify_clients 排队时先记了一次未送达）。
     """
     if not source:
+        return {"pasted": True}
+
+    # 黑名单设备连兜底取内容都不给：拉黑就要连轮询一起断掉
+    if is_blacklisted(source):
         return {"pasted": True}
 
     if source in IOS_NOTIFY:
@@ -1261,6 +1332,16 @@ def list_clients():
             key = (client.get("ip"), 0)
         rows.append(_client_view(client, online=online_map.get(key), now=now))
 
+    # 黑名单设备已经从派发列表清掉了，但面板得看得见它才能解除。用加黑时
+    # 存的快照补一行，标 blacklisted / 不显示活跃时间（它不会再连上来了）。
+    for name, snapshot in blacklist.items():
+        item = {k: v for k, v in snapshot.items() if k != "blacklisted_at"}
+        item.setdefault("local_name", name)
+        row = _client_view(item, online=None, now=now)
+        row["last_alive"] = ""
+        row["idle_seconds"] = None
+        rows.append(row)
+
     # 在线的排前面，其余按最近活跃倒序 —— 面板上最先要看的永远是「正在用的」
     rows.sort(key=lambda row: (row.get("online") is not True, -row.get("last_alive_ts", 0)))
 
@@ -1276,6 +1357,7 @@ def list_clients():
             "online": sum(1 for row in rows if row.get("online") is True),
             "offline": sum(1 for row in rows if row.get("online") is False),
             "unknown": sum(1 for row in rows if row.get("online") is None),
+            "blacklisted": len(blacklist),
             "push_total": push_total,
             "push_ok": push_ok,
             "push_rate": round(push_ok * 100.0 / push_total, 1) if push_total else None,
@@ -1287,10 +1369,9 @@ def list_clients():
 def delete_client():
     """把一台（或全部）客户端从名单里移除，连同它的推送统计。
 
-    这只是「删记录」，不是拉黑：服务端靠请求自动登记，设备只要还在跑，
-    下一次 /sync、/latest 就会重新出现。真要拦住一台设备，得在鉴权层做
-    设备白名单 —— 那是另一套语义，不在这里偷偷实现，否则「删除」会变成
-    一个语义不明的半吊子黑名单。
+    这只是从派发列表删掉记录，不是黑名单：设备只要还在跑，下一次请求就会
+    重新登记并回到派发列表，统计从 0 开始。要真正拦住一台设备，用单独的
+    黑名单接口（见 /clients/blacklist）。
 
     请求体：{"local_name": "..."} 或 {"ip": "..."}，或 {"all": true} 清空。
     """
@@ -1320,12 +1401,12 @@ def delete_client():
         clients[:] = kept
         for client in removed:
             client_ip = client.get("ip")
-            client_name = client.get("local_name")
+            client_name = str(client.get("local_name") or "").strip()
             CLIENT_NOTIFY.pop(client_ip, None)
             IOS_NOTIFY.pop(client_name, None)
             for key in [key for key in CLIENT_TOUCH if key and key[0] == client_name]:
                 CLIENT_TOUCH.pop(key, None)
-            logging.info("从客户端名单移除: %s (%s)", client_name, client_ip)
+            logging.info("从客户端管理移除: %s (%s)", client_name, client_ip)
         save_clients()
 
     return jsonify({
@@ -1333,6 +1414,66 @@ def delete_client():
         "removed": len(removed),
         "names": [c.get("local_name") for c in removed],
     }), 200
+
+
+@app.route('/clients/blacklist', methods=['POST'])
+def set_client_blacklist():
+    """把设备加入 / 移出黑名单。
+
+    「移除」只清当前派发列表，设备下次请求会自动回来；黑名单是持久的：
+    命中后 touch_client 不自动登记、/register 直接拒绝、派发和 iOS 轮询
+    兜底取内容也一律不给。只有从这个接口解除才恢复。
+
+    请求体：{"local_name": "...", "block": true/false}（也支持只给 ip）；
+    block 省略时按 true 处理。
+    """
+    if not require_key():
+        return jsonify({"status": "error", "message": "密钥错误"}), 403
+
+    data = request.get_json(silent=True) or {}
+    name = str(data.get("local_name") or "").strip()
+    ip = str(data.get("ip") or "").strip()
+    block = bool(data.get("block", True))
+
+    load_clients_ip()
+    load_blacklist()
+    if not name and ip:
+        for client in clients:
+            if client.get("ip") == ip:
+                name = str(client.get("local_name") or "").strip()
+                break
+        if not name:
+            for saved_name, snapshot in blacklist.items():
+                if snapshot.get("ip") == ip:
+                    name = saved_name
+                    break
+    if not name:
+        return jsonify({"status": "error", "message": "缺少 local_name / ip"}), 400
+
+    if block:
+        # 把整条记录存成快照：面板上要继续显示这台设备、它的统计和 IP，
+        # 还得能从快照里按 IP 找到它。加黑即摘出派发列表，立刻不再推送。
+        hit = [c for c in clients if c.get("local_name") == name]
+        snapshot = dict(hit[0]) if hit else dict(blacklist.get(name, {}))
+        snapshot["local_name"] = name
+        snapshot["blacklisted_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        blacklist[name] = snapshot
+        if hit:
+            clients[:] = [c for c in clients if c.get("local_name") != name]
+            for client in hit:
+                CLIENT_NOTIFY.pop(client.get("ip"), None)
+                IOS_NOTIFY.pop(name, None)
+                for key in [key for key in CLIENT_TOUCH if key and key[0] == name]:
+                    CLIENT_TOUCH.pop(key, None)
+            save_clients()
+        save_blacklist()
+        logging.info("加入黑名单: %s (%s)", name, snapshot.get("ip"))
+    elif name in blacklist:
+        blacklist.pop(name, None)
+        save_blacklist()
+        logging.info("解除黑名单: %s", name)
+
+    return jsonify({"status": "ok", "blocked": block, "name": name}), 200
 
 
 @app.route('/mark_pasted', methods=['POST'])
@@ -1887,10 +2028,14 @@ def register():
     # IP 优先使用服务器看到的 remote_addr
     ip = request.remote_addr
     port = data.get('file_server_port', 0)
-    local_name = data.get('local_name', 'unknown')
+    local_name = str(data.get('local_name') or 'unknown').strip()
     os = data.get('os', get_os_type(request.headers.get('User-Agent')))
     if not require_key():
         return jsonify({"status": "error", "msg": "invalid key"}), 403
+    # 黑名单是硬拦截：显式注册也不收，这是它和「移除」的根本区别
+    if is_blacklisted(local_name):
+        logging.info("拒绝黑名单客户端注册: %s (%s)", local_name, ip)
+        return jsonify({"status": "error", "msg": "设备已在黑名单"}), 403
     # 加载客户端列表
     load_clients_ip()
     is_new = add_or_update_client(ip, port, local_name, os)

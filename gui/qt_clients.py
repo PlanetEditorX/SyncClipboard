@@ -1,4 +1,4 @@
-"""客户端名单窗口：服务端登记了哪些设备、各自收过多少次内容、可随时移除。
+"""客户端管理窗口：服务端登记了哪些设备、各自收过多少次内容、可随时移除。
 
 数据全在服务端进程里（`config/client_ip.json`），这里只做两件事：读
 `GET /clients` 画表、点「移除」时发 `POST /clients/delete`。窗口本身不缓存
@@ -52,8 +52,9 @@ NAME_COLUMN = HEADERS.index("客户端")
 RATE_COLUMN = HEADERS.index("推送率")
 STATUS_COLUMN = HEADERS.index("状态")
 ACTION_COLUMN = HEADERS.index("操作")
-ACTION_COLUMN_WIDTH = 94
-ACTION_BUTTON_WIDTH = 78
+# 「操作」列放两个按钮：移除（暂时清出派发列表）+ 黑名单 / 解除（持久拦截）
+ACTION_COLUMN_WIDTH = 192
+ACTION_BUTTON_WIDTH = 84
 # 行高必须给按钮让位。QTableWidget 不会因为 setCellWidget 把行撑高，默认行高
 # 只有 30 —— 而按钮本身就要 30，加上下留白（3+3）一共 36，多出来的部分直接被
 # 单元格裁掉，表现就是「移除」按钮只剩上半截、下边框不见。所以行高按「按钮
@@ -110,35 +111,43 @@ def rate_text(row):
 
 
 def status_text(row):
-    """在线 / 离线 / 探不出来（iOS 没有推送端口，只能等它自己拉）。"""
+    """在线 / 离线 / 探不出来。
+
+    `None` 表示服务端没法主动探测这台设备：iOS 没有推送端口，别的系统
+    也可能是还没上报端口。这类设备只能靠它自己来请求才拿到内容，所以一律
+    写「轮询」—— 比「未知」准确，也不会让人以为出了什么错。
+    """
     online = row.get("online")
     if online is True:
         return "在线"
     if online is False:
         return "离线"
-    return "轮询" if str(row.get("os", "")).casefold() in {
-        "ios", "ipados", "iphone", "ipad"
-    } else "未知"
+    return "轮询"
 
 
 class ClientsDialog(QDialog):
     """非模态窗口：打开后每 3 秒拉一次名单，关闭即停止轮询。"""
 
-    def __init__(self, parent=None, host="127.0.0.1", port=8000, key=""):
+    def __init__(self, parent=None, host="127.0.0.1", port=8000, key="", local_name=""):
         super().__init__(parent)
-        self.setWindowTitle("客户端名单")
+        self.setWindowTitle("客户端管理")
         self.resize(1120, 560)
         self.setModal(False)
 
         self._host = host
         self._port = port
         self._key = key
+        # 「本机」是看这个窗口的这台电脑，不是服务端自己。服务端下发的
+        # is_server 只能标「服务器」，否则在别的电脑上打开会把服务器误认成
+        # 本机（见 _client_role）。
+        self._local_name = str(local_name or "").strip()
         self._paused = False
         # 行身份 = (名字, IP)：身份不变就只改文字，不重建行，免得正在点的
         # 「移除」按钮被每秒的刷新销毁掉（同下载记录窗口的处理）
         self._row_keys = []
         self._row_data = []
         self._row_buttons = []
+        self._block_buttons = []
 
         palette = getattr(parent, "_palette", None) or {}
         self._muted = palette.get("muted", "#64748B")
@@ -183,8 +192,8 @@ class ClientsDialog(QDialog):
         lay.addWidget(self.table, 1)
 
         hint = QLabel(
-            "「移除」只是删掉这条记录和它的推送统计：服务端靠请求自动登记，"
-            "设备只要还在跑，下一次请求就会重新出现。"
+            "「移除」只从派发列表删掉这条记录：设备下次请求会自动回来、又开始收推送。"
+            "要真正拦住它请点「黑名单」。"
         )
         hint.setObjectName("Hint")
         hint.setWordWrap(True)
@@ -203,7 +212,7 @@ class ClientsDialog(QDialog):
         self._refresh_button.setMinimumHeight(32)
         self._refresh_button.clicked.connect(self.refresh_now)
 
-        self._clear_button = QPushButton("清空名单")
+        self._clear_button = QPushButton("清空列表")
         self._clear_button.setCursor(Qt.PointingHandCursor)
         self._clear_button.setMinimumHeight(32)
         self._clear_button.clicked.connect(self._on_clear_all)
@@ -222,7 +231,7 @@ class ClientsDialog(QDialog):
 
     # ---------------------------------------------------------------- 交互
 
-    def set_endpoint(self, host=None, port=None, key=None):
+    def set_endpoint(self, host=None, port=None, key=None, local_name=None):
         """配置里改了服务器地址 / 端口 / 密钥时更新目标，下一次刷新即生效。"""
         if host is not None:
             self._host = host
@@ -230,6 +239,8 @@ class ClientsDialog(QDialog):
             self._port = port
         if key is not None:
             self._key = key
+        if local_name is not None:
+            self._local_name = str(local_name or "").strip()
 
     def _on_pause_toggled(self, checked):
         self._paused = bool(checked)
@@ -270,7 +281,7 @@ class ClientsDialog(QDialog):
             return
         payload, error = self._fetch()
         if error:
-            self._status.setText(f"无法读取客户端名单（服务端未运行？）：{error}")
+            self._status.setText(f"无法读取客户端管理数据（服务端未运行？）：{error}")
             self._status.setStyleSheet(f"color: {self._danger};")
             return
         self._render(payload)
@@ -296,6 +307,8 @@ class ClientsDialog(QDialog):
         ]
         if summary.get("unknown"):
             parts.append(f"未知 {summary['unknown']}")
+        if summary.get("blacklisted"):
+            parts.append(f"黑名单 {summary['blacklisted']}")
         total = summary.get("push_total", 0)
         ok = summary.get("push_ok", 0)
         if total:
@@ -305,6 +318,24 @@ class ClientsDialog(QDialog):
             parts.append("还没有推送记录")
         parts.append(f"每 {REFRESH_INTERVAL_MS // 1000} 秒自动刷新")
         return "　|　".join(parts)
+
+    @staticmethod
+    def _action_button(text, tooltip, callback):
+        """操作列的小按钮：只覆盖 padding，别用全局那套会把它压扁的 8px。"""
+        button = QPushButton(text)
+        button.setCursor(Qt.PointingHandCursor)
+        button.setStyleSheet("padding: 4px 8px;")
+        # 先让样式生效，sizeHint 才会把上面的 padding 算进去
+        button.ensurePolished()
+        # 高度按字体实际需要给：DPI 或主题字体变大时不会把字挤扁，
+        # 行高也跟着一起长，按钮不会被裁
+        button.setFixedHeight(
+            max(ACTION_BUTTON_HEIGHT, button.sizeHint().height())
+        )
+        button.setFixedWidth(ACTION_BUTTON_WIDTH)
+        button.setToolTip(tooltip)
+        button.clicked.connect(callback)
+        return button
 
     def _fill(self, rows):
         keys = [(str(row.get("local_name", "")), str(row.get("ip", ""))) for row in rows]
@@ -317,33 +348,32 @@ class ClientsDialog(QDialog):
         self._row_keys = list(keys)
         self._row_data = []
         self._row_buttons = []
+        self._block_buttons = []
         row_height = ACTION_ROW_HEIGHT
         for index in range(len(rows)):
-            button = QPushButton("移除")
-            button.setCursor(Qt.PointingHandCursor)
-            # 表格里的按钮不能用全局那套 8px 内边距：行高就 30 出头，上下各留
-            # 8px 会把文字压成一条（字被缩放，看着像小了一号）。只覆盖 padding，
-            # 边框 / 悬停态仍然走全局 QSS。
-            button.setStyleSheet("padding: 4px 8px;")
-            # 先让样式生效，sizeHint 才会把上面的 padding 算进去
-            button.ensurePolished()
-            # 高度按字体实际需要给：DPI 或主题字体变大时不会把字挤扁，
-            # 行高也跟着一起长，按钮不会被裁
-            button_height = max(ACTION_BUTTON_HEIGHT, button.sizeHint().height())
-            button.setFixedHeight(button_height)
-            button.setFixedWidth(ACTION_BUTTON_WIDTH)
-            button.setToolTip("从名单中移除这条记录与推送统计")
-            button.clicked.connect(
-                lambda _checked=False, row=index: self._on_remove_row(row)
+            button = self._action_button(
+                "移除",
+                "从派发列表移除；设备下次请求会自动回来",
+                lambda _checked=False, row=index: self._on_remove_row(row),
             )
-            # 套一层留白，不让按钮贴着格线
+            block_button = self._action_button(
+                "黑名单",
+                "拦住这台设备：之后它注册、同步都不再收",
+                lambda _checked=False, row=index: self._on_blacklist_row(row),
+            )
+            # 套一层留白，不让按钮贴着格线；两个按钮并排，中间留一点缝
             holder = QWidget()
             holder_layout = QHBoxLayout(holder)
             holder_layout.setContentsMargins(6, ACTION_ROW_PADDING, 6, ACTION_ROW_PADDING)
+            holder_layout.setSpacing(6)
             holder_layout.addWidget(button)
+            holder_layout.addWidget(block_button)
             self.table.setCellWidget(index, ACTION_COLUMN, holder)
             self._row_buttons.append(button)
-            row_height = max(row_height, button_height + ACTION_ROW_PADDING * 2)
+            self._block_buttons.append(block_button)
+            row_height = max(
+                row_height, button.height() + ACTION_ROW_PADDING * 2
+            )
             for column in range(ACTION_COLUMN):
                 self.table.setItem(index, column, QTableWidgetItem(""))
             self._row_data.append({})
@@ -362,10 +392,8 @@ class ClientsDialog(QDialog):
             os_name = str(row.get("os", ""))
             port = row.get("port") or 0
             os_text = os_name or EMPTY
-            if row.get("is_server"):
-                os_text = f"{os_text}（本机）"
             values = (
-                name,
+                self._client_role(row, name),
                 os_text,
                 str(row.get("ip") or EMPTY),
                 str(port) if port else EMPTY,
@@ -374,7 +402,7 @@ class ClientsDialog(QDialog):
                 rate_text(row),
                 human_time(row.get("last_push")),
                 human_time(row.get("last_alive")),
-                status_text(row),
+                "已拉黑" if row.get("blacklisted") else status_text(row),
             )
             for column, text in enumerate(values):
                 item = self.table.item(index, column)
@@ -383,7 +411,37 @@ class ClientsDialog(QDialog):
                 elif item.text() != text:
                     item.setText(text)
                 self._decorate(item, column, row, name)
+
+            # 行复用时也要跟着黑名单状态更新按钮（不能只在建行时设一次）
+            blocked = bool(row.get("blacklisted"))
+            if index < len(self._row_buttons):
+                remove_button = self._row_buttons[index]
+                remove_button.setEnabled(not blocked)
+                remove_button.setToolTip(
+                    "已在黑名单，先解除再操作"
+                    if blocked else "从派发列表移除；设备下次请求会自动回来"
+                )
+            if index < len(self._block_buttons):
+                block_button = self._block_buttons[index]
+                block_button.setText("解除" if blocked else "黑名单")
+                block_button.setToolTip(
+                    "解除黑名单：它下次请求就会重新登记并收到推送"
+                    if blocked else "加入黑名单：之后注册、同步都不再收"
+                )
             self._row_data[index] = row
+
+    def _client_role(self, row, name):
+        """名字后挂角色：本机 / 服务器（两边都占就都标出来）。
+
+        「本机」只能由看窗口的这端判断，服务端下发的 `is_server` 说的是
+        「服务器那台机器」，两件事不能混为一谈。
+        """
+        roles = []
+        if self._local_name and name and name.casefold() == self._local_name.casefold():
+            roles.append("本机")
+        if row.get("is_server"):
+            roles.append("服务器")
+        return f"{name}（{'·'.join(roles)}）" if roles else name
 
     def _decorate(self, item, column, row, name):
         """给单元格上色 / 加悬停说明；颜色只决定「看着像不像有问题」。"""
@@ -392,20 +450,23 @@ class ClientsDialog(QDialog):
         if column == NAME_COLUMN:
             item.setToolTip(self._tooltip(row, name))
         elif column == RATE_COLUMN:
-            rate = row.get("push_rate")
-            if rate is None:
+            # 刻意不按阈值上色：复制是高频操作，同步要等那台设备醒来才发生，
+            # 用久了几乎必然全红 —— 那是使用节奏，不是故障。健康度看「状态」
+            # 和「上次连接」这两列，推送率只当参考数字。
+            if row.get("push_rate") is None:
                 item.setForeground(QColor(self._muted))
-            elif rate >= 90:
-                item.setForeground(QColor(self._success))
-            elif rate >= 60:
-                item.setForeground(QColor(self._warning))
-            else:
-                item.setForeground(QColor(self._danger))
-        elif column == STATUS_COLUMN:
-            online = row.get("online")
-            color = self._success if online is True else (
-                self._danger if online is False else self._muted
+            item.setToolTip(
+                "尝试推送 / 真正送达。设备关机、休眠也算一次尝试，"
+                "数字低通常只是它当时没开着，不代表同步坏了。"
             )
+        elif column == STATUS_COLUMN:
+            if row.get("blacklisted"):
+                color = self._danger
+            else:
+                online = row.get("online")
+                color = self._success if online is True else (
+                    self._danger if online is False else self._muted
+                )
             item.setForeground(QColor(color))
 
     @staticmethod
@@ -433,6 +494,12 @@ class ClientsDialog(QDialog):
         """第 row 行的「移除」按钮；没有该行时返回 None（测试与调试用）。"""
         if 0 <= row < len(self._row_buttons):
             return self._row_buttons[row]
+        return None
+
+    def blacklist_button(self, row):
+        """第 row 行的「黑名单 / 解除」按钮。"""
+        if 0 <= row < len(self._block_buttons):
+            return self._block_buttons[row]
         return None
 
     # ---------------------------------------------------------------- 移除
@@ -471,6 +538,41 @@ class ClientsDialog(QDialog):
             QMessageBox.information(self, "没有移除", "服务端里已经没有这条记录。")
         self.refresh_now()
 
+    def _on_blacklist_row(self, index):
+        if not 0 <= index < len(self._row_data):
+            return
+        row = self._row_data[index]
+        name = str(row.get("local_name") or "")
+        if not name:
+            return
+        blocked = bool(row.get("blacklisted"))
+        if blocked:
+            title = "解除黑名单"
+            message = (
+                f"解除「{name}」的黑名单？\n\n"
+                "解除后它下次请求就会重新登记，又开始收推送。"
+            )
+        else:
+            title = "加入黑名单"
+            message = (
+                f"把「{name}」加入黑名单？\n\n"
+                "之后它的注册请求会被拒绝、同步不再发给它；面板上会保留一条"
+                "「已拉黑」记录，随时可以解除。"
+            )
+        answer = QMessageBox.question(
+            self, title, message, QMessageBox.Yes | QMessageBox.No, QMessageBox.No
+        )
+        if answer != QMessageBox.Yes:
+            return
+
+        ok, error = self._post_blacklist(
+            {"local_name": name, "block": not blocked}
+        )
+        if not ok:
+            QMessageBox.warning(self, f"{title}失败", f"无法通知服务端：{error}")
+            return
+        self.refresh_now()
+
     def _on_clear_all(self):
         count = len(self._row_data)
         if not count:
@@ -504,6 +606,19 @@ class ClientsDialog(QDialog):
             return True, "", int(data.get("removed", 0))
         except Exception as exc:  # noqa: BLE001 - 原因要原样告诉用户
             return False, str(exc), 0
+
+    def _post_blacklist(self, payload):
+        try:
+            response = requests.post(
+                f"{self._base_url()}/clients/blacklist",
+                json=payload,
+                headers={"key": str(self._key)},
+                timeout=REQUEST_TIMEOUT,
+            )
+            response.raise_for_status()
+            return True, ""
+        except Exception as exc:  # noqa: BLE001 - 原因要原样告诉用户
+            return False, str(exc)
 
     # ---------------------------------------------------------------- 滚动
 

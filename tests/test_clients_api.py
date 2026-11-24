@@ -34,10 +34,15 @@ class ClientsApiTestBase(unittest.TestCase):
         self.latest_file = base / "text_latest.json"
         self.clients_file = base / "client_ip.json"
         self.clients_file.write_text("[]", encoding="utf-8")
+        self.blacklist_file = base / "blacklist.json"
+        self.blacklist_file.write_text("{}", encoding="utf-8")
 
         self._patch("server.core.text_tracker.TEXT_LATEST_FILE", self.latest_file)
         for name, value in (
             ("CLIENT_IP_FILE", self.clients_file),
+            ("BLACKLIST_FILE", self.blacklist_file),
+            ("blacklist", {}),
+            ("BLACKLIST_LOADED", True),
             ("CLIENT_NOTIFY", {}),
             ("IOS_NOTIFY", {}),
             ("CLIENT_TOUCH", {}),
@@ -314,6 +319,100 @@ class DeleteClientTest(ClientsApiTestBase):
     def test_missing_identifier_is_rejected(self):
         response = self.client.post("/clients/delete", json={}, headers={"key": "secret"})
         self.assertEqual(response.status_code, 400)
+
+
+class BlacklistTest(ClientsApiTestBase):
+    """黑名单 vs 移除：移除只是清派发列表，黑名单是持久拦截。"""
+
+    def _block(self, name, block=True):
+        return self.client.post(
+            "/clients/blacklist",
+            json={"local_name": name, "block": block},
+            headers={"key": "secret"},
+        )
+
+    def test_blacklist_clears_dispatch_and_blocks_both_register_paths(self):
+        self._add_client(DESKTOP)
+        response = self._block(DESKTOP)
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.get_json()["blocked"])
+        self.assertEqual(self._registry(), [])
+
+        # 普通请求的自动登记进不来
+        flask_app.touch_client("192.168.1.24", DESKTOP, "Windows")
+        self.assertEqual(self._registry(), [])
+        # 显式注册也进不来 —— 这才是黑名单和「移除」的区别
+        response = self.client.post(
+            "/register",
+            json={"local_name": DESKTOP, "file_server_port": 8899, "os": "Windows"},
+            headers={"key": "secret"},
+        )
+        self.assertEqual(response.status_code, 403)
+        self.assertEqual(self._registry(), [])
+
+    def test_blacklisted_client_stays_visible_for_unblocking(self):
+        self._add_client(DESKTOP, port=8899)
+        self._block(DESKTOP)
+        payload = self._list()
+        self.assertEqual(len(payload["clients"]), 1)
+        row = payload["clients"][0]
+        self.assertEqual(row["local_name"], DESKTOP)
+        self.assertTrue(row["blacklisted"])
+        self.assertEqual(payload["summary"]["blacklisted"], 1)
+
+    def test_unblock_restores_auto_registration(self):
+        self._add_client(DESKTOP)
+        self._block(DESKTOP)
+        response = self._block(DESKTOP, block=False)
+        self.assertEqual(response.status_code, 200)
+        self.assertFalse(response.get_json()["blocked"])
+
+        flask_app.touch_client("192.168.1.24", DESKTOP, "Windows")
+        self.assertIn(DESKTOP, [c["local_name"] for c in self._registry()])
+        self.assertFalse(self._list()["clients"][0]["blacklisted"])
+
+    def test_blacklist_survives_reload(self):
+        self._add_client(DESKTOP)
+        self._block(DESKTOP)
+        # 模拟服务端重启
+        flask_app.blacklist.clear()
+        flask_app.BLACKLIST_LOADED = False
+        flask_app.load_blacklist()
+
+        flask_app.touch_client("192.168.1.24", DESKTOP, "Windows")
+        self.assertEqual(self._registry(), [])
+
+    def test_blacklist_requires_key(self):
+        self._add_client(DESKTOP)
+        response = self.client.post("/clients/blacklist", json={"local_name": DESKTOP})
+        self.assertEqual(response.status_code, 403)
+        self.assertEqual(len(self._registry()), 1)
+
+    def test_blacklisted_ios_cannot_pull_content(self):
+        self._add_client(PHONE, ip="192.168.1.30", port=0, os_name="iOS")
+        self._publish("新内容", source="MBP")
+        self._block(PHONE)
+
+        response = self.client.get(
+            "/ios/latest",
+            query_string={"source": PHONE},
+            headers={"key": "secret"},
+        )
+        self.assertEqual(response.status_code, 403)
+        self.assertEqual(response.get_json()["message"], "设备已在黑名单")
+
+    def test_blacklisted_sync_request_is_rejected(self):
+        self._add_client(DESKTOP)
+        self._block(DESKTOP)
+        response = self.client.post(
+            "/text_sync",
+            json={"source": DESKTOP, "content": "x", "encode": "plain"},
+            headers={"key": "secret"},
+        )
+        self.assertEqual(response.status_code, 403)
+        self.assertEqual(response.get_json()["message"], "设备已在黑名单")
+        # 面板自己的接口仍然可用，否则解不开黑名单
+        self.assertEqual(self._list()["summary"]["blacklisted"], 1)
 
 
 if __name__ == "__main__":
