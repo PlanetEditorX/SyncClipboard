@@ -360,6 +360,186 @@ def touch_clients_delivered(targets):
     if touched:
         save_clients()
 
+# ------------------- 推送统计 -------------------
+# 每条统计都写在注册表的同一条记录里，面板只读不改：
+#   push_total   服务端为这台设备发起投递的次数（离线、超时也算一次尝试）
+#   push_ok      确认送达的次数（主动推送是 HTTP 200；轮询型是它真把内容取走）
+#   push_fail    没送达的次数
+#   last_push    最近一次投递尝试的时间
+#   last_push_ok 最近一次尝试是否送达
+#   pull_ok      轮询型客户端（iOS）实际取走内容的次数
+#   last_pull    最近一次取走内容的时间
+PUSH_STAT_DEFAULTS = {
+    "push_total": 0,
+    "push_ok": 0,
+    "push_fail": 0,
+    "pull_ok": 0,
+    "last_push": None,
+    "last_push_ok": None,
+    "last_pull": None,
+}
+
+
+def _stat(client, name):
+    """读一个统计字段；老注册表里没有这个键时回落到默认值。"""
+    value = client.get(name)
+    return PUSH_STAT_DEFAULTS[name] if value is None else value
+
+
+def record_push_stats(entries):
+    """批量记推送统计：entries = [(ip, source, ok, kind)]，kind 取 push / pull。
+
+    只有「内容真的到了设备手上」才算成功：主动推送看 HTTP 200，轮询型看它
+    有没有把内容取走（见 _take_ios_latest）。离线、端口不通、iOS 排队还没被
+    取走都记成失败 —— 推送率要能回答「这台设备到底有没有收到」，把「我以为
+    推了」算成成功，这个数字就没有意义了。
+
+    一次广播只读一次盘、写一次盘：iOS 是秒级轮询，逐条写会把注册表刷爆。
+    """
+    if not entries:
+        return
+    stamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    load_clients_ip()
+    touched = False
+    for ip, source, ok, kind in entries:
+        source = (source or "").strip()
+        if not source:
+            continue
+        client = _find_client(source, ip)
+        if client is None:
+            # 记录刚被 TTL 或面板删掉，不再把它复活 —— 统计没有归属了
+            continue
+        if kind == "pull":
+            client["pull_ok"] = _stat(client, "pull_ok") + 1
+            client["last_pull"] = stamp
+            client["push_ok"] = _stat(client, "push_ok") + 1
+            # 兜底取内容的路径（服务端重启过、设备从表里过期过）没有排队记录，
+            # 这里把分母补上，保证成功率不会冒出 120% 这种数字
+            client["push_total"] = max(_stat(client, "push_total"), client["push_ok"])
+        else:
+            client["push_total"] = _stat(client, "push_total") + 1
+            client["last_push"] = stamp
+            client["last_push_ok"] = bool(ok)
+            if ok:
+                client["push_ok"] = _stat(client, "push_ok") + 1
+            else:
+                client["push_fail"] = _stat(client, "push_fail") + 1
+        touched = True
+    if touched:
+        save_clients()
+
+
+def _client_view(client, online=None, now=None):
+    """把注册表里的一条记录整理成面板要的字段。
+
+    时间原样给字符串，相对时间（「3 分钟前」）交给界面算：服务端只保证
+    时间是本机时区的 `YYYY-MM-DD HH:MM:SS`，怎么显示是表现层的事。
+    """
+    now = now or datetime.now()
+    last_seen = _parse_client_time(client.get("last_seen"))
+    last_delivery = _parse_client_time(client.get("last_delivery"))
+    last_alive = _client_last_alive(client)
+    push_total = int(_stat(client, "push_total") or 0)
+    push_ok = int(_stat(client, "push_ok") or 0)
+    return {
+        "local_name": str(client.get("local_name") or "未知"),
+        "ip": str(client.get("ip") or ""),
+        "port": int(client.get("port") or 0),
+        "os": str(client.get("os") or "Unknown"),
+        "first_seen": client.get("first_seen") or "",
+        "last_seen": last_seen.strftime("%Y-%m-%d %H:%M:%S") if last_seen else "",
+        "last_delivery": last_delivery.strftime("%Y-%m-%d %H:%M:%S") if last_delivery else "",
+        "last_alive": last_alive.strftime("%Y-%m-%d %H:%M:%S") if last_alive else "",
+        "last_alive_ts": last_alive.timestamp() if last_alive else 0,
+        "idle_seconds": int((now - last_alive).total_seconds()) if last_alive else None,
+        "push_total": push_total,
+        "push_ok": push_ok,
+        "push_fail": int(_stat(client, "push_fail") or 0),
+        "push_rate": round(push_ok * 100.0 / push_total, 1) if push_total else None,
+        "last_push": client.get("last_push") or "",
+        "last_push_ok": client.get("last_push_ok"),
+        "pull_ok": int(_stat(client, "pull_ok") or 0),
+        "last_pull": client.get("last_pull") or "",
+        "online": online,
+        "is_server": client.get("local_name") == LOCAL_NAME,
+    }
+
+
+# 在线探测结果缓存：面板每隔几秒刷新一次，没必要每次都把整个局域网 ping 一遍
+ONLINE_CACHE = {}
+ONLINE_CACHE_SECONDS = 5
+
+
+def _probe_client(ip, port, os_name):
+    """静默探测一台设备是否在线；负值表示「这类设备探不出来」。"""
+    if str(os_name or "").casefold() in {"ios", "ipados", "iphone", "ipad"}:
+        # iOS 快捷指令没有推送端口，只能等它自己来拉，探不出在线与否
+        return None
+    try:
+        port = int(port or 0)
+    except (TypeError, ValueError):
+        port = 0
+    if port <= 0:
+        return None
+    try:
+        resp = requests.get(f"http://{ip}:{port}/ping", timeout=1.2)
+        return resp.status_code == 200
+    except Exception:  # noqa: BLE001 - 探不到就是在离线/端口不通，都算不在线
+        return False
+
+
+def probe_clients(entries):
+    """并发探测一批客户端，返回 {(ip, port): True/False/None}。
+
+    不复用 check_online：那个每次成功/失败都打日志，面板每几秒扫一遍会把
+    日志刷满，排查真正的问题时反而找不到东西。
+    """
+    now = time.time()
+    result = {}
+    pending = []
+    for client in entries:
+        ip = client.get("ip")
+        port = client.get("port") or 0
+        try:
+            key = (ip, int(port))
+        except (TypeError, ValueError):
+            key = (ip, 0)
+        cached = ONLINE_CACHE.get(key)
+        if cached and now - cached[0] < ONLINE_CACHE_SECONDS:
+            result[key] = cached[1]
+            continue
+        # 轮询型 / 没有推送端口：探不出来，先记「未知」，别浪费一次 ping
+        if str(client.get("os") or "").casefold() in {"ios", "ipados", "iphone", "ipad"}:
+            result[key] = None
+            continue
+        try:
+            if int(port) <= 0:
+                result[key] = None
+                continue
+        except (TypeError, ValueError):
+            result[key] = None
+            continue
+        pending.append((key, ip, port, client.get("os")))
+
+    if pending:
+        with concurrent.futures.ThreadPoolExecutor(
+            max_workers=min(8, len(pending))
+        ) as pool:
+            futures = {
+                pool.submit(_probe_client, ip, port, os_name): key
+                for key, ip, port, os_name in pending
+            }
+            for future, key in futures.items():
+                try:
+                    value = future.result()
+                except Exception:  # noqa: BLE001 - 单台探测异常不该拖垮整张表
+                    value = False
+                result[key] = value
+                if value is not None:
+                    ONLINE_CACHE[key] = (time.time(), value)
+    return result
+
+
 def check_online(ip, port, os, source):
     """检测客户端是否在线（也就是：能不能主动推给它）"""
     try:
@@ -593,26 +773,39 @@ def notify_clients(_type):
                 online[client_ip] = False
 
     delivered = []
+    # 推送统计：这一轮对每台设备「试图投递」和「是否送达」都要留账（见
+    # record_push_stats）。在线探测失败也算一次尝试 —— 它回答了「这台设备
+    # 错过了多少次同步」，只统计真正发出 HTTP 的话，长期离线设备反而一片空白。
+    stats = []
     for client, source, client_ip, file_id in candidates:
         try:
             if not online.get(client_ip):
+                stats.append((client_ip, source, False, "push"))
                 continue
             # 未超时10分钟才执行推送
             timestamp = get_timestamp(latest) if latest else get_timestamp(latest_global)
             if isExpired(timestamp):
+                # 内容已经过期，本来就不该投递，不算一次尝试
                 continue
             # 执行推送；只有真送到才记账，送不到下次还会重试
             if push_notify(
                 _type, latest, client_ip, client['port'], client['os'], source, latest_global
             ):
                 CLIENT_NOTIFY[client_ip] = file_id
+                stats.append((client_ip, source, True, "push"))
                 # iOS 只是把内容挂到内存字典，等它自己来拉，不算送达
                 if client.get('os') != "iOS":
                     delivered.append((client_ip, source, client.get('os')))
             else:
                 CLIENT_NOTIFY.pop(client_ip, None)
+                # iOS 走的是「排队等它拉」，这一步还没到设备手上；它真拉走时
+                # 由 _take_ios_latest 补记成功，所以这里先算没送到
+                stats.append((client_ip, source, False, "push"))
         except Exception as e:
             logging.error(f"通知客户端 {client['local_name']} 失败: {e}")
+            stats.append((client_ip, source, False, "push"))
+
+    record_push_stats(stats)
 
     # 批量续期：投递成功 = 这台设备还在线，别按 last_seen 把它清掉
     touch_clients_delivered(delivered)
@@ -660,7 +853,7 @@ def _handle_echo(source, content):
     tracker.note_client_hold(source, content)
 
 
-def _take_ios_latest(source):
+def _take_ios_latest(source, ip=None):
     """
     给轮询型 iOS 客户端取一份待投递内容，没有就返回空。
 
@@ -673,6 +866,9 @@ def _take_ios_latest(source):
     1. IOS_NOTIFY 里有主动推送的记录 → 直接给，并记为已投递；
     2. 否则看全局最新：不是这台设备自己发的、且它手上还不是这份内容 → 给；
     3. 都没有 → 空（pasted: true），让快捷指令什么都不做。
+
+    ip 只用于推送统计：轮询型客户端的「送达」= 它真的把内容取走了，记在
+    这里才算数（notify_clients 排队时先记了一次未送达）。
     """
     if not source:
         return {"pasted": True}
@@ -682,6 +878,7 @@ def _take_ios_latest(source):
         latest_global = dict(pending)
         latest_global["pasted"] = False
         tracker.mark_pasted(source, dict(pending, pasted=True))
+        record_push_stats([(ip, source, True, "pull")])
         return latest_global
 
     latest = tracker.get_global_latest()
@@ -695,6 +892,7 @@ def _take_ios_latest(source):
     latest_global = dict(latest)
     latest_global["pasted"] = False
     tracker.mark_pasted(source, dict(latest, pasted=True))
+    record_push_stats([(ip, source, True, "pull")])
     return latest_global
 
 
@@ -881,7 +1079,7 @@ def iosSync():
     # 获取该客户端当前记录
     else:
         # 内容没变 → 纯拉取操作
-        latest_global = _take_ios_latest(source)
+        latest_global = _take_ios_latest(source, request.remote_addr)
     return jsonify({"status": "ok", "latest_global": latest_global})
 
 @app.route('/ios/latest', methods=['GET'])
@@ -892,7 +1090,7 @@ def ios_get_latest():
     # 获取请求客户端的名称（用于自动标记粘贴）
     source = request.args.get("source", "")
     touch_client(request.remote_addr, source, "iOS")
-    latest_global = _take_ios_latest(source)
+    latest_global = _take_ios_latest(source, request.remote_addr)
 
     return jsonify({"status": "ok", "latest_global": latest_global}), 200
 # --------------------------------------------
@@ -1035,6 +1233,107 @@ def get_online_clients():
         "online_clients": online_clients,
         "upload_url": upload_url
     }), 200
+
+@app.route('/clients', methods=['GET'])
+def list_clients():
+    """客户端名单：谁登记过、推过多少次、成了几次、最近什么时候还在。
+
+    和 /clients/online 的区别是「列名单」和「找投递目标」：那个只返回
+    *现在能收文件的* 设备（要求端口可 ping 通），而面板要看到全部记录，
+    包括没上报端口的、只能轮询的 iOS、以及暂时离线的。
+
+    `probe=1` 时顺带并发 ping 一遍看谁在线（结果缓存 5 秒）。不带就纯读
+    注册表，零网络耗时 —— 面板刷新时可以按需要便宜或准确。
+    """
+    if not require_key():
+        return jsonify({"status": "error", "message": "密钥错误"}), 403
+
+    load_clients_ip()
+    probe = str(request.args.get("probe", "")).lower() in ("1", "true", "yes", "on")
+    online_map = probe_clients(clients) if probe else {}
+
+    now = datetime.now()
+    rows = []
+    for client in clients:
+        try:
+            key = (client.get("ip"), int(client.get("port") or 0))
+        except (TypeError, ValueError):
+            key = (client.get("ip"), 0)
+        rows.append(_client_view(client, online=online_map.get(key), now=now))
+
+    # 在线的排前面，其余按最近活跃倒序 —— 面板上最先要看的永远是「正在用的」
+    rows.sort(key=lambda row: (row.get("online") is not True, -row.get("last_alive_ts", 0)))
+
+    push_total = sum(row["push_total"] for row in rows)
+    push_ok = sum(row["push_ok"] for row in rows)
+    return jsonify({
+        "status": "ok",
+        "server_name": LOCAL_NAME,
+        "probed": probe,
+        "clients": rows,
+        "summary": {
+            "total": len(rows),
+            "online": sum(1 for row in rows if row.get("online") is True),
+            "offline": sum(1 for row in rows if row.get("online") is False),
+            "unknown": sum(1 for row in rows if row.get("online") is None),
+            "push_total": push_total,
+            "push_ok": push_ok,
+            "push_rate": round(push_ok * 100.0 / push_total, 1) if push_total else None,
+        },
+    }), 200
+
+
+@app.route('/clients/delete', methods=['POST'])
+def delete_client():
+    """把一台（或全部）客户端从名单里移除，连同它的推送统计。
+
+    这只是「删记录」，不是拉黑：服务端靠请求自动登记，设备只要还在跑，
+    下一次 /sync、/latest 就会重新出现。真要拦住一台设备，得在鉴权层做
+    设备白名单 —— 那是另一套语义，不在这里偷偷实现，否则「删除」会变成
+    一个语义不明的半吊子黑名单。
+
+    请求体：{"local_name": "..."} 或 {"ip": "..."}，或 {"all": true} 清空。
+    """
+    if not require_key():
+        return jsonify({"status": "error", "message": "密钥错误"}), 403
+
+    data = request.get_json(silent=True) or {}
+    name = str(data.get("local_name") or "").strip()
+    ip = str(data.get("ip") or "").strip()
+    remove_all = bool(data.get("all"))
+    if not remove_all and not name and not ip:
+        return jsonify({"status": "error", "message": "缺少 local_name / ip"}), 400
+
+    load_clients_ip()
+    removed = []
+    kept = []
+    for client in clients:
+        hit = remove_all
+        if not hit and name and client.get("local_name") == name:
+            hit = True
+        # 没给名字才退回按 IP 删，避免「同名多 IP」时误伤
+        if not hit and not name and ip and client.get("ip") == ip:
+            hit = True
+        (removed if hit else kept).append(client)
+
+    if removed:
+        clients[:] = kept
+        for client in removed:
+            client_ip = client.get("ip")
+            client_name = client.get("local_name")
+            CLIENT_NOTIFY.pop(client_ip, None)
+            IOS_NOTIFY.pop(client_name, None)
+            for key in [key for key in CLIENT_TOUCH if key and key[0] == client_name]:
+                CLIENT_TOUCH.pop(key, None)
+            logging.info("从客户端名单移除: %s (%s)", client_name, client_ip)
+        save_clients()
+
+    return jsonify({
+        "status": "ok",
+        "removed": len(removed),
+        "names": [c.get("local_name") for c in removed],
+    }), 200
+
 
 @app.route('/mark_pasted', methods=['POST'])
 def mark_pasted():
@@ -1358,7 +1657,7 @@ def request_file():
     #    _take_ios_latest 会做三级判断 —— IOS_NOTIFY 主动推送优先、跳过本机
     #    自己发的、跳过这台设备手上已经有的 —— 都没有时返回 {"pasted": True}
     #    空对象，接收端据此什么都不做。
-    latest = _take_ios_latest(source)
+    latest = _take_ios_latest(source, request.remote_addr)
 
     return jsonify({
         "status": "ok",

@@ -1,0 +1,239 @@
+import os
+import unittest
+from datetime import datetime, timedelta
+from unittest.mock import MagicMock, patch
+
+
+class TestTimeFormatting(unittest.TestCase):
+    def setUp(self):
+        from gui.qt_clients import human_time
+
+        self.human_time = human_time
+        self.now = datetime(2026, 11, 24, 15, 30, 0)
+
+    def test_today_and_yesterday_are_relative(self):
+        self.assertEqual(
+            self.human_time("2026-11-24 15:10:00", self.now), "今天 15:10"
+        )
+        self.assertEqual(
+            self.human_time("2026-11-23 09:02:00", self.now), "昨天 09:02"
+        )
+
+    def test_same_year_drops_the_year(self):
+        self.assertEqual(
+            self.human_time("2026-11-20 09:02:00", self.now), "11-20 09:02"
+        )
+
+    def test_other_year_keeps_the_date(self):
+        self.assertEqual(self.human_time("2025-11-20 09:02:00", self.now), "2025-11-20")
+
+    def test_empty_and_broken_values(self):
+        self.assertEqual(self.human_time("", self.now), "—")
+        self.assertEqual(self.human_time(None, self.now), "—")
+        self.assertEqual(self.human_time("not-a-date", self.now), "not-a-date")
+
+
+class TestIdleText(unittest.TestCase):
+    def test_ranges(self):
+        from gui.qt_clients import idle_text
+
+        self.assertEqual(idle_text(None), "")
+        self.assertEqual(idle_text(5), "刚刚")
+        self.assertEqual(idle_text(90), "1 分钟前")
+        self.assertEqual(idle_text(3 * 3600), "3 小时前")
+        self.assertEqual(idle_text(3 * 86400), "3 天前")
+
+
+class TestRateAndStatus(unittest.TestCase):
+    def test_rate_without_attempts_is_a_dash(self):
+        from gui.qt_clients import rate_text
+
+        self.assertEqual(rate_text({"push_rate": None}), "—")
+        self.assertEqual(rate_text({"push_rate": 0}), "0%")
+        self.assertEqual(rate_text({"push_rate": 83.3}), "83.3%")
+        self.assertEqual(rate_text({"push_rate": 100.0}), "100%")
+
+    def test_status_distinguishes_polling_from_unknown(self):
+        from gui.qt_clients import status_text
+
+        self.assertEqual(status_text({"online": True}), "在线")
+        self.assertEqual(status_text({"online": False}), "离线")
+        self.assertEqual(status_text({"online": None, "os": "iOS"}), "轮询")
+        self.assertEqual(status_text({"online": None, "os": "Windows"}), "未知")
+
+
+class TestClientsDialog(unittest.TestCase):
+    """真实窗口的接线测试，用 offscreen 平台跑，不需要显示器。"""
+
+    @classmethod
+    def setUpClass(cls):
+        os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+        from PySide6.QtWidgets import QApplication
+
+        cls.app = QApplication.instance()
+        if cls.app is None:
+            try:
+                cls.app = QApplication([])
+            except Exception as exc:  # noqa: BLE001 - 环境缺少平台插件时跳过
+                raise unittest.SkipTest(f"无法创建 QApplication: {exc}")
+
+    def _dialog(self):
+        from gui.qt_clients import ClientsDialog
+
+        dialog = ClientsDialog(None, host="127.0.0.1", port=8000, key="k")
+        dialog._timer.stop()
+        self.addCleanup(dialog.deleteLater)
+        return dialog
+
+    @staticmethod
+    def _payload():
+        return {
+            "status": "ok",
+            "server_name": "SERVER-PC",
+            "probed": True,
+            "clients": [
+                {
+                    "local_name": "DESKTOP-A",
+                    "ip": "192.168.1.24",
+                    "port": 8899,
+                    "os": "Windows",
+                    "first_seen": "2026-11-20 09:00:00",
+                    "last_seen": "2026-11-24 15:00:00",
+                    "last_delivery": "2026-11-24 14:58:00",
+                    "last_alive": "2026-11-24 15:00:00",
+                    "idle_seconds": 120,
+                    "push_total": 12,
+                    "push_ok": 11,
+                    "push_fail": 1,
+                    "push_rate": 91.7,
+                    "last_push": "2026-11-24 14:58:00",
+                    "last_push_ok": True,
+                    "pull_ok": 0,
+                    "online": True,
+                    "is_server": False,
+                },
+                {
+                    "local_name": "熊熊的iPhone",
+                    "ip": "192.168.1.30",
+                    "port": 0,
+                    "os": "iOS",
+                    "first_seen": "2026-11-20 09:00:00",
+                    "last_seen": "2026-11-24 15:05:00",
+                    "last_delivery": "",
+                    "last_alive": "2026-11-24 15:05:00",
+                    "idle_seconds": 600,
+                    "push_total": 3,
+                    "push_ok": 3,
+                    "push_fail": 0,
+                    "push_rate": 100.0,
+                    "last_push": "2026-11-24 15:05:00",
+                    "last_push_ok": True,
+                    "pull_ok": 3,
+                    "online": None,
+                    "is_server": False,
+                },
+            ],
+            "summary": {
+                "total": 2,
+                "online": 1,
+                "offline": 0,
+                "unknown": 1,
+                "push_total": 15,
+                "push_ok": 14,
+                "push_rate": 93.3,
+            },
+        }
+
+    @staticmethod
+    def _text(dialog, row, column):
+        return dialog.table.item(row, column).text()
+
+    def test_rows_render_name_ip_attempts_and_rate(self):
+        from gui.qt_clients import HEADERS
+
+        dialog = self._dialog()
+        dialog._render(self._payload())
+
+        self.assertEqual(dialog.table.rowCount(), 2)
+        self.assertEqual(self._text(dialog, 0, HEADERS.index("客户端")), "DESKTOP-A")
+        self.assertEqual(self._text(dialog, 0, HEADERS.index("IP")), "192.168.1.24")
+        self.assertEqual(self._text(dialog, 0, HEADERS.index("推送次数")), "12")
+        self.assertEqual(self._text(dialog, 0, HEADERS.index("推送率")), "91.7%")
+        self.assertEqual(self._text(dialog, 0, HEADERS.index("状态")), "在线")
+        # iOS 没有推送端口：端口列给「—」，状态是「轮询」而不是「离线」
+        self.assertEqual(self._text(dialog, 1, HEADERS.index("推送端口")), "—")
+        self.assertEqual(self._text(dialog, 1, HEADERS.index("状态")), "轮询")
+
+    def test_summary_shows_totals_and_rate(self):
+        dialog = self._dialog()
+        dialog._render(self._payload())
+        text = dialog._status.text()
+        self.assertIn("共 2 台", text)
+        self.assertIn("在线 1", text)
+        self.assertIn("累计推送 15 次 / 成功 14 次（成功率 93.3%）", text)
+
+    def test_empty_registry_explains_auto_registration(self):
+        dialog = self._dialog()
+        dialog._render({"status": "ok", "clients": [], "summary": {}})
+        self.assertEqual(dialog.table.rowCount(), 0)
+        self.assertIn("自动登记", dialog._status.text())
+
+    def test_rows_are_reused_when_identity_is_unchanged(self):
+        """身份不变时不能重建行，否则点「移除」的手会被刷新打断。"""
+        dialog = self._dialog()
+        dialog._render(self._payload())
+        button = dialog.action_button(0)
+
+        dialog._render(self._payload())
+        self.assertIs(dialog.action_button(0), button)
+
+    def test_row_remove_posts_local_name(self):
+        from PySide6.QtWidgets import QMessageBox
+
+        dialog = self._dialog()
+        dialog._render(self._payload())
+
+        with patch.object(dialog, "_post_delete", return_value=(True, "", 1)) as post, \
+                patch.object(dialog, "_fetch", return_value=(self._payload(), None)), \
+                patch("gui.qt_clients.QMessageBox.question", return_value=QMessageBox.Yes):
+            dialog._on_remove_row(0)
+
+        post.assert_called_once_with({"local_name": "DESKTOP-A"})
+
+    def test_row_remove_cancelled_does_nothing(self):
+        from PySide6.QtWidgets import QMessageBox
+
+        dialog = self._dialog()
+        dialog._render(self._payload())
+
+        with patch.object(dialog, "_post_delete") as post, \
+                patch("gui.qt_clients.QMessageBox.question", return_value=QMessageBox.No):
+            dialog._on_remove_row(0)
+
+        post.assert_not_called()
+
+    def test_clear_all_sends_all_flag(self):
+        dialog = self._dialog()
+        dialog._render(self._payload())
+
+        from PySide6.QtWidgets import QMessageBox
+
+        with patch.object(dialog, "_post_delete", return_value=(True, "", 2)) as post, \
+                patch.object(dialog, "_fetch", return_value=({"clients": []}, None)), \
+                patch("gui.qt_clients.QMessageBox.question", return_value=QMessageBox.Yes):
+            dialog._on_clear_all()
+
+        post.assert_called_once_with({"all": True})
+
+    def test_failed_fetch_shows_reason_and_keeps_previous_rows(self):
+        dialog = self._dialog()
+        dialog._render(self._payload())
+        with patch.object(dialog, "_fetch", return_value=(None, "Connection refused")):
+            dialog.refresh_now()
+
+        self.assertIn("Connection refused", dialog._status.text())
+        self.assertEqual(dialog.table.rowCount(), 2)
+
+
+if __name__ == "__main__":
+    unittest.main()

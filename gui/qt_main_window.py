@@ -67,6 +67,7 @@ from gui.main_window import (
     MAX_SHARE_DOWNLOAD_LIMIT,
     validate_client_settings,
 )
+from gui.qt_clients import ClientsDialog
 from gui.qt_download_records import DownloadRecordsDialog
 from gui.qt_log_view import LogViewer
 from gui.qt_theme import (
@@ -176,6 +177,7 @@ class MainWindow(QMainWindow):
 
         # 下载记录窗口复用同一个实例：关掉再开不叠窗口，定时器也随窗口停止
         self._download_records_dialog = None
+        self._clients_dialog = None
         self._update_state = "idle"
         self._update_result = None
         self._pending_payload = None
@@ -564,9 +566,20 @@ class MainWindow(QMainWindow):
         self.records_button.setMinimumHeight(38)
         self.records_button.setCursor(Qt.PointingHandCursor)
         self.records_button.clicked.connect(self._show_download_records)
-        records_hint = QLabel("实时查看谁在取、已经取走多少字节、是否已完成下载")
+
+        self.clients_button = QPushButton("客户端名单")
+        self.clients_button.setMinimumHeight(38)
+        self.clients_button.setCursor(Qt.PointingHandCursor)
+        self.clients_button.setToolTip("查看已登记的设备、各自的推送次数与成功率，可移除")
+        self.clients_button.clicked.connect(self._show_clients)
+
+        records_hint = QLabel(
+            "下载记录：谁在取、已经取走多少字节；客户端名单：推过几次、成功率多少"
+        )
         records_hint.setObjectName("Hint")
+        records_hint.setWordWrap(True)
         row2.addWidget(self.records_button, 1)
+        row2.addWidget(self.clients_button, 1)
         row2.addWidget(records_hint, 2)
         lay.addLayout(row2)
         self.body.addWidget(card)
@@ -1332,6 +1345,26 @@ class MainWindow(QMainWindow):
         self._download_records_dialog.show()
         self._download_records_dialog.raise_()
         self._download_records_dialog.activateWindow()
+
+    def _show_clients(self):
+        """客户端名单窗口：看设备、推送次数与成功率，可逐条移除。
+
+        名单存在**服务端**进程里，所以问的是当前连的那台服务器：连本机就是
+        127.0.0.1，连别人家就用配置里的地址。客户端自己存不了一份「谁来过」，
+        也没有意义 —— 换台机器看到的就是另一批设备。
+        """
+        host = str(getattr(self.config, "server_host", "") or "").strip()
+        if points_to_local_server(host) or not host:
+            host = "127.0.0.1"
+        port = getattr(self.config, "server_port", 8000)
+        key = getattr(self.config, "key", "")
+        if self._clients_dialog is None:
+            self._clients_dialog = ClientsDialog(self, host=host, port=port, key=key)
+        else:
+            self._clients_dialog.set_endpoint(host=host, port=port, key=key)
+        self._clients_dialog.show()
+        self._clients_dialog.raise_()
+        self._clients_dialog.activateWindow()
 
     def _open_config_folder(self):
         config_dir = BASE_DIR / "config"
