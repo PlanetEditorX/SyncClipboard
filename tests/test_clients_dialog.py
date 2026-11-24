@@ -187,6 +187,34 @@ class TestClientsDialog(unittest.TestCase):
         dialog._render(self._payload())
         self.assertIs(dialog.action_button(0), button)
 
+    def test_action_button_is_not_clipped_by_row_height(self):
+        """「移除」按钮曾被默认行高裁掉下边框：行高必须容得下按钮 + 上下留白。"""
+        from gui.qt_clients import (
+            ACTION_BUTTON_HEIGHT,
+            ACTION_COLUMN,
+            ACTION_ROW_HEIGHT,
+            ACTION_ROW_PADDING,
+        )
+
+        dialog = self._dialog()
+        payload = self._payload()
+        dialog._render(payload)
+        with patch.object(dialog, "_fetch", return_value=(payload, None)):
+            dialog.resize(1120, 460)
+            dialog.show()
+            self.app.processEvents()
+
+        for row in range(dialog.table.rowCount()):
+            button = dialog.action_button(row)
+            holder = dialog.table.cellWidget(row, ACTION_COLUMN)
+            self.assertGreaterEqual(dialog.table.rowHeight(row), ACTION_ROW_HEIGHT)
+            self.assertGreaterEqual(button.height(), ACTION_BUTTON_HEIGHT)
+            # 按钮整块落在容器里：底边不越界，上下也各有留白
+            self.assertGreaterEqual(
+                holder.height(), button.height() + ACTION_ROW_PADDING
+            )
+            self.assertLessEqual(button.y() + button.height(), holder.height())
+
     def test_row_remove_posts_local_name(self):
         from PySide6.QtWidgets import QMessageBox
 

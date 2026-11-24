@@ -56,6 +56,12 @@ ACTION_COLUMN = PROGRESS_HEADERS.index("操作")
 # 时序 —— 列宽按空按钮量出来，等填上「取消传输」就被裁掉半个字
 ACTION_COLUMN_WIDTH = 112
 ACTION_BUTTON_WIDTH = 92
+# 行高要按按钮让位：QTableWidget 不会因为 setCellWidget 把行撑高，默认行高 30
+# 比「按钮 + 上下留白」矮，按钮底部就会被单元格裁掉一条边（看着像按钮缺了下
+# 边框）。这里显式算行高，跟客户端名单窗口保持同样的 40。
+ACTION_BUTTON_HEIGHT = 30
+ACTION_ROW_PADDING = 5
+ACTION_ROW_HEIGHT = ACTION_BUTTON_HEIGHT + ACTION_ROW_PADDING * 2
 
 
 def human_bytes(value):
@@ -115,6 +121,8 @@ class DownloadRecordsDialog(QDialog):
             ACTION_COLUMN, QHeaderView.Fixed
         )
         self.progress_table.setColumnWidth(ACTION_COLUMN, ACTION_COLUMN_WIDTH)
+        # 行高给「操作」列的按钮留够位置，否则按钮底部会被行边界裁掉
+        self.progress_table.verticalHeader().setDefaultSectionSize(ACTION_ROW_HEIGHT)
         self.event_table = self._make_table(
             ("时间", "共享", "类型", "客户端", "事件", "已完成次数", "本次字节", "说明")
         )
@@ -259,6 +267,7 @@ class DownloadRecordsDialog(QDialog):
         self._progress_keys = list(keys)
         self._progress_rows = []
         self._progress_buttons = []
+        row_height = ACTION_ROW_HEIGHT
         for row, session in enumerate(sessions):
             for column in range(ACTION_COLUMN):
                 table.setItem(row, column, QTableWidgetItem(""))
@@ -267,7 +276,13 @@ class DownloadRecordsDialog(QDialog):
                 "取消共享" if session.get("state") == "completed" else "取消传输"
             )
             button.setCursor(Qt.PointingHandCursor)
-            button.setMinimumHeight(26)
+            # 只覆盖 padding：全局 QSS 那套 8px 上下内边距塞进 30px 高的按钮里，
+            # 内容区只剩几个像素，文字会被压扁
+            button.setStyleSheet("padding: 4px 8px;")
+            # 先让样式生效，sizeHint 才会把上面的 padding 算进去
+            button.ensurePolished()
+            button_height = max(ACTION_BUTTON_HEIGHT, button.sizeHint().height())
+            button.setFixedHeight(button_height)
             button.setFixedWidth(ACTION_BUTTON_WIDTH)
             button.clicked.connect(
                 lambda _checked=False, index=row: self._on_cancel_row(index)
@@ -275,11 +290,16 @@ class DownloadRecordsDialog(QDialog):
             # 套一层留白：直接塞进单元格的按钮会贴着格线，看起来像又一个格子
             holder = QWidget()
             holder_layout = QHBoxLayout(holder)
-            holder_layout.setContentsMargins(6, 3, 6, 3)
+            holder_layout.setContentsMargins(6, ACTION_ROW_PADDING, 6, ACTION_ROW_PADDING)
             holder_layout.addWidget(button)
             table.setCellWidget(row, ACTION_COLUMN, holder)
             self._progress_buttons.append(button)
+            row_height = max(row_height, button_height + ACTION_ROW_PADDING * 2)
             self._progress_rows.append({})
+        # 逐行落到实际行高：只设 defaultSectionSize 的话，已有行不一定会跟着变
+        table.verticalHeader().setDefaultSectionSize(row_height)
+        for index in range(table.rowCount()):
+            table.setRowHeight(index, row_height)
         self._update_progress(sessions)
 
     def action_button(self, row):

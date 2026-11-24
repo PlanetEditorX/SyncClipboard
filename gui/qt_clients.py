@@ -54,6 +54,13 @@ STATUS_COLUMN = HEADERS.index("状态")
 ACTION_COLUMN = HEADERS.index("操作")
 ACTION_COLUMN_WIDTH = 94
 ACTION_BUTTON_WIDTH = 78
+# 行高必须给按钮让位。QTableWidget 不会因为 setCellWidget 把行撑高，默认行高
+# 只有 30 —— 而按钮本身就要 30，加上下留白（3+3）一共 36，多出来的部分直接被
+# 单元格裁掉，表现就是「移除」按钮只剩上半截、下边框不见。所以行高按「按钮
+# 高度 + 上下留白」算，不再用默认值。
+ACTION_BUTTON_HEIGHT = 30
+ACTION_ROW_PADDING = 5
+ACTION_ROW_HEIGHT = ACTION_BUTTON_HEIGHT + ACTION_ROW_PADDING * 2
 
 EMPTY = "—"
 
@@ -165,6 +172,8 @@ class ClientsDialog(QDialog):
         # 关掉自动换行：某台设备的系统标签多几个字就把行撑高，整张表会跳
         self.table.setWordWrap(False)
         self.table.verticalHeader().setVisible(False)
+        # 行高给「操作」列的按钮留够位置，否则按钮底部会被行边界裁掉
+        self.table.verticalHeader().setDefaultSectionSize(ACTION_ROW_HEIGHT)
         header = self.table.horizontalHeader()
         header.setSectionResizeMode(QHeaderView.ResizeToContents)
         # 客户端名最长，让它吃掉多余宽度；「操作」固定宽度，别跟着按钮文字量
@@ -308,6 +317,7 @@ class ClientsDialog(QDialog):
         self._row_keys = list(keys)
         self._row_data = []
         self._row_buttons = []
+        row_height = ACTION_ROW_HEIGHT
         for index in range(len(rows)):
             button = QPushButton("移除")
             button.setCursor(Qt.PointingHandCursor)
@@ -315,7 +325,12 @@ class ClientsDialog(QDialog):
             # 8px 会把文字压成一条（字被缩放，看着像小了一号）。只覆盖 padding，
             # 边框 / 悬停态仍然走全局 QSS。
             button.setStyleSheet("padding: 4px 8px;")
-            button.setMinimumHeight(30)
+            # 先让样式生效，sizeHint 才会把上面的 padding 算进去
+            button.ensurePolished()
+            # 高度按字体实际需要给：DPI 或主题字体变大时不会把字挤扁，
+            # 行高也跟着一起长，按钮不会被裁
+            button_height = max(ACTION_BUTTON_HEIGHT, button.sizeHint().height())
+            button.setFixedHeight(button_height)
             button.setFixedWidth(ACTION_BUTTON_WIDTH)
             button.setToolTip("从名单中移除这条记录与推送统计")
             button.clicked.connect(
@@ -324,13 +339,18 @@ class ClientsDialog(QDialog):
             # 套一层留白，不让按钮贴着格线
             holder = QWidget()
             holder_layout = QHBoxLayout(holder)
-            holder_layout.setContentsMargins(6, 3, 6, 3)
+            holder_layout.setContentsMargins(6, ACTION_ROW_PADDING, 6, ACTION_ROW_PADDING)
             holder_layout.addWidget(button)
             self.table.setCellWidget(index, ACTION_COLUMN, holder)
             self._row_buttons.append(button)
+            row_height = max(row_height, button_height + ACTION_ROW_PADDING * 2)
             for column in range(ACTION_COLUMN):
                 self.table.setItem(index, column, QTableWidgetItem(""))
             self._row_data.append({})
+        # 逐行落到实际行高：只设 defaultSectionSize 的话，已有行不一定会跟着变
+        self.table.verticalHeader().setDefaultSectionSize(row_height)
+        for index in range(self.table.rowCount()):
+            self.table.setRowHeight(index, row_height)
         self._update_rows(rows)
         self._restore_scroll(scroll)
 

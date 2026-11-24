@@ -208,6 +208,35 @@ class TestCancelFromStatusColumn(unittest.TestCase):
             table.columnWidth(ACTION_COLUMN), button.width() + 12
         )
 
+    def test_row_height_roomy_enough_for_its_buttons(self):
+        """行高要容得下按钮 + 上下留白：默认 30 的行高会把按钮下边框裁掉。"""
+        from gui.qt_download_records import (
+            ACTION_BUTTON_HEIGHT,
+            ACTION_COLUMN,
+            ACTION_ROW_HEIGHT,
+            ACTION_ROW_PADDING,
+        )
+        from tests.test_download_records import TestDownloadRecordsDialog
+
+        payload = self._payload("running")
+        self._fill(payload)
+        with patch(
+            "gui.qt_download_records.requests.get",
+            return_value=TestDownloadRecordsDialog._response(payload),
+        ):
+            self.dialog.resize(1080, 460)
+            self.dialog.show()
+            self.app.processEvents()
+
+        table = self.dialog.progress_table
+        button = self._button()
+        holder = table.cellWidget(0, ACTION_COLUMN)
+        self.assertGreaterEqual(table.rowHeight(0), ACTION_ROW_HEIGHT)
+        self.assertGreaterEqual(button.height(), ACTION_BUTTON_HEIGHT)
+        # 按钮整块落在容器里，底部不会被行边界裁掉
+        self.assertGreaterEqual(holder.height(), button.height() + ACTION_ROW_PADDING)
+        self.assertLessEqual(button.y() + button.height(), holder.height())
+
     def test_completed_row_offers_share_cancel(self):
         self._fill(self._payload("completed"))
         self.assertEqual(self._button().text(), "取消共享")
