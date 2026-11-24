@@ -142,6 +142,9 @@ class ClientsDialog(QDialog):
         # 本机（见 _client_role）。
         self._local_name = str(local_name or "").strip()
         self._paused = False
+        # 服务端按请求来源告知能否修改：连的是本机服务器才可写。缺省 True
+        # 兼容还没有这个字段的老服务端，写入口本身另有硬限制兜底。
+        self._can_manage = True
         # 行身份 = (名字, IP)：身份不变就只改文字，不重建行，免得正在点的
         # 「移除」按钮被每秒的刷新销毁掉（同下载记录窗口的处理）
         self._row_keys = []
@@ -172,6 +175,13 @@ class ClientsDialog(QDialog):
         self._status = QLabel("正在读取…")
         self._status.setObjectName("Hint")
         lay.addWidget(self._status)
+
+        # 连的是别人的服务器时明确说明为什么按钮是灰的，别让人以为坏了
+        self._manage_hint = QLabel("")
+        self._manage_hint.setObjectName("Hint")
+        self._manage_hint.setWordWrap(True)
+        self._manage_hint.setVisible(False)
+        lay.addWidget(self._manage_hint)
 
         self.table = QTableWidget(0, len(HEADERS))
         self.table.setHorizontalHeaderLabels(list(HEADERS))
@@ -215,6 +225,7 @@ class ClientsDialog(QDialog):
         self._clear_button = QPushButton("清空列表")
         self._clear_button.setCursor(Qt.PointingHandCursor)
         self._clear_button.setMinimumHeight(32)
+        self._clear_button.setEnabled(False)  # 读到 can_manage 再放开
         self._clear_button.clicked.connect(self._on_clear_all)
 
         close_button = QPushButton("关闭")
@@ -233,6 +244,7 @@ class ClientsDialog(QDialog):
 
     def set_endpoint(self, host=None, port=None, key=None, local_name=None):
         """配置里改了服务器地址 / 端口 / 密钥时更新目标，下一次刷新即生效。"""
+        previous = (self._host, self._port, self._key)
         if host is not None:
             self._host = host
         if port is not None:
@@ -241,6 +253,11 @@ class ClientsDialog(QDialog):
             self._key = key
         if local_name is not None:
             self._local_name = str(local_name or "").strip()
+        if (self._host, self._port, self._key) != previous:
+            # 目标换了，上一次读到的「可写」结论不再作数：先收回写权限，
+            # 等新服务器回答 can_manage 再放开，别留几秒的错误可写窗口。
+            self._can_manage = False
+            self._apply_manage_state()
 
     def _on_pause_toggled(self, checked):
         self._paused = bool(checked)
@@ -289,10 +306,52 @@ class ClientsDialog(QDialog):
     def _render(self, payload):
         rows = payload.get("clients") or []
         summary = payload.get("summary") or {}
+        self._can_manage = bool(payload.get("can_manage", True))
         self._status.setText(self._summary_text(payload, summary, rows))
         self._status.setStyleSheet(f"color: {self._muted};")
         self._fill(rows)
-        self._clear_button.setEnabled(bool(rows))
+        self._apply_manage_state()
+
+    def _apply_manage_state(self):
+        """按服务端给的 can_manage 开关所有写操作，并说明只读的原因。"""
+        writable = self._can_manage
+        self._clear_button.setEnabled(writable and bool(self._row_data))
+        self._manage_hint.setVisible(not writable)
+        if writable:
+            self._manage_hint.clear()
+            self._clear_button.setToolTip("清空全部登记与推送统计")
+        else:
+            self._manage_hint.setText(
+                f"当前连接的是远端服务器 {self._host}：只能查看，不能移除或拉黑。"
+                "要修改请到服务器本机打开客户端管理；Docker 纯服务端请手动编辑 "
+                "config/client_ip.json（名单）与 config/blacklist.json（黑名单）。"
+            )
+            self._manage_hint.setStyleSheet(f"color: {self._warning};")
+            self._clear_button.setToolTip("只有服务器本机可以修改")
+
+        for index, row in enumerate(self._row_data):
+            blocked = bool(row.get("blacklisted"))
+            remove_button = self.action_button(index)
+            block_button = self.blacklist_button(index)
+            if remove_button is not None:
+                remove_button.setEnabled(writable and not blocked)
+                remove_button.setToolTip(
+                    "只有服务器本机可以修改"
+                    if not writable else (
+                        "已在黑名单，先解除再操作" if blocked
+                        else "从派发列表移除；设备下次请求会自动回来"
+                    )
+                )
+            if block_button is not None:
+                block_button.setText("解除" if blocked else "黑名单")
+                block_button.setEnabled(writable)
+                block_button.setToolTip(
+                    "只有服务器本机可以修改"
+                    if not writable else (
+                        "解除黑名单：它下次请求就会重新登记并收到推送"
+                        if blocked else "加入黑名单：之后注册、同步都不再收"
+                    )
+                )
 
     def _summary_text(self, payload, summary, rows):
         if not rows:
@@ -412,22 +471,8 @@ class ClientsDialog(QDialog):
                     item.setText(text)
                 self._decorate(item, column, row, name)
 
-            # 行复用时也要跟着黑名单状态更新按钮（不能只在建行时设一次）
-            blocked = bool(row.get("blacklisted"))
-            if index < len(self._row_buttons):
-                remove_button = self._row_buttons[index]
-                remove_button.setEnabled(not blocked)
-                remove_button.setToolTip(
-                    "已在黑名单，先解除再操作"
-                    if blocked else "从派发列表移除；设备下次请求会自动回来"
-                )
-            if index < len(self._block_buttons):
-                block_button = self._block_buttons[index]
-                block_button.setText("解除" if blocked else "黑名单")
-                block_button.setToolTip(
-                    "解除黑名单：它下次请求就会重新登记并收到推送"
-                    if blocked else "加入黑名单：之后注册、同步都不再收"
-                )
+            # 按钮的文字 / 可用态 / tooltip 统一交给 _apply_manage_state：
+            # 那里同时考虑黑名单状态和「远端只读」，两处分开写会互相覆盖。
             self._row_data[index] = row
 
     def _client_role(self, row, name):
@@ -505,6 +550,8 @@ class ClientsDialog(QDialog):
     # ---------------------------------------------------------------- 移除
 
     def _on_remove_row(self, index):
+        if not self._can_manage:
+            return
         if not 0 <= index < len(self._row_data):
             return
         row = self._row_data[index]
@@ -539,6 +586,8 @@ class ClientsDialog(QDialog):
         self.refresh_now()
 
     def _on_blacklist_row(self, index):
+        if not self._can_manage:
+            return
         if not 0 <= index < len(self._row_data):
             return
         row = self._row_data[index]
@@ -574,6 +623,8 @@ class ClientsDialog(QDialog):
         self.refresh_now()
 
     def _on_clear_all(self):
+        if not self._can_manage:
+            return
         count = len(self._row_data)
         if not count:
             return

@@ -8,6 +8,7 @@
 """
 
 import json
+import ipaddress
 import tempfile
 import unittest
 from datetime import datetime, timedelta
@@ -413,6 +414,74 @@ class BlacklistTest(ClientsApiTestBase):
         self.assertEqual(response.get_json()["message"], "设备已在黑名单")
         # 面板自己的接口仍然可用，否则解不开黑名单
         self.assertEqual(self._list()["summary"]["blacklisted"], 1)
+
+
+class LocalOnlyManagementTest(ClientsApiTestBase):
+    """写操作只许服务器本机；远端即使拿着正确 key 也只能查看。"""
+
+    REMOTE = "192.168.1.21"   # 另一台电脑
+    LOCAL_LAN = "192.168.1.23"  # 服务器自己的局域网地址
+
+    def test_list_tells_panel_whether_it_can_manage(self):
+        self.assertTrue(self._list()["can_manage"])
+        payload = self.client.get(
+            "/clients", headers={"key": "secret"},
+            environ_base={"REMOTE_ADDR": self.REMOTE},
+        ).get_json()
+        self.assertFalse(payload["can_manage"])
+
+    def test_remote_cannot_delete_even_with_valid_key(self):
+        self._add_client(DESKTOP)
+        response = self.client.post(
+            "/clients/delete", json={"local_name": DESKTOP},
+            headers={"key": "secret"}, environ_base={"REMOTE_ADDR": self.REMOTE},
+        )
+        self.assertEqual(response.status_code, 403)
+        self.assertIn("本机", response.get_json()["message"])
+        self.assertEqual(len(self._registry()), 1)
+
+    def test_remote_cannot_blacklist_even_with_valid_key(self):
+        self._add_client(DESKTOP)
+        response = self.client.post(
+            "/clients/blacklist", json={"local_name": DESKTOP},
+            headers={"key": "secret"}, environ_base={"REMOTE_ADDR": self.REMOTE},
+        )
+        self.assertEqual(response.status_code, 403)
+        self.assertEqual(flask_app.blacklist, {})
+        self.assertEqual(len(self._registry()), 1)
+
+    def test_read_endpoints_stay_open_remotely(self):
+        self._add_client(DESKTOP)
+        opts = {"headers": {"key": "secret"},
+                "environ_base": {"REMOTE_ADDR": self.REMOTE}}
+        self.assertEqual(self.client.get("/clients", **opts).status_code, 200)
+        self.assertEqual(self.client.get("/clients/online", **opts).status_code, 200)
+
+    def test_server_lan_ip_counts_as_local(self):
+        addresses = {ipaddress.ip_address("127.0.0.1"),
+                     ipaddress.ip_address(self.LOCAL_LAN)}
+        with patch.object(flask_app, "_local_addresses", return_value=addresses):
+            payload = self.client.get(
+                "/clients", headers={"key": "secret"},
+                environ_base={"REMOTE_ADDR": self.LOCAL_LAN},
+            ).get_json()
+            self.assertTrue(payload["can_manage"])
+            response = self.client.post(
+                "/clients/delete", json={"local_name": DESKTOP},
+                headers={"key": "secret"},
+                environ_base={"REMOTE_ADDR": self.LOCAL_LAN},
+            )
+            self.assertEqual(response.status_code, 200)
+
+    def test_foreign_lan_ip_stays_read_only(self):
+        addresses = {ipaddress.ip_address("127.0.0.1"),
+                     ipaddress.ip_address(self.LOCAL_LAN)}
+        with patch.object(flask_app, "_local_addresses", return_value=addresses):
+            payload = self.client.get(
+                "/clients", headers={"key": "secret"},
+                environ_base={"REMOTE_ADDR": self.REMOTE},
+            ).get_json()
+            self.assertFalse(payload["can_manage"])
 
 
 if __name__ == "__main__":

@@ -4,6 +4,7 @@ import sys
 import json
 import base64
 import socket
+import ipaddress
 import time
 import logging
 import requests
@@ -142,6 +143,70 @@ def get_api_key():
 def require_key():
     """全站唯一的鉴权入口，与电脑端 FileServer 共用同一套校验。"""
     return request_key_matches(KEY)
+
+
+def _local_addresses():
+    """这台服务器自己占用的 IP：回环 + 所有网卡地址。
+
+    面板从「服务器本机」连过来时不一定写 127.0.0.1，也可能写自己的
+    局域网地址（例如 192.168.1.23）。两种都得算同机，否则在服务器本机
+    用局域网 IP 配地址的那些用户会被误判成远端、改不了名单。
+    """
+    found = {ipaddress.ip_address("127.0.0.1"), ipaddress.ip_address("::1")}
+    try:
+        for info in socket.getaddrinfo(socket.gethostname(), None):
+            text = str(info[4][0]).split("%", 1)[0]
+            try:
+                found.add(ipaddress.ip_address(text))
+            except ValueError:
+                pass
+    except OSError:
+        pass
+    # getaddrinfo 在部分 Windows / 容器里只给回环，再借 UDP connect 拿主网卡
+    # 地址（不会真的发包），拿不到就算了，回环仍然可用。
+    try:
+        probe = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        try:
+            probe.connect(("8.8.8.8", 80))
+            found.add(ipaddress.ip_address(probe.getsockname()[0]))
+        finally:
+            probe.close()
+    except (OSError, ValueError):
+        pass
+    return found
+
+
+def is_local_address(host):
+    """host 是不是这台机器自己的地址（含 localhost 与回环）。"""
+    text = str(host or "").strip().lower()
+    if text in ("localhost", "ip6-localhost", "ip6-loopback"):
+        return True
+    try:
+        addr = ipaddress.ip_address(text.strip("[]"))
+    except ValueError:
+        return False
+    return addr.is_loopback or addr in _local_addresses()
+
+
+def require_local_operator():
+    """客户端管理的写接口只许从服务器本机调用。
+
+    返回 None 表示放行，否则返回可直接给 Flask 的 (响应, 状态码)。
+    key 是全客户端共享的，光靠它拦不住「在别的电脑上改服务器名单」；
+    远端带正确 key 也只能看。Docker 纯服务端没有本机面板，就照提示
+    手动编辑挂载出来的 config/client_ip.json 与 config/blacklist.json。
+    """
+    if not require_key():
+        return jsonify({"status": "error", "message": "密钥错误"}), 403
+    if not is_local_address(request.remote_addr):
+        return jsonify({
+            "status": "error",
+            "message": (
+                "只有服务器本机可以修改客户端管理数据；请到服务器本机打开面板操作。"
+                "Docker 纯服务端请手动编辑 config/client_ip.json 与 config/blacklist.json"
+            ),
+        }), 403
+    return None
 
 
 def copy_text_to_clipboard(text):
@@ -1351,6 +1416,10 @@ def list_clients():
         "status": "ok",
         "server_name": LOCAL_NAME,
         "probed": probe,
+        # 面板据此切只读态：连的是本机服务器才能改名单 / 黑名单，
+        # 从另一台电脑连过来只能看。写接口另有同样的硬限制，这里只是
+        # 让界面提前把按钮关掉，不给人「点了才被告知不让改」的体验。
+        "can_manage": is_local_address(request.remote_addr),
         "clients": rows,
         "summary": {
             "total": len(rows),
@@ -1374,9 +1443,11 @@ def delete_client():
     黑名单接口（见 /clients/blacklist）。
 
     请求体：{"local_name": "..."} 或 {"ip": "..."}，或 {"all": true} 清空。
+    只有从服务器本机调用才生效，远端只能查看名单。
     """
-    if not require_key():
-        return jsonify({"status": "error", "message": "密钥错误"}), 403
+    rejected = require_local_operator()
+    if rejected:
+        return rejected
 
     data = request.get_json(silent=True) or {}
     name = str(data.get("local_name") or "").strip()
@@ -1425,10 +1496,11 @@ def set_client_blacklist():
     兜底取内容也一律不给。只有从这个接口解除才恢复。
 
     请求体：{"local_name": "...", "block": true/false}（也支持只给 ip）；
-    block 省略时按 true 处理。
+    block 省略时按 true 处理。只有从服务器本机调用才生效。
     """
-    if not require_key():
-        return jsonify({"status": "error", "message": "密钥错误"}), 403
+    rejected = require_local_operator()
+    if rejected:
+        return rejected
 
     data = request.get_json(silent=True) or {}
     name = str(data.get("local_name") or "").strip()

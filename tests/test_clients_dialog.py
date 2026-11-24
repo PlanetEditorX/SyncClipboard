@@ -289,6 +289,61 @@ class TestClientsDialog(unittest.TestCase):
             dialog._on_blacklist_row(0)
         post.assert_not_called()
 
+    def test_remote_server_makes_dialog_read_only(self):
+        dialog = self._dialog()
+        dialog.set_endpoint(host="192.168.1.23")
+        payload = self._payload()
+        payload["can_manage"] = False
+        dialog._render(payload)
+
+        for row in range(dialog.table.rowCount()):
+            self.assertFalse(dialog.action_button(row).isEnabled())
+            self.assertFalse(dialog.blacklist_button(row).isEnabled())
+        self.assertFalse(dialog._clear_button.isEnabled())
+        self.assertFalse(dialog._manage_hint.isHidden())
+        self.assertIn("只能查看", dialog._manage_hint.text())
+        self.assertIn("config/client_ip.json", dialog._manage_hint.text())
+        self.assertIn("192.168.1.23", dialog._manage_hint.text())
+
+    def test_read_only_dialog_never_posts(self):
+        dialog = self._dialog()
+        payload = self._payload()
+        payload["can_manage"] = False
+        dialog._render(payload)
+
+        with patch.object(dialog, "_post_delete") as delete, \
+                patch.object(dialog, "_post_blacklist") as block:
+            dialog._on_remove_row(0)
+            dialog._on_blacklist_row(0)
+            dialog._on_clear_all()
+
+        delete.assert_not_called()
+        block.assert_not_called()
+
+    def test_permission_comes_back_when_local_server_says_so(self):
+        dialog = self._dialog()
+        read_only = self._payload()
+        read_only["can_manage"] = False
+        dialog._render(read_only)
+        writable = self._payload()
+        writable["can_manage"] = True
+        dialog._render(writable)
+
+        self.assertTrue(dialog.action_button(0).isEnabled())
+        self.assertTrue(dialog.blacklist_button(0).isEnabled())
+        self.assertTrue(dialog._clear_button.isEnabled())
+        self.assertTrue(dialog._manage_hint.isHidden())
+
+    def test_switching_endpoint_revokes_permission_until_refreshed(self):
+        dialog = self._dialog()
+        dialog._render(self._payload())
+        self.assertTrue(dialog.action_button(0).isEnabled())
+
+        dialog.set_endpoint(host="192.168.1.23")
+        self.assertFalse(dialog.action_button(0).isEnabled())
+        self.assertFalse(dialog._clear_button.isEnabled())
+
+
     def test_action_button_is_not_clipped_by_row_height(self):
         """「移除」按钮曾被默认行高裁掉下边框：行高必须容得下按钮 + 上下留白。"""
         from gui.qt_clients import (
