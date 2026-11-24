@@ -442,11 +442,16 @@ class ConfigManager:
 
         面板或托盘开启「本机服务器」时调用。客户端进程只在启动时读配置，
         因此返回 True 时调用方还要重启客户端，新地址才会生效。
+
+        顺带把密钥同步进 server_config：切回本机之后，客户端是用面板里那个
+        密钥去敲门，而本机服务器认的是自己配置里的值，两者一旦不同，
+        同步会立刻 401（现象就是「开了本机服务器反而不通了」）。
         """
         if self.server_host == LOCAL_SERVER_HOST:
             return False
         changed = self.update_client_config({"server_host": LOCAL_SERVER_HOST})
         if changed:
+            self.apply_key_to_server_config()
             logger.info(
                 "已切换为连接本机服务器: %s:%s", LOCAL_SERVER_HOST, self.server_port
             )
@@ -576,6 +581,40 @@ class ConfigManager:
             except Exception as e:
                 logger.error(f"同步共享存活时间失败: {e}")
                 return False
+
+    def apply_key_to_server_config(self):
+        """把面板上的共享密钥写进 server_config（只动这一个键）。
+
+        连接指向本机时，面板那个「共享密钥」同时就是本机服务器的密钥：
+        客户端拿 A 去敲只认 B 的服务器会直接 401，而且从界面上看不出原因。
+        和 TTL 一样只写单键，避免把服务器端口、监听地址覆盖成客户端配置。
+        """
+        with self._config_lock:
+            try:
+                config = {}
+                if ConfigManager.SERVER_CONFIG.exists():
+                    try:
+                        config = self._read_json_object(ConfigManager.SERVER_CONFIG)
+                    except Exception as e:
+                        logger.warning(f"读取服务器配置失败，将重建该字段: {e}")
+                if str(config.get("key", "")) == str(self.key):
+                    return True          # 已经一致，不白写一次盘
+                config["key"] = self.key
+                self._atomic_write_json(ConfigManager.SERVER_CONFIG, config)
+                logger.info("共享密钥已同步到服务器配置")
+                return True
+            except Exception as e:
+                logger.error(f"同步共享密钥失败: {e}")
+                return False
+
+    def server_config_key(self):
+        """读 server_config 里的密钥；读不到返回空串（供界面提示用）。"""
+        try:
+            if not ConfigManager.SERVER_CONFIG.exists():
+                return ""
+            return str(self._read_json_object(ConfigManager.SERVER_CONFIG).get("key", ""))
+        except Exception:
+            return ""
 
     def is_autostart_enabled(self):
         """检查是否已设置开机启动"""

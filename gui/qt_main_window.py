@@ -9,7 +9,6 @@
 """
 
 import logging
-import os
 import shutil
 import tempfile
 import threading
@@ -55,7 +54,7 @@ from common.updater import (
     check_for_update,
     download_file,
 )
-from common.utils import BASE_DIR, post_to_main_thread_no_wait
+from common.utils import BASE_DIR, open_path, post_to_main_thread_no_wait
 from gui import qt_dialogs
 from gui.config_manager import LOCAL_SERVER_HOST
 from gui.main_window import (
@@ -80,6 +79,14 @@ from gui.qt_theme import (
 )
 
 logger = logging.getLogger("gui")
+
+# 哪些「服务器地址」算作本机：只有连本机时，面板密钥才等同于本机服务器的密钥
+LOCAL_HOST_ALIASES = {"127.0.0.1", "localhost", "::1", "[::1]"}
+
+
+def points_to_local_server(host):
+    """连接的服务器地址是不是本机。"""
+    return str(host or "").strip().lower() in LOCAL_HOST_ALIASES
 
 
 def _section_title(text):
@@ -643,7 +650,14 @@ class MainWindow(QMainWindow):
         self.secret_toggle.clicked.connect(self._toggle_secret)
         grid.addWidget(self.secret_toggle, 3, 0, Qt.AlignLeft)
 
+        # 密钥到底改的是谁：连远端时只影响客户端，连本机时同时决定本机服务器
+        self.key_hint = QLabel("")
+        self.key_hint.setObjectName("Hint")
+        self.key_hint.setWordWrap(True)
+        self.server_host_edit.textChanged.connect(self._refresh_key_hint)
+
         lay.addLayout(grid)
+        lay.addWidget(self.key_hint)
 
         preference = QFrame()
         preference.setObjectName("Preference")
@@ -664,10 +678,16 @@ class MainWindow(QMainWindow):
         self.settings_message.setObjectName("Hint")
         self.settings_message.setWordWrap(True)
 
-        advanced = QPushButton("打开高级配置")
+        advanced = QPushButton("打开配置目录")
         advanced.setCursor(Qt.PointingHandCursor)
-        advanced.setFixedWidth(120)
+        # 按钮点了就是开资源管理器里的 config 目录，文案要跟行为对得上；
+        # 六个字比原来的四个字宽，固定宽度留够
+        advanced.setFixedWidth(132)
         advanced.setMinimumHeight(38)
+        advanced.setToolTip(
+            "在资源管理器里打开配置目录（config/），"
+            "里面的 client_config.json、server_config.json 可直接编辑"
+        )
         advanced.clicked.connect(self._open_config_folder)
 
         self.save_button = QPushButton("保存并应用")
@@ -983,6 +1003,60 @@ class MainWindow(QMainWindow):
             self._on_update_source_changed(source_mode)
 
         self.autostart_switch.setChecked(self.config.is_autostart_enabled(), animate=False)
+        self._refresh_key_hint()
+
+    def _refresh_key_hint(self, *_args):
+        """说明「共享密钥」这一项到底改的是谁，跟着服务器地址实时变。
+
+        只开客户端时它只是访问对方服务器的凭证；连本机或本机服务器开着时
+        它同时是本机服务器（server_config.json）的密钥，保存会两边一起改 ——
+        不写清楚很容易搞混这把钥匙到底开哪扇门。
+        """
+        hint = getattr(self, "key_hint", None)
+        if hint is None:
+            return
+        host = self.server_host_edit.text().strip()
+        local_host = points_to_local_server(host)
+        server_on = self._server_is_enabled()
+        if local_host and server_on:
+            hint.setText(
+                "当前连接指向本机，且本机服务器已开启：保存时这个密钥会同时写入"
+                "客户端和本机服务器，服务随即重启；手机等其他设备也要改成同一个密钥。"
+            )
+        elif local_host:
+            hint.setText(
+                "当前连接指向本机：保存时这个密钥会同时写入客户端和本机服务器配置，"
+                "下次启动本机服务器即生效。"
+            )
+        elif server_on:
+            hint.setText(
+                "本机服务器已开启：保存时这个密钥会同时写入客户端和本机服务器，"
+                "服务随即重启；手机等其他设备也要改成同一个密钥。"
+            )
+        else:
+            hint.setText(
+                "这是连接 %s 所需的密钥，只写入客户端配置；本机服务器未开启，"
+                "它自己的密钥在 server_config.json 里。" % (host or "服务器")
+            )
+
+    def _server_is_enabled(self):
+        """本机服务器是否开着（面板状态查询失败时按关着处理，不多改配置）。"""
+        try:
+            manager = getattr(self, "manager", None)
+            if manager is None:
+                return False
+            return bool(manager.get_service_state()["server_enabled"])
+        except Exception:                                  # noqa: BLE001
+            return False
+
+    def _should_sync_key_to_server(self, host):
+        """连本机、或本机服务器开着时，面板密钥同时是本机服务器的密钥。
+
+        用户心智是「只开客户端 → 密钥是对方的；同时开服务器 → 两边都改」，
+        所以服务状态也算一个条件：本机服务器给手机用时，即使这台电脑的客户端
+        暂时连的是别台机器，面板密钥仍按本机服务器的密钥来改。
+        """
+        return points_to_local_server(host) or self._server_is_enabled()
 
     @staticmethod
     def _format_number(value):
@@ -1093,6 +1167,7 @@ class MainWindow(QMainWindow):
             return
 
         previous_ttl = getattr(self.config, "file_share_ttl_minutes", None)
+        previous_key = getattr(self.config, "key", "")
         if not self.config.update_client_config(values):
             self._set_settings_message("配置保存失败，请查看日志", self._palette["danger"])
             return
@@ -1102,13 +1177,22 @@ class MainWindow(QMainWindow):
         if ttl_changed:
             self.config.apply_file_share_ttl_to_server_config()
 
+        # 本机服务器参与同步时，面板密钥就是它的密钥：只改客户端会让
+        # 客户端拿新密钥去敲一个还认旧密钥的服务器，同步直接 401。
+        key_synced = False
+        key_changed = previous_key != values["key"]
+        if key_changed and self._should_sync_key_to_server(values["server_host"]):
+            key_synced = self.config.apply_key_to_server_config()
+
+        self._refresh_key_hint()
         self._set_settings_message("配置已保存", self._palette["success"])
         self.welcome_detail.setText(
             f"连接到 {values['server_host']}:{values['server_port']} · 设备 {values['local_name']}"
         )
         state = self.manager.get_service_state()
-        if ttl_changed and state["server_enabled"]:
-            # 服务端按共享存活时间丢弃文件记录，改了得让它重新加载配置；
+        needs_restart = ttl_changed or key_synced
+        if needs_restart and state["server_enabled"]:
+            # 服务端按共享存活时间丢弃文件记录、按密钥校验请求，改了都得重新加载配置；
             # restart_services 会把已启用的客户端一起重启，不必再单独调一次。
             if self.manager.restart_services_async():
                 self._set_settings_message("配置已保存，正在重启服务…", self._palette["warning"])
@@ -1182,6 +1266,9 @@ class MainWindow(QMainWindow):
             else:
                 self._set_settings_message("配置已保存，但客户端启动失败", palette["danger"])
 
+        # 服务开关改变后，密钥是「只给客户端」还是「两边共用」也会变
+        self._refresh_key_hint()
+
     def _connection_summary(self):
         """未配置时不要显示 "None:None"。"""
         host = self.config.server_host or "未配置服务器"
@@ -1223,11 +1310,10 @@ class MainWindow(QMainWindow):
 
     def _open_download_folder(self):
         path = Path(self.save_path_edit.text() or self.config.save_path)
-        try:
-            path.mkdir(parents=True, exist_ok=True)
-            os.startfile(path)
-        except Exception as exc:  # noqa: BLE001 - 需要把失败告知用户
-            qt_dialogs.info_message("无法打开目录", str(exc))
+        path.mkdir(parents=True, exist_ok=True)
+        ok, error = open_path(path, is_directory=True)
+        if not ok:
+            qt_dialogs.info_message("无法打开目录", error)
 
     def _show_download_records(self):
         """下载记录窗口：打开后每秒刷新，实时看进度与事件。
@@ -1250,10 +1336,9 @@ class MainWindow(QMainWindow):
     def _open_config_folder(self):
         config_dir = BASE_DIR / "config"
         config_dir.mkdir(parents=True, exist_ok=True)
-        try:
-            os.startfile(config_dir)
-        except Exception as exc:  # noqa: BLE001
-            qt_dialogs.info_message("无法打开目录", str(exc))
+        ok, error = open_path(config_dir, is_directory=True)
+        if not ok:
+            qt_dialogs.info_message("无法打开目录", error)
 
     # -------------------------------------------------------------- 运行日志
 
@@ -1271,10 +1356,9 @@ class MainWindow(QMainWindow):
     def _open_log_folder(self):
         log_dir = BASE_DIR / "log"
         log_dir.mkdir(parents=True, exist_ok=True)
-        try:
-            os.startfile(log_dir)
-        except Exception as exc:  # noqa: BLE001
-            qt_dialogs.info_message("无法打开日志目录", str(exc))
+        ok, error = open_path(log_dir, is_directory=True)
+        if not ok:
+            qt_dialogs.info_message("无法打开日志目录", error)
 
     def _choose_directory(self):
         selected = qt_dialogs.choose_directory(

@@ -7,6 +7,7 @@ import sys
 import socket
 import struct
 import logging
+import subprocess
 import requests
 from pathlib import Path
 from urllib.parse import unquote
@@ -76,6 +77,44 @@ def get_base_dir() -> Path:
 
 # 项目基础目录
 BASE_DIR = get_base_dir()
+
+
+def open_path(path, is_directory=None):
+    """用系统默认程序打开文件或目录，返回 ``(是否成功, 失败原因)``。
+
+    ``is_directory`` 显式指定目标类型；不传时按当前磁盘状态判断。
+
+    不能只靠 ``os.startfile``：Windows 上 ``.json`` 常常没有文件关联，
+    它会抛 ``OSError [WinError -2147221003] 找不到应用程序``。托盘里的
+    「打开客户端配置」原来把这个异常吞掉只写日志，用户看到的就是
+    「点了没有任何反应」。这里按目标类型退一步兜底：文件用记事本、
+    目录用资源管理器；都不行才把原因交给调用方弹窗。
+    """
+    target = Path(path)
+    want_dir = target.is_dir() if is_directory is None else bool(is_directory)
+    try:
+        os.startfile(str(target))          # noqa: S606 - 只在本机打开用户指定的路径
+        return True, ""
+    except AttributeError:
+        # 非 Windows 平台没有 os.startfile，走下面按类型的 system open
+        first_error = "当前系统不支持 startfile"
+    except OSError as exc:
+        first_error = str(exc)
+
+    if os.name == "nt":
+        fallback = ["explorer.exe", str(target)] if want_dir else [
+            "notepad.exe", str(target)
+        ]
+    else:
+        fallback = ["open" if sys.platform == "darwin" else "xdg-open", str(target)]
+
+    try:
+        subprocess.Popen(fallback)
+        return True, ""
+    except Exception as exc:               # noqa: BLE001 - 兜底失败要把原因带回去
+        logger.warning("打开路径失败: %s (%s / %s)", target, first_error, exc)
+        return False, f"{first_error}\n{exc}"
+
 
 def _should_show_debug_message() -> bool:
     """检查是否应该显示调试消息"""

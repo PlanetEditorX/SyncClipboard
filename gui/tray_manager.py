@@ -11,7 +11,6 @@
 """
 
 import logging
-import os
 import sys
 import threading
 
@@ -22,7 +21,7 @@ from PySide6.QtWidgets import QApplication, QMenu, QSystemTrayIcon
 from common import ui_bridge
 from common.single_instance import start_show_watcher
 from common.ui_bridge import post_to_main_thread_no_wait, request_ui_shutdown
-from common.utils import BASE_DIR
+from common.utils import BASE_DIR, open_path
 from gui import qt_dialogs
 from gui.clipboard_handler import ClipboardHandler
 from gui.config_manager import LOCAL_SERVER_HOST, ConfigManager
@@ -287,13 +286,24 @@ class TrayManager(QObject):
 
     @staticmethod
     def _open_config(file_name):
+        """打开某个配置文件。
+
+        原来只有 ``os.startfile``：Windows 上 ``.json`` 没有文件关联时会抛
+        ``WinError -2147221003``，异常被吞进日志，点菜单就是「毫无反应」。
+        这里改成 open_path 兜底（退到记事本），文件还没生成也明确说一声。
+        """
         path = BASE_DIR / "config" / file_name
         if not path.exists():
+            qt_dialogs.info_message(
+                "配置文件尚未生成",
+                f"{path} 还不存在。\n"
+                "启动对应的服务（客户端 / 本机服务器）后会自动创建默认配置，"
+                "也可以先点一次「保存并应用」。",
+            )
             return
-        try:
-            os.startfile(path)
-        except Exception:
-            logger.exception("打开配置文件失败: %s", path)
+        ok, error = open_path(path)
+        if not ok:
+            qt_dialogs.info_message("无法打开配置文件", error)
 
     # ------------------------------------------------------------ 窗口控制
 
