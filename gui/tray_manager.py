@@ -24,8 +24,7 @@ from PySide6.QtWidgets import QApplication, QMenu, QSystemTrayIcon
 from common import ui_bridge
 from common.single_instance import start_show_watcher
 from common.ui_bridge import post_to_main_thread_no_wait, request_ui_shutdown
-from common.updater import PROJECT_PAGE
-from common.utils import BASE_DIR, open_path, open_url
+from common.utils import BASE_DIR, open_path
 from gui import qt_dialogs
 from gui.clipboard_handler import ClipboardHandler
 from gui.config_manager import LOCAL_SERVER_HOST, ConfigManager
@@ -387,10 +386,6 @@ class TrayManager(QObject):
 
         self.action_logs = menu.addAction("查看运行日志")
         self.action_logs.triggered.connect(lambda: self.show_log_view("server"))
-
-        self.action_repo = menu.addAction("访问项目仓库")
-        # QAction.triggered 会带一个 checked 参数，这里包一层省得签名对不上
-        self.action_repo.triggered.connect(lambda: self.open_repository())
         menu.addSeparator()
 
         self.action_quit = menu.addAction("退出")
@@ -448,13 +443,6 @@ class TrayManager(QObject):
         ok, error = open_path(path)
         if not ok:
             qt_dialogs.info_message("无法打开配置文件", error)
-
-    @staticmethod
-    def open_repository():
-        """用系统默认浏览器打开代码仓库（与面板底部「查看仓库」同一个入口）。"""
-        ok, error = open_url(PROJECT_PAGE)
-        if not ok:
-            qt_dialogs.info_message("无法打开浏览器", f"{PROJECT_PAGE}\n\n{error}")
 
     # ------------------------------------------------------------ 窗口控制
 

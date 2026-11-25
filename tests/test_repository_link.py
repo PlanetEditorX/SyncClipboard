@@ -1,9 +1,10 @@
-"""「查看仓库」入口：面板按钮与托盘菜单都要能拉起默认浏览器。
+"""「查看仓库」入口：只在面板里，点了要能拉起默认浏览器。
 
 这里锁的是三件事：
-1. 地址只有一处定义（common.updater.PROJECT_PAGE），两边共用；
+1. 地址只有一处定义（common.updater.PROJECT_PAGE）；
 2. 打开浏览器失败时不能静默——弹窗里要带上地址，用户还能自己复制；
 3. 面板按钮点下去真的把仓库地址交给了系统，而不是只改了文案。
+托盘右键菜单**不放**这一项（用户明确要求收掉），这里一并锁住。
 """
 
 import os
@@ -11,7 +12,7 @@ import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 from common.updater import PROJECT_PAGE, REPOSITORY
 from common.utils import open_url
@@ -56,22 +57,56 @@ class TestOpenUrl(unittest.TestCase):
         opener.assert_not_called()
 
 
-class TestTrayRepositoryEntry(unittest.TestCase):
-    def test_menu_item_opens_browser(self):
-        with patch("gui.tray_manager.open_url", return_value=(True, "")) as opener, \
-             patch.object(qt_dialogs, "info_message") as dialog:
-            TrayManager.open_repository()
+class TestTrayHasNoRepositoryEntry(unittest.TestCase):
+    """托盘右键菜单里不放仓库入口，只保留原来的项。"""
 
-        opener.assert_called_once_with(PROJECT_PAGE)
-        dialog.assert_not_called()
+    @classmethod
+    def setUpClass(cls):
+        os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+        from PySide6.QtWidgets import QApplication
 
-    def test_failure_shows_url_in_dialog(self):
-        with patch("gui.tray_manager.open_url", return_value=(False, "没有默认浏览器")), \
-             patch.object(qt_dialogs, "info_message") as dialog:
-            TrayManager.open_repository()
+        cls.app = QApplication.instance()
+        if cls.app is None:
+            try:
+                cls.app = QApplication([])
+            except Exception as exc:  # noqa: BLE001 - 缺平台插件时跳过
+                raise unittest.SkipTest(f"无法创建 QApplication: {exc}")
 
-        self.assertEqual(dialog.call_args.args[0], "无法打开浏览器")
-        self.assertIn(PROJECT_PAGE, dialog.call_args.args[1])
+    def test_menu_has_no_repository_item(self):
+        # _build_menu 只用到 self 上的若干回调，用 MagicMock 顶替即可，
+        # 不必真的拉起 QSystemTrayIcon
+        stub = MagicMock()
+        menu = TrayManager._build_menu(stub)
+        self.addCleanup(menu.deleteLater)
+
+        labels = [action.text() for action in menu.actions() if action.text()]
+        self.assertNotIn("访问项目仓库", labels)
+        self.assertFalse(any("仓库" in label for label in labels), labels)
+
+    def test_original_items_are_all_still_there(self):
+        stub = MagicMock()
+        menu = TrayManager._build_menu(stub)
+        self.addCleanup(menu.deleteLater)
+
+        labels = [action.text() for action in menu.actions() if action.text()]
+        self.assertEqual(
+            labels,
+            [
+                "打开 SyncClipboard",
+                "获取共享文件",
+                "同步客户端",
+                "本机服务器",
+                "重启程序",
+                "开机启动",
+                "打开客户端配置",
+                "打开服务器配置",
+                "查看运行日志",
+                "退出",
+            ],
+        )
+
+    def test_tray_manager_has_no_repository_helper(self):
+        self.assertFalse(hasattr(TrayManager, "open_repository"))
 
 
 class TestPanelRepositoryButton(unittest.TestCase):

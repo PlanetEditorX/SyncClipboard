@@ -325,7 +325,7 @@ git push origin v1.0.0
 
 #### 面板里的「查看仓库」
 
-底部「检查更新」左边还有一个「查看仓库」（托盘菜单里是「访问项目仓库」）：点一下就用系统默认浏览器打开 <https://github.com/PlanetEditorX/SyncClipboard>。地址只在 `common/updater.py` 的 `REPOSITORY` / `PROJECT_PAGE` 里维护一份，改动仓库时不用满项目找链接。打不开浏览器（没装默认浏览器、Shell 关联坏了）会弹窗并把地址一起显示出来，可以直接复制。
+底部「检查更新」左边还有一个「查看仓库」：点一下就用系统默认浏览器打开 <https://github.com/PlanetEditorX/SyncClipboard>。入口**只在面板里**，托盘右键菜单不提供这一项。地址只在 `common/updater.py` 的 `REPOSITORY` / `PROJECT_PAGE` 里维护一份，改动仓库时不用满项目找链接。打不开浏览器（没装默认浏览器、Shell 关联坏了）会弹窗并把地址一起显示出来，可以直接复制。
 
 ---
 
