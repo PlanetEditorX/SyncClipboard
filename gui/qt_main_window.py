@@ -573,12 +573,6 @@ class MainWindow(QMainWindow):
         self.clients_button.setToolTip("查看已登记的设备、各自的推送次数与送达情况，可移除")
         self.clients_button.clicked.connect(self._show_clients)
 
-        records_hint = QLabel(
-            "下载记录：谁在取、已经取走多少字节；客户端管理：推过几次、送达多少"
-        )
-        records_hint.setObjectName("Hint")
-        records_hint.setWordWrap(True)
-
         # 托盘菜单在 Windows 11 的溢出区里偶尔会「点不动」，界面里留一个
         # 一定可用的退出入口
         self.quit_button = QPushButton("退出程序")
@@ -590,7 +584,6 @@ class MainWindow(QMainWindow):
         row2.addWidget(self.records_button, 1)
         row2.addWidget(self.clients_button, 1)
         row2.addWidget(self.quit_button, 1)
-        row2.addWidget(records_hint, 2)
         lay.addLayout(row2)
         self.body.addWidget(card)
 

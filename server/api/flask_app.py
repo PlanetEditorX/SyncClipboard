@@ -1425,6 +1425,10 @@ def list_clients():
             "total": len(rows),
             "online": sum(1 for row in rows if row.get("online") is True),
             "offline": sum(1 for row in rows if row.get("online") is False),
+            # 探不出在线与否 = 服务端没法主动 ping（iOS 没有推送端口等），
+            # 只能靠设备自己来拉，界面上按「轮询」展示。unknown 是老键名，
+            # 留着给还没升级的面板读。
+            "polling": sum(1 for row in rows if row.get("online") is None),
             "unknown": sum(1 for row in rows if row.get("online") is None),
             "blacklisted": len(blacklist),
             "push_total": push_total,

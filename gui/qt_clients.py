@@ -364,15 +364,18 @@ class ClientsDialog(QDialog):
             f"在线 {summary.get('online', 0)}",
             f"离线 {summary.get('offline', 0)}",
         ]
-        if summary.get("unknown"):
-            parts.append(f"未知 {summary['unknown']}")
+        # 「轮询」= 服务端探不出在线与否、只能等设备自己来拉（iOS 就是这种）。
+        # 行里的状态列写的是「轮询」，这里跟着一致；unknown 是老服务端的键名。
+        polling = summary.get("polling", summary.get("unknown", 0))
+        if polling:
+            parts.append(f"轮询 {polling}")
         if summary.get("blacklisted"):
             parts.append(f"黑名单 {summary['blacklisted']}")
         total = summary.get("push_total", 0)
         ok = summary.get("push_ok", 0)
         if total:
             rate = summary.get("push_rate")
-            parts.append(f"累计推送 {total} 次 / 成功 {ok} 次（成功率 {rate:g}%）")
+            parts.append(f"累计推送 {total} 次 / 成功 {ok} 次（推送率 {rate:g}%）")
         else:
             parts.append("还没有推送记录")
         parts.append(f"每 {REFRESH_INTERVAL_MS // 1000} 秒自动刷新")
@@ -570,7 +573,7 @@ class ClientsDialog(QDialog):
         answer = QMessageBox.question(
             self,
             "移除客户端",
-            f"从名单中移除「{name}」？\n\n会同时删除它的推送次数 / 成功率记录。{tail}",
+            f"从名单中移除「{name}」？\n\n会同时删除它的推送记录（次数 / 推送率）。{tail}",
             QMessageBox.Yes | QMessageBox.No,
             QMessageBox.No,
         )

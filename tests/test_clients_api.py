@@ -138,8 +138,12 @@ class ListClientsTest(ClientsApiTestBase):
     def test_iOS_client_is_marked_unknown_when_probing(self):
         """iOS 没有推送端口，探不出在线与否，不能谎报「离线」。"""
         self._add_client(PHONE, ip="192.168.1.30", port=0, os_name="iOS")
-        row = self._list(probe=True)["clients"][0]
+        payload = self._list(probe=True)
+        row = payload["clients"][0]
         self.assertIsNone(row["online"])
+        # 探不出在线的设备在汇总里算「轮询」，与行状态一致
+        self.assertEqual(payload["summary"]["polling"], 1)
+        self.assertEqual(payload["summary"]["offline"], 0)
 
     def test_probe_marks_unreachable_client_offline(self):
         self._add_client(DESKTOP, ip="192.168.1.24", port=8899)

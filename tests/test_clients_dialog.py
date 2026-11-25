@@ -138,6 +138,7 @@ class TestClientsDialog(unittest.TestCase):
                 "total": 2,
                 "online": 1,
                 "offline": 0,
+                "polling": 1,
                 "unknown": 1,
                 "push_total": 15,
                 "push_ok": 14,
@@ -171,7 +172,22 @@ class TestClientsDialog(unittest.TestCase):
         text = dialog._status.text()
         self.assertIn("共 2 台", text)
         self.assertIn("在线 1", text)
-        self.assertIn("累计推送 15 次 / 成功 14 次（成功率 93.3%）", text)
+        # iOS 这类探不出在线的设备归到「轮询」，不能写成「未知」
+        self.assertIn("轮询 1", text)
+        self.assertNotIn("未知", text)
+        # 分母是推送次数，所以叫「推送率」，别写成「成功率」
+        self.assertIn("累计推送 15 次 / 成功 14 次（推送率 93.3%）", text)
+        self.assertNotIn("成功率", text)
+
+    def test_old_server_without_polling_key_still_counts(self):
+        """老服务端只下发 unknown：面板要照样算出「轮询 N」。"""
+        payload = self._payload()
+        payload["summary"].pop("polling")
+
+        dialog = self._dialog()
+        dialog._render(payload)
+
+        self.assertIn("轮询 1", dialog._status.text())
 
     def test_empty_registry_explains_auto_registration(self):
         dialog = self._dialog()
