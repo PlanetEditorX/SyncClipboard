@@ -116,6 +116,28 @@ def open_path(path, is_directory=None):
         return False, f"{first_error}\n{exc}"
 
 
+def open_url(url):
+    """用系统默认浏览器打开网址，返回 ``(是否成功, 失败原因)``。
+
+    仓库 / 发布页这类外链统一走这里，而不是 ``os.startfile``：后者在没配
+    默认浏览器的机器上会抛 ``OSError``，``webbrowser`` 会按平台依次尝试
+    （Windows 走 os.startfile、macOS 走 ``open``、Linux 走 ``xdg-open``），
+    并且明确返回「有没有成功」。
+    """
+    target = str(url or "").strip()
+    if not target:
+        return False, "网址为空"
+    try:
+        import webbrowser
+
+        if webbrowser.open(target, new=2):
+            return True, ""
+        return False, "系统没有可用的默认浏览器"
+    except Exception as exc:               # noqa: BLE001 - 失败原因要带回给调用方
+        logger.warning("打开网址失败: %s (%s)", target, exc)
+        return False, str(exc)
+
+
 def _should_show_debug_message() -> bool:
     """检查是否应该显示调试消息"""
     return os.getenv("DEBUG_MODE") == "1"

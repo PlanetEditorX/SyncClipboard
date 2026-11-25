@@ -25,6 +25,7 @@ APP_VERSION = "1.12.26"
 
 # 代码仓库与发布地址
 REPOSITORY = "PlanetEditorX/SyncClipboard"
+PROJECT_PAGE = f"https://github.com/{REPOSITORY}"
 RELEASES_API = f"https://api.github.com/repos/{REPOSITORY}/releases/latest"
 RELEASES_PAGE = f"https://github.com/{REPOSITORY}/releases/latest"
 

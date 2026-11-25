@@ -323,6 +323,10 @@ git push origin v1.0.0
 
 下载过程中按钮会变成「取消下载」，点一下立即中断并把临时目录（`%TEMP%\syncclipboard_update_*`）整个删掉，状态回到可以重新下载。已就绪但没重启时，临时目录会保留到更新完成或下次取消。
 
+#### 面板里的「查看仓库」
+
+底部「检查更新」左边还有一个「查看仓库」（托盘菜单里是「访问项目仓库」）：点一下就用系统默认浏览器打开 <https://github.com/PlanetEditorX/SyncClipboard>。地址只在 `common/updater.py` 的 `REPOSITORY` / `PROJECT_PAGE` 里维护一份，改动仓库时不用满项目找链接。打不开浏览器（没装默认浏览器、Shell 关联坏了）会弹窗并把地址一起显示出来，可以直接复制。
+
 ---
 
 ## 数据流简图

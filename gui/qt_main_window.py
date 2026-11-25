@@ -45,6 +45,7 @@ from common.update_apply import (
 )
 from common.updater import (
     APP_VERSION,
+    PROJECT_PAGE,
     UPDATE_MIRROR_PRESETS,
     UPDATE_SOURCE_DIRECT,
     UPDATE_SOURCE_MANUAL,
@@ -54,7 +55,7 @@ from common.updater import (
     check_for_update,
     download_file,
 )
-from common.utils import BASE_DIR, open_path, post_to_main_thread_no_wait
+from common.utils import BASE_DIR, open_path, open_url, post_to_main_thread_no_wait
 from gui import qt_dialogs
 from gui.config_manager import LOCAL_SERVER_HOST
 from gui.main_window import (
@@ -778,6 +779,14 @@ class MainWindow(QMainWindow):
         hint = QLabel("关闭窗口后应用仍会在系统托盘中运行")
         hint.setObjectName("Hint")
 
+        # 仓库入口与「检查更新」并排：都跟版本信息有关，放在面板底部最顺手
+        self.repo_button = QPushButton("查看仓库")
+        self.repo_button.setCursor(Qt.PointingHandCursor)
+        self.repo_button.setFixedWidth(104)
+        self.repo_button.setMinimumHeight(32)
+        self.repo_button.setToolTip(f"用默认浏览器打开 {PROJECT_PAGE}")
+        self.repo_button.clicked.connect(self._open_repository)
+
         self.update_button = QPushButton("检查更新")
         self.update_button.setCursor(Qt.PointingHandCursor)
         self.update_button.setFixedWidth(120)
@@ -789,6 +798,7 @@ class MainWindow(QMainWindow):
 
         row.addWidget(hint)
         row.addStretch(1)
+        row.addWidget(self.repo_button)
         row.addWidget(self.update_button)
         row.addWidget(self.version_label)
         lay.addLayout(row)
@@ -1413,6 +1423,13 @@ class MainWindow(QMainWindow):
         ok, error = open_path(log_dir, is_directory=True)
         if not ok:
             qt_dialogs.info_message("无法打开日志目录", error)
+
+    def _open_repository(self):
+        """用系统默认浏览器打开代码仓库。"""
+        ok, error = open_url(PROJECT_PAGE)
+        if not ok:
+            # 打不开浏览器时至少把地址留在弹窗里，用户能自己复制
+            qt_dialogs.info_message("无法打开浏览器", f"{PROJECT_PAGE}\n\n{error}")
 
     def _choose_directory(self):
         selected = qt_dialogs.choose_directory(
